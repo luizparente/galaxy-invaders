@@ -26,7 +26,6 @@
 #define PLAYER_HEIGHT 22.0f
 #define PLAYER_SPEED 240.0f
 #define PLAYER_FIRE_COOLDOWN 0.18f
-#define PLAYER_MIN_Y_RATIO 0.45f
 #define PLAYER_BOTTOM_MARGIN 40.0f
 
 #define PLAYER_PROJECTILE_W 3.0f
@@ -53,9 +52,9 @@
 #define SCORE_MULTIPLIER_STEP 500.0f
 #define SCORE_MULTIPLIER_INCREMENT 0.1f
 
-#define EXPLOSION_DURATION 0.28f
+#define EXPLOSION_DURATION 0.50f
 
-#define LASER_COLOR_SCORE_STEP 100
+#define LASER_COLOR_SCORE_STEP 200
 
 #define ORB_SCORE_STEP 200
 #define ORB_SPAWN_CHANCE 0.5f
@@ -77,5 +76,22 @@
 #define SUPER_BEAM_WIDTH_PULSE_SPEED 16.0f
 #define SUPER_BEAM_WIDTH_PULSE_AMOUNT 0.35f
 #define SUPER_BEAM_COLOR_CYCLE_SPEED 420.0f
+
+#define BOSS_SCORE_STEP 500
+#define BOSS_HITS_INCREMENT 50
+#define BOSS_SIZE_MULTIPLIER 10.0f
+#define BOSS_SPEED_MULTIPLIER 0.25f /* of PLAYER_SPEED - relentlessly chases, never idles */
+#define BOSS_KILL_SCORE_MULTIPLIER 4
+/* The visible danger ring drawn around the boss (adapters/sdl_renderer.c)
+ * IS the contact hitbox - shared here so the two can never drift apart:
+ * the moment that ring reaches the player, both explode and it's game
+ * over, on the very first touch. */
+#define BOSS_MENACE_RING_RATIO 0.58f
+/* Only used by the super beam's sustained-contact damage against the
+ * boss now (see update_super_beam) - ordinary ring contact with the
+ * player is instantly fatal and needs no interval. */
+#define BEAM_BOSS_HIT_INTERVAL 0.5f
+#define ENEMY_FLEE_SPEED_MULTIPLIER 7.0f
+#define ENEMY_SHOT_FADE_DURATION 0.6f
 
 #endif

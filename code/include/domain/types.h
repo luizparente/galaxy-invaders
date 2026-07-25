@@ -79,6 +79,12 @@ typedef struct Projectile {
     float x, y;
     float vx, vy;
     Color color;
+
+    /* Set true only on enemy shots caught out when a boss arrives: they
+     * keep drifting and visually fade (see inert_age) but can no longer
+     * harm the player. Unused by player shots. */
+    bool inert;
+    float inert_age;
 } Projectile;
 
 typedef struct Explosion {
@@ -106,6 +112,30 @@ typedef struct Orb {
     Color color;
 } Orb;
 
+/* A recurring heavyweight encounter: a normal enemy's look scaled way up,
+ * that has to be shot down over many hits instead of one, and threatens
+ * the player by ramming it rather than shooting at it. It relentlessly
+ * seeks the player's exact position - a game of tag, not a stationary
+ * turret - so it never idles even if the player stops moving. If its
+ * visible danger ring ever reaches the player, both explode instantly:
+ * there is no health bar for that, only avoidance. */
+typedef struct Boss {
+    bool alive;
+    float x, y;
+    float size;
+    Color color;
+    EnemyShape shape;
+
+    int hits_taken;
+    int hits_required;
+
+    /* The super beam can still whittle the boss down over sustained
+     * contact (unlike the player, it isn't fatal to it); this timer
+     * paces those repeat hits. Breaking contact resets it so the next
+     * beam touch deals damage instantly again. */
+    float beam_contact_timer;
+} Boss;
+
 typedef struct GameState {
     GameStateId state;
     PauseSelection pause_selection;
@@ -124,6 +154,9 @@ typedef struct GameState {
     Explosion explosions[MAX_EXPLOSIONS];
     Star stars[MAX_STARS];
     Orb orb;
+    Boss boss;
+    int boss_count; /* how many bosses have appeared so far this run */
+    int score_since_last_boss; /* resets to 0 on every boss appearance; next one needs BOSS_SCORE_STEP more */
 
     int score;
     int last_game_score;

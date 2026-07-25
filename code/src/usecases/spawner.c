@@ -16,6 +16,14 @@ static const Color kEnemyPalette[] = {
 };
 #define ENEMY_PALETTE_SIZE (int)(sizeof(kEnemyPalette) / sizeof(kEnemyPalette[0]))
 
+Color spawner_random_enemy_color(void) {
+    return kEnemyPalette[rand() % ENEMY_PALETTE_SIZE];
+}
+
+EnemyShape spawner_random_enemy_shape(void) {
+    return (rand() % 2 == 0) ? ENEMY_SHAPE_INVADER : ENEMY_SHAPE_SAUCER;
+}
+
 static void spawn_one_enemy(GameState *gs) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
@@ -30,8 +38,8 @@ static void spawn_one_enemy(GameState *gs) {
         e->y = -size;
         e->vx = (frand01() - 0.5f) * 20.0f * gs->scale;
         e->vy = difficulty_enemy_speed(gs->score) * gs->scale * (0.85f + frand01() * 0.3f);
-        e->color = kEnemyPalette[rand() % ENEMY_PALETTE_SIZE];
-        e->shape = (rand() % 2 == 0) ? ENEMY_SHAPE_INVADER : ENEMY_SHAPE_SAUCER;
+        e->color = spawner_random_enemy_color();
+        e->shape = spawner_random_enemy_shape();
         e->fire_timer = 0.5f + frand01() * 1.5f;
         e->wobble_phase = frand01() * 6.2831853f;
         return;

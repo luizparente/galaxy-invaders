@@ -91,21 +91,106 @@ static void maybe_trigger_orb_spawn(GameState *gs, int old_score, int new_score)
     if (frand01() < ORB_SPAWN_CHANCE) spawn_orb(gs);
 }
 
-/* Shared by both ways an enemy can be destroyed for points (direct laser
- * hit, and the super beam sweeping over it) so the laser-recolor and
- * orb-spawn threshold checks never drift out of sync between the two. */
-static void destroy_enemy_for_score(GameState *gs, EventQueue *events, Enemy *e) {
-    e->alive = false;
-    spawn_explosion(gs, e->x, e->y, e->size);
+/* Existing enemies don't fight the boss - they bolt. Speeding up their
+ * existing downward motion lets the normal off-screen cleanup in
+ * update_enemies remove them without any extra per-enemy state. Their
+ * projectiles keep flying but go inert (see update_projectiles) so they
+ * can no longer land a hit while they fade out. */
+static void flee_enemies_for_boss(GameState *gs) {
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (!e->alive) continue;
+        e->vy *= ENEMY_FLEE_SPEED_MULTIPLIER;
+        e->fire_timer = 9999.0f;
+    }
+    for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+        Projectile *pr = &gs->enemy_shots[i];
+        if (!pr->alive) continue;
+        pr->inert = true;
+        pr->inert_age = 0.0f;
+    }
+}
 
+/* The boss presents as "a randomly picked enemy" (same shape/color pool
+ * spawner.c draws from for ordinary enemies) at BOSS_SIZE_MULTIPLIER the
+ * size. Each appearance is a fresh pick, so - as requested - every boss
+ * looks like a different monster even though they all behave the same. */
+static void spawn_boss(GameState *gs, EventQueue *events) {
+    flee_enemies_for_boss(gs);
+
+    Boss *b = &gs->boss;
+    gs->boss_count++;
+    gs->score_since_last_boss = 0; /* the next one needs a full fresh BOSS_SCORE_STEP */
+
+    float min_size = ENEMY_MIN_SIZE * gs->scale;
+    float max_size = ENEMY_MAX_SIZE * gs->scale;
+    float size = (min_size + frand01() * (max_size - min_size)) * BOSS_SIZE_MULTIPLIER;
+
+    b->alive = true;
+    b->size = size;
+    b->x = (float)gs->screen_w / 2.0f;
+    b->y = -size;
+    b->color = spawner_random_enemy_color();
+    b->shape = spawner_random_enemy_shape();
+    b->hits_taken = 0;
+    b->hits_required = BOSS_HITS_INCREMENT * gs->boss_count;
+    b->beam_contact_timer = 0.0f;
+
+    event_queue_push_sfx(events, SFX_BOSS_ARRIVED);
+}
+
+/* Deterministic (unlike the orb's coin flip): a boss appears once
+ * gs->score_since_last_boss reaches BOSS_SCORE_STEP - a counter that
+ * resets to zero on every appearance (see spawn_boss) and only resumes
+ * counting once the current boss is defeated, so each one always takes a
+ * full fresh BOSS_SCORE_STEP of points to bring in, never less. */
+static void maybe_trigger_boss_spawn(GameState *gs, EventQueue *events) {
+    if (gs->boss.alive) return;
+    if (gs->score_since_last_boss < BOSS_SCORE_STEP) return;
+    spawn_boss(gs, events);
+}
+
+/* The single place gs->score is allowed to change, so every threshold
+ * effect tied to score (laser recolor, orb drops, boss arrivals) reacts
+ * identically no matter which gameplay path earned the points. */
+static void apply_score_delta(GameState *gs, EventQueue *events, int delta) {
     int old_score = gs->score;
-    float mult = difficulty_score_multiplier(gs->score);
-    gs->score += (int)((float)SCORE_PER_KILL * mult);
+    gs->score += delta;
+    gs->score_since_last_boss += delta;
 
     if (gs->score / LASER_COLOR_SCORE_STEP > old_score / LASER_COLOR_SCORE_STEP) {
         gs->player.laser_color = random_vivid_color();
     }
     maybe_trigger_orb_spawn(gs, old_score, gs->score);
+    maybe_trigger_boss_spawn(gs, events);
+}
+
+/* Shared by both ways the boss can take a hit (a direct laser shot, and
+ * the super beam touching it) so the defeat/bonus/event logic can't drift
+ * out of sync between the two. */
+static void damage_boss(GameState *gs, EventQueue *events) {
+    Boss *b = &gs->boss;
+    b->hits_taken++;
+    if (b->hits_taken >= b->hits_required) {
+        spawn_explosion(gs, b->x, b->y, b->size * 1.4f);
+        int bonus = b->hits_required * BOSS_KILL_SCORE_MULTIPLIER;
+        b->alive = false;
+        apply_score_delta(gs, events, bonus);
+        event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
+    } else {
+        event_queue_push_sfx(events, SFX_BOSS_HIT);
+    }
+}
+
+/* Shared by both ways an enemy can be destroyed for points (direct laser
+ * hit, and the super beam sweeping over it) so every score-triggered
+ * effect stays in sync between the two. */
+static void destroy_enemy_for_score(GameState *gs, EventQueue *events, Enemy *e) {
+    e->alive = false;
+    spawn_explosion(gs, e->x, e->y, e->size);
+
+    float mult = difficulty_score_multiplier(gs->score);
+    apply_score_delta(gs, events, (int)((float)SCORE_PER_KILL * mult));
 
     event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
 }
@@ -133,12 +218,44 @@ static void update_orb(GameState *gs, float dt) {
     }
 }
 
+/* A game of tag: the boss relentlessly closes in on the player's exact,
+ * current position at a constant speed, every frame, with no idle state
+ * and no waypoint it can "arrive at" and stop - if it ever isn't touching
+ * the player, it is moving directly toward them. */
+static void update_boss(GameState *gs, float dt) {
+    Boss *b = &gs->boss;
+    if (!b->alive) return;
+
+    if (b->beam_contact_timer > 0.0f) b->beam_contact_timer -= dt;
+
+    /* No boundary clamp: the boss always steps directly toward the
+     * player's exact position, capped so it can't overshoot past it (see
+     * below), and the player's own position is always kept on-screen by
+     * update_player - so the boss's target is always valid and clamping
+     * the boss separately only gets in the way (it used to cap the boss
+     * short of a player standing near the bottom margin, making it look
+     * like the boss had simply stopped chasing). */
+    float speed = scaled(gs, PLAYER_SPEED) * BOSS_SPEED_MULTIPLIER;
+    float dx = gs->player.x - b->x;
+    float dy = gs->player.y - b->y;
+    float dist = sqrtf(dx * dx + dy * dy);
+    if (dist > 0.0001f) {
+        float step = speed * dt;
+        if (step > dist) step = dist; /* don't overshoot past the player */
+        b->x += dx / dist * step;
+        b->y += dy / dist * step;
+    }
+}
+
 static void reset_run(GameState *gs) {
     memset(&gs->enemies, 0, sizeof(gs->enemies));
     memset(&gs->player_shots, 0, sizeof(gs->player_shots));
     memset(&gs->enemy_shots, 0, sizeof(gs->enemy_shots));
     memset(&gs->explosions, 0, sizeof(gs->explosions));
     memset(&gs->orb, 0, sizeof(gs->orb));
+    memset(&gs->boss, 0, sizeof(gs->boss));
+    gs->boss_count = 0;
+    gs->score_since_last_boss = 0;
 
     gs->player.x = (float)gs->screen_w / 2.0f;
     gs->player.y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
@@ -248,7 +365,7 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
     p->y += dy * speed * dt;
 
     float half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
-    float min_y = (float)gs->screen_h * PLAYER_MIN_Y_RATIO;
+    float min_y = scaled(gs, PLAYER_HEIGHT) / 2.0f; /* free to roam the whole screen, not just the lower band */
     float max_y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
     if (p->x < half_w) p->x = half_w;
     if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
@@ -282,7 +399,13 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
  * every frame, for its whole duration. */
 static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
     Player *p = &gs->player;
-    if (p->super_beam_timer <= 0.0f) return;
+    if (p->super_beam_timer <= 0.0f) {
+        /* Not active: make sure a later reactivation always deals damage
+         * instantly, regardless of where the boss was sitting when this
+         * beam session ended. */
+        gs->boss.beam_contact_timer = 0.0f;
+        return;
+    }
 
     p->super_beam_timer -= dt;
     if (p->super_beam_timer < 0.0f) p->super_beam_timer = 0.0f;
@@ -306,6 +429,19 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
         float pr_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
         if (fabsf(pr->x - p->x) <= beam_half_w + pr_half_w) {
             pr->alive = false;
+        }
+    }
+
+    if (gs->boss.alive) {
+        bool boss_in_beam = gs->boss.y < p->y &&
+                             fabsf(gs->boss.x - p->x) <= beam_half_w + gs->boss.size / 2.0f;
+        if (boss_in_beam) {
+            if (gs->boss.beam_contact_timer <= 0.0f) {
+                damage_boss(gs, events);
+                gs->boss.beam_contact_timer = BEAM_BOSS_HIT_INTERVAL;
+            }
+        } else {
+            gs->boss.beam_contact_timer = 0.0f;
         }
     }
 }
@@ -342,6 +478,8 @@ static void update_enemies(GameState *gs, float dt) {
                 pr->vx = 0.0f;
                 pr->vy = scaled(gs, ENEMY_PROJECTILE_SPEED);
                 pr->color = e->color;
+                pr->inert = false; /* slot may have been left inert by a past boss fight */
+                pr->inert_age = 0.0f;
                 break;
             }
         }
@@ -364,6 +502,15 @@ static void update_projectiles(GameState *gs, float dt) {
         if (!pr->alive) continue;
         pr->x += pr->vx * dt;
         pr->y += pr->vy * dt;
+
+        if (pr->inert) {
+            pr->inert_age += dt;
+            if (pr->inert_age >= ENEMY_SHOT_FADE_DURATION) {
+                pr->alive = false;
+                continue;
+            }
+        }
+
         if (pr->y > (float)gs->screen_h + enemy_shot_h) pr->alive = false;
     }
 }
@@ -419,12 +566,56 @@ static void check_collisions(GameState *gs, EventQueue *events) {
     if (gs->player.alive) {
         for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
             Projectile *pr = &gs->enemy_shots[i];
-            if (!pr->alive) continue;
+            if (!pr->alive || pr->inert) continue; /* inert = fading out after a boss arrived; harmless */
             if (collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
                                         gs->player.x, gs->player.y, player_half_w, player_half_h)) {
                 pr->alive = false;
                 kill_player(gs, events);
                 break;
+            }
+        }
+    }
+
+    if (gs->boss.alive) {
+        float boss_half = gs->boss.size / 2.0f;
+
+        /* The player's laser chips away at the boss's hit pool. */
+        for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+            Projectile *pr = &gs->player_shots[i];
+            if (!pr->alive) continue;
+            if (!collision_aabb_overlap(pr->x, pr->y, player_shot_half_w, player_shot_half_h,
+                                         gs->boss.x, gs->boss.y, boss_half, boss_half)) {
+                continue;
+            }
+            pr->alive = false;
+            damage_boss(gs, events);
+            break;
+        }
+
+        /* The boss doesn't shoot - it rams the player instead. Its
+         * visible danger ring (drawn at BOSS_MENACE_RING_RATIO * size in
+         * adapters/sdl_renderer.c - the two share that constant so they
+         * can never drift apart) detonates on the very first touch: the
+         * boss explodes, and that explosion takes the player with it.
+         *
+         * The boss's own detonation is UNCONDITIONAL - deliberately not
+         * gated on the player being killable. Gating it caused a
+         * permanent stalemate: an invulnerable player (god mode, or an
+         * active super beam) would have the boss glue itself to them at
+         * zero distance forever with nothing happening at all. Only the
+         * player's death is conditional, and kill_player already applies
+         * those immunity rules itself.
+         *
+         * Re-check gs->boss.alive since the laser loop above may have
+         * just defeated it this same frame. */
+        if (gs->boss.alive && gs->player.alive) {
+            float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
+            float player_radius = fmaxf(player_half_w, player_half_h);
+            if (within_radius(gs->player.x, gs->player.y, gs->boss.x, gs->boss.y, ring_radius + player_radius)) {
+                spawn_explosion(gs, gs->boss.x, gs->boss.y, gs->boss.size * 1.4f);
+                gs->boss.alive = false;
+                event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
+                kill_player(gs, events);
             }
         }
     }
@@ -483,8 +674,9 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     }
 
     update_player(gs, input, dt, events);
-    spawner_update(gs, dt);
+    if (!gs->boss.alive) spawner_update(gs, dt); /* no ordinary spawns during a boss fight */
     update_enemies(gs, dt);
+    update_boss(gs, dt);
     update_orb(gs, dt);
     update_projectiles(gs, dt);
     update_super_beam(gs, dt, events);

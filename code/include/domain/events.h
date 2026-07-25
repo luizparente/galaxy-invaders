@@ -17,6 +17,9 @@ typedef enum SfxId {
     SFX_MENU_SELECT,
     SFX_ORB_CAPTURED,
     SFX_ORB_DESTROYED,
+    SFX_BOSS_ARRIVED,
+    SFX_BOSS_HIT,
+    SFX_BOSS_DEFEATED,
 } SfxId;
 
 typedef enum GameEventType {

@@ -223,6 +223,18 @@ static void sdl_audio_play_sfx(void *self, SfxId sfx) {
             trigger_voice(ctx, VOICE_SINE_SWEEP, 650.0, 140.0, 0.15, 0.55);
             trigger_voice(ctx, VOICE_SNARE_NOISE, 0.0, 0.0, 0.12, 0.45);
             break;
+        case SFX_BOSS_ARRIVED:
+            trigger_voice(ctx, VOICE_SINE_SWEEP, 800.0, 120.0, 0.45, 0.75);
+            trigger_voice(ctx, VOICE_KICK, 140.0, 35.0, 0.20, 0.6);
+            break;
+        case SFX_BOSS_HIT:
+            trigger_voice(ctx, VOICE_SQUARE_BEEP, 260.0, 200.0, 0.04, 0.35);
+            break;
+        case SFX_BOSS_DEFEATED:
+            trigger_voice(ctx, VOICE_SINE_SWEEP, 150.0, 900.0, 0.4, 0.75);
+            trigger_voice(ctx, VOICE_SNARE_NOISE, 0.0, 0.0, 0.3, 0.5);
+            trigger_voice(ctx, VOICE_KICK, 160.0, 40.0, 0.25, 0.6);
+            break;
     }
     SDL_UnlockAudioDevice(ctx->device);
 }

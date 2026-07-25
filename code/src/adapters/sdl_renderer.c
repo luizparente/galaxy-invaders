@@ -38,10 +38,15 @@ static Color lerp_color(Color a, Color b, float t) {
 
 static void draw_stars(SdlRendererCtx *ctx, const GameState *gs) {
     float dot = 2.0f * gs->scale;
+    bool danger = gs->boss.alive;
     for (int i = 0; i < MAX_STARS; i++) {
         const Star *s = &gs->stars[i];
         unsigned char b = s->brightness;
-        gp_fill_rect(ctx->renderer, s->x, s->y, dot, dot, (Color){b, b, b, 255});
+        /* Same brightness-driven twinkle either way - only the primary
+         * color channel changes, from white to a dark red, while a boss
+         * is on screen. */
+        Color c = danger ? (Color){b, 0, 0, 255} : (Color){b, b, b, 255};
+        gp_fill_rect(ctx->renderer, s->x, s->y, dot, dot, c);
     }
 }
 
@@ -86,27 +91,47 @@ static void draw_player(SdlRendererCtx *ctx, const Player *p, float scale) {
     gp_fill_circle(ctx->renderer, p->x, p->y + half_h - 1.0f * scale, 3.0f * scale, kEngineGlow);
 }
 
+/* Shared by draw_enemy and draw_boss: the boss presents as "a randomly
+ * picked enemy" at a much larger size, so it's the same two shape
+ * variants just drawn at whatever size/color/shape the caller gives it. */
+static void draw_monster_shape(SdlRendererCtx *ctx, float x, float y, float size, Color color, EnemyShape shape) {
+    float half = size / 2.0f;
+    Color dark = lerp_color(color, (Color){0, 0, 0, 255}, 0.55f);
+
+    if (shape == ENEMY_SHAPE_INVADER) {
+        gp_fill_triangle(ctx->renderer, x, y - half, x - half, y + half * 0.25f,
+                          x + half, y + half * 0.25f, color);
+        for (int k = -1; k <= 1; k++) {
+            gp_fill_rect(ctx->renderer, x + (float)k * half * 0.5f - half * 0.06f, y + half * 0.25f,
+                         half * 0.12f, half * 0.7f, color);
+        }
+        gp_fill_circle(ctx->renderer, x - half * 0.3f, y - half * 0.1f, half * 0.16f, dark);
+        gp_fill_circle(ctx->renderer, x + half * 0.3f, y - half * 0.1f, half * 0.16f, dark);
+    } else {
+        gp_fill_ellipse(ctx->renderer, x, y, half, half * 0.55f, color);
+        gp_fill_circle(ctx->renderer, x, y - half * 0.25f, half * 0.45f, lerp_color(color, kWhite, 0.35f));
+        gp_fill_circle(ctx->renderer, x - half * 0.35f, y + half * 0.05f, half * 0.14f, dark);
+        gp_fill_circle(ctx->renderer, x + half * 0.35f, y + half * 0.05f, half * 0.14f, dark);
+    }
+}
+
 static void draw_enemy(SdlRendererCtx *ctx, const Enemy *e) {
     if (!e->alive) return;
-    float half = e->size / 2.0f;
-    Color dark = lerp_color(e->color, (Color){0, 0, 0, 255}, 0.55f);
+    draw_monster_shape(ctx, e->x, e->y, e->size, e->color, e->shape);
+}
 
-    if (e->shape == ENEMY_SHAPE_INVADER) {
-        gp_fill_triangle(ctx->renderer, e->x, e->y - half, e->x - half, e->y + half * 0.25f,
-                          e->x + half, e->y + half * 0.25f, e->color);
-        for (int k = -1; k <= 1; k++) {
-            gp_fill_rect(ctx->renderer, e->x + (float)k * half * 0.5f - half * 0.06f, e->y + half * 0.25f,
-                         half * 0.12f, half * 0.7f, e->color);
-        }
-        gp_fill_circle(ctx->renderer, e->x - half * 0.3f, e->y - half * 0.1f, half * 0.16f, dark);
-        gp_fill_circle(ctx->renderer, e->x + half * 0.3f, e->y - half * 0.1f, half * 0.16f, dark);
-    } else {
-        gp_fill_ellipse(ctx->renderer, e->x, e->y, half, half * 0.55f, e->color);
-        gp_fill_circle(ctx->renderer, e->x, e->y - half * 0.25f, half * 0.45f,
-                        lerp_color(e->color, kWhite, 0.35f));
-        gp_fill_circle(ctx->renderer, e->x - half * 0.35f, e->y + half * 0.05f, half * 0.14f, dark);
-        gp_fill_circle(ctx->renderer, e->x + half * 0.35f, e->y + half * 0.05f, half * 0.14f, dark);
-    }
+static void draw_boss(SdlRendererCtx *ctx, const Boss *b) {
+    if (!b->alive) return;
+    draw_monster_shape(ctx, b->x, b->y, b->size, b->color, b->shape);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    /* This ring IS the fatal contact boundary (see check_collisions in
+     * usecases/game_logic.c, which reads the exact same
+     * BOSS_MENACE_RING_RATIO) - drawn boldly since touching it is
+     * instant death for both the boss and the player. */
+    Color menace = (Color){255, 30, 30, 200};
+    float ring_radius = b->size * BOSS_MENACE_RING_RATIO;
+    gp_draw_circle_outline(ctx->renderer, b->x, b->y, ring_radius, menace);
+    gp_draw_circle_outline(ctx->renderer, b->x, b->y, ring_radius - 1.0f, menace);
 }
 
 static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_player, float scale) {
@@ -116,12 +141,19 @@ static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_p
         float h = PLAYER_PROJECTILE_H * scale;
         gp_fill_rect(ctx->renderer, pr->x - w / 2.0f, pr->y - h / 2.0f, w, h, pr->color);
     } else {
+        Color color = pr->color;
+        if (pr->inert) {
+            float fade = 1.0f - pr->inert_age / ENEMY_SHOT_FADE_DURATION;
+            if (fade < 0.0f) fade = 0.0f;
+            color.a = (unsigned char)(255.0f * fade);
+            SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+        }
         float w = ENEMY_PROJECTILE_W * scale;
         float h = ENEMY_PROJECTILE_H * scale;
         float half = w / 2.0f;
         gp_fill_triangle(ctx->renderer, pr->x, pr->y + h / 2.0f,
                           pr->x - half, pr->y - h / 2.0f,
-                          pr->x + half, pr->y - h / 2.0f, pr->color);
+                          pr->x + half, pr->y - h / 2.0f, color);
     }
 }
 
@@ -192,6 +224,7 @@ static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
 
 static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMIES; i++) draw_enemy(ctx, &gs->enemies[i]);
+    draw_boss(ctx, &gs->boss);
     draw_orb(ctx, &gs->orb);
     for (int i = 0; i < MAX_EXPLOSIONS; i++) draw_explosion(ctx, &gs->explosions[i]);
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) draw_projectile(ctx, &gs->player_shots[i], true, gs->scale);
@@ -219,6 +252,13 @@ static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
         float score_line_height = 7.0f * size; /* the pixel font is 7 dots tall */
         pf_draw_text(ctx->renderer, (float)gs->screen_w - beam_w - margin,
                      margin + score_line_height + margin * 0.4f, beam_size, c, beam_buf);
+    }
+
+    if (gs->boss.alive) {
+        char boss_buf[32];
+        snprintf(boss_buf, sizeof(boss_buf), "BOSS %d/%d", gs->boss.hits_taken, gs->boss.hits_required);
+        float boss_size = 2.6f * gs->scale;
+        pf_draw_text(ctx->renderer, margin, margin, boss_size, kRed, boss_buf);
     }
 }
 
