@@ -12,16 +12,14 @@ static float frand01(void) {
     return (float)rand() / (float)RAND_MAX;
 }
 
-#define LASER_COLOR_SCORE_STEP 100
+static bool within_radius(float ax, float ay, float bx, float by, float r) {
+    float dx = ax - bx, dy = ay - by;
+    return dx * dx + dy * dy <= r * r;
+}
 
 static const Color kDefaultLaserColor = {255, 240, 120, 255};
 
-/* A random fully-saturated hue, so each reroll is clearly a different
- * color rather than a subtle tint of the last one. */
-static Color random_vivid_color(void) {
-    float h = frand01() * 360.0f;
-    float s = 0.75f + frand01() * 0.25f;
-    float v = 0.9f + frand01() * 0.1f;
+static Color hsv_to_rgb(float h, float s, float v) {
     float c = v * s;
     float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
     float m = v - c;
@@ -39,6 +37,15 @@ static Color random_vivid_color(void) {
         (unsigned char)((b1 + m) * 255.0f),
         255,
     };
+}
+
+/* A random fully-saturated hue, so each reroll is clearly a different
+ * color rather than a subtle tint of the last one. */
+static Color random_vivid_color(void) {
+    float h = frand01() * 360.0f;
+    float s = 0.75f + frand01() * 0.25f;
+    float v = 0.9f + frand01() * 0.1f;
+    return hsv_to_rgb(h, s, v);
 }
 
 /* Every spatial constant in domain/constants.h is tuned at DESIGN_W x
@@ -84,17 +91,81 @@ static void spawn_explosion(GameState *gs, float x, float y, float max_radius) {
     }
 }
 
+static void spawn_orb(GameState *gs) {
+    Orb *o = &gs->orb;
+    o->alive = true;
+    o->size = scaled(gs, ORB_SIZE);
+    o->x = o->size * 0.5f + frand01() * ((float)gs->screen_w - o->size);
+    o->y = -o->size;
+    o->hue = frand01() * 360.0f;
+    o->wobble_phase = frand01() * 6.2831853f;
+    o->color = hsv_to_rgb(o->hue, 0.9f, 1.0f);
+}
+
+/* Called right after gs->score changes. Every ORB_SCORE_STEP crossed has a
+ * coin-flip chance of dropping a new orb, but only if the last one has
+ * already been resolved (captured, shot, or fallen off the bottom). */
+static void maybe_trigger_orb_spawn(GameState *gs, int old_score, int new_score) {
+    if (gs->orb.alive) return;
+    if (new_score / ORB_SCORE_STEP <= old_score / ORB_SCORE_STEP) return;
+    if (frand01() < ORB_SPAWN_CHANCE) spawn_orb(gs);
+}
+
+/* Shared by both ways an enemy can be destroyed for points (direct laser
+ * hit, and the super beam sweeping over it) so the laser-recolor and
+ * orb-spawn threshold checks never drift out of sync between the two. */
+static void destroy_enemy_for_score(GameState *gs, EventQueue *events, Enemy *e) {
+    e->alive = false;
+    spawn_explosion(gs, e->x, e->y, e->size);
+
+    int old_score = gs->score;
+    float mult = difficulty_score_multiplier(gs->score);
+    gs->score += (int)((float)SCORE_PER_KILL * mult);
+
+    if (gs->score / LASER_COLOR_SCORE_STEP > old_score / LASER_COLOR_SCORE_STEP) {
+        gs->player.laser_color = random_vivid_color();
+    }
+    maybe_trigger_orb_spawn(gs, old_score, gs->score);
+
+    event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
+}
+
+static void update_orb(GameState *gs, float dt) {
+    Orb *o = &gs->orb;
+    if (!o->alive) return;
+
+    o->hue += ORB_HUE_CYCLE_SPEED * dt;
+    if (o->hue >= 360.0f) o->hue -= 360.0f;
+    o->color = hsv_to_rgb(o->hue, 0.9f, 1.0f);
+
+    o->wobble_phase += dt * ORB_DRIFT_ANGULAR_SPEED;
+    float drift = scaled(gs, ORB_DRIFT_SPEED);
+    float fall = scaled(gs, ORB_FALL_SPEED);
+    o->x += cosf(o->wobble_phase * 0.8f) * drift * dt;
+    o->y += (fall + sinf(o->wobble_phase) * drift * 0.35f) * dt;
+
+    float half = o->size / 2.0f;
+    if (o->x < half) o->x = half;
+    if (o->x > (float)gs->screen_w - half) o->x = (float)gs->screen_w - half;
+
+    if (o->y - half > (float)gs->screen_h) {
+        o->alive = false; /* fell off the bottom, unclaimed */
+    }
+}
+
 static void reset_run(GameState *gs) {
     memset(&gs->enemies, 0, sizeof(gs->enemies));
     memset(&gs->player_shots, 0, sizeof(gs->player_shots));
     memset(&gs->enemy_shots, 0, sizeof(gs->enemy_shots));
     memset(&gs->explosions, 0, sizeof(gs->explosions));
+    memset(&gs->orb, 0, sizeof(gs->orb));
 
     gs->player.x = (float)gs->screen_w / 2.0f;
     gs->player.y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
     gs->player.alive = true;
     gs->player.fire_cooldown = 0.0f;
     gs->player.laser_color = kDefaultLaserColor;
+    gs->player.super_beam_timer = 0.0f;
 
     gs->score = 0;
     gs->time_elapsed = 0.0f;
@@ -201,7 +272,9 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
 
     if (p->fire_cooldown > 0.0f) p->fire_cooldown -= dt;
 
-    if (input->fire_held && p->fire_cooldown <= 0.0f) {
+    /* While the super beam is active it replaces normal shots entirely -
+     * see update_super_beam, which fires automatically every frame. */
+    if (input->fire_held && p->fire_cooldown <= 0.0f && p->super_beam_timer <= 0.0f) {
         for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
             Projectile *pr = &gs->player_shots[i];
             if (pr->alive) continue;
@@ -214,6 +287,40 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
             p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
             event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
             break;
+        }
+    }
+}
+
+/* The super beam is a continuous column running from the ship straight up
+ * to the top of the screen. While active it needs no fire input: it just
+ * sweeps every enemy and enemy projectile inside its width off the board,
+ * every frame, for its whole duration. */
+static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->super_beam_timer <= 0.0f) return;
+
+    p->super_beam_timer -= dt;
+    if (p->super_beam_timer < 0.0f) p->super_beam_timer = 0.0f;
+    if (!p->alive) return;
+
+    float beam_half_w = scaled(gs, PLAYER_PROJECTILE_W) * SUPER_BEAM_WIDTH_MULTIPLIER / 2.0f;
+
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (!e->alive) continue;
+        if (e->y >= p->y) continue;
+        if (fabsf(e->x - p->x) <= beam_half_w + e->size / 2.0f) {
+            destroy_enemy_for_score(gs, events, e);
+        }
+    }
+
+    for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+        Projectile *pr = &gs->enemy_shots[i];
+        if (!pr->alive) continue;
+        if (pr->y >= p->y) continue;
+        float pr_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
+        if (fabsf(pr->x - p->x) <= beam_half_w + pr_half_w) {
+            pr->alive = false;
         }
     }
 }
@@ -304,15 +411,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             if (collision_aabb_overlap(pr->x, pr->y, player_shot_half_w, player_shot_half_h,
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                 pr->alive = false;
-                e->alive = false;
-                spawn_explosion(gs, e->x, e->y, e->size);
-                float mult = difficulty_score_multiplier(gs->score);
-                int old_score = gs->score;
-                gs->score += (int)((float)SCORE_PER_KILL * mult);
-                if (gs->score / LASER_COLOR_SCORE_STEP > old_score / LASER_COLOR_SCORE_STEP) {
-                    gs->player.laser_color = random_vivid_color();
-                }
-                event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
+                destroy_enemy_for_score(gs, events, e);
                 break;
             }
         }
@@ -344,6 +443,50 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             }
         }
     }
+
+    if (gs->orb.alive) {
+        float orb_half = gs->orb.size / 2.0f;
+
+        /* Shooting the orb: it detonates and neutralizes nearby enemies,
+         * but does not grant the super beam. */
+        for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+            Projectile *pr = &gs->player_shots[i];
+            if (!pr->alive) continue;
+            if (!collision_aabb_overlap(pr->x, pr->y, player_shot_half_w, player_shot_half_h,
+                                         gs->orb.x, gs->orb.y, orb_half, orb_half)) {
+                continue;
+            }
+
+            pr->alive = false;
+            gs->orb.alive = false;
+            spawn_explosion(gs, gs->orb.x, gs->orb.y, gs->orb.size * 1.8f);
+
+            float neutralize_radius = scaled(gs, ORB_EXPLOSION_RADIUS);
+            for (int j = 0; j < MAX_ENEMIES; j++) {
+                Enemy *e = &gs->enemies[j];
+                if (!e->alive) continue;
+                if (within_radius(e->x, e->y, gs->orb.x, gs->orb.y, neutralize_radius)) {
+                    e->alive = false;
+                    spawn_explosion(gs, e->x, e->y, e->size);
+                }
+            }
+            event_queue_push_sfx(events, SFX_ORB_DESTROYED);
+            break;
+        }
+    }
+
+    /* Capturing the orb (the ship physically touching it) grants the
+     * super beam - re-check gs->orb.alive since the loop above may have
+     * just detonated it this same frame. */
+    if (gs->orb.alive && gs->player.alive) {
+        float orb_half = gs->orb.size / 2.0f;
+        if (collision_aabb_overlap(gs->player.x, gs->player.y, player_half_w, player_half_h,
+                                    gs->orb.x, gs->orb.y, orb_half, orb_half)) {
+            gs->orb.alive = false;
+            gs->player.super_beam_timer = SUPER_BEAM_DURATION;
+            event_queue_push_sfx(events, SFX_ORB_CAPTURED);
+        }
+    }
 }
 
 static void update_running(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
@@ -352,7 +495,9 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     update_player(gs, input, dt, events);
     spawner_update(gs, dt);
     update_enemies(gs, dt);
+    update_orb(gs, dt);
     update_projectiles(gs, dt);
+    update_super_beam(gs, dt, events);
     update_explosions(gs, dt);
     check_collisions(gs, events);
 }

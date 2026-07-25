@@ -142,11 +142,48 @@ static void draw_explosion(SdlRendererCtx *ctx, const Explosion *e) {
     }
 }
 
+static void draw_orb(SdlRendererCtx *ctx, const Orb *o) {
+    if (!o->alive) return;
+    float r = o->size / 2.0f;
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    Color glow = o->color;
+    glow.a = 90;
+    gp_fill_circle(ctx->renderer, o->x, o->y, r * 1.6f, glow);
+
+    gp_fill_circle(ctx->renderer, o->x, o->y, r, o->color);
+    gp_draw_circle_outline(ctx->renderer, o->x, o->y, r, lerp_color(o->color, kWhite, 0.5f));
+
+    Color highlight = lerp_color(o->color, kWhite, 0.75f);
+    gp_fill_circle(ctx->renderer, o->x - r * 0.3f, o->y - r * 0.3f, r * 0.35f, highlight);
+}
+
+static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
+    const Player *p = &gs->player;
+    if (p->super_beam_timer <= 0.0f || !p->alive) return;
+
+    float beam_w = PLAYER_PROJECTILE_W * gs->scale * SUPER_BEAM_WIDTH_MULTIPLIER;
+    float top = p->y - PLAYER_HEIGHT * gs->scale / 2.0f;
+    float pulse = 0.75f + 0.25f * sinf(gs->time_elapsed * 18.0f);
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
+    Color glow = lerp_color(p->laser_color, kWhite, 0.2f);
+    glow.a = (unsigned char)(70.0f * pulse);
+    gp_fill_rect(ctx->renderer, p->x - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
+
+    Color core = lerp_color(p->laser_color, kWhite, 0.6f);
+    core.a = (unsigned char)(235.0f * pulse);
+    gp_fill_rect(ctx->renderer, p->x - beam_w / 2.0f, 0.0f, beam_w, top, core);
+}
+
 static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMIES; i++) draw_enemy(ctx, &gs->enemies[i]);
+    draw_orb(ctx, &gs->orb);
     for (int i = 0; i < MAX_EXPLOSIONS; i++) draw_explosion(ctx, &gs->explosions[i]);
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) draw_projectile(ctx, &gs->player_shots[i], true, gs->scale);
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, &gs->enemy_shots[i], false, gs->scale);
+    draw_super_beam(ctx, gs);
     draw_player(ctx, &gs->player, gs->scale);
 }
 
@@ -157,6 +194,18 @@ static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
     float margin = 12.0f * gs->scale;
     float w = pf_text_width(buf, size);
     pf_draw_text(ctx->renderer, (float)gs->screen_w - w - margin, margin, size, kWhite, buf);
+
+    if (gs->player.super_beam_timer > 0.0f) {
+        char beam_buf[24];
+        snprintf(beam_buf, sizeof(beam_buf), "SUPER BEAM %.1fs", (double)gs->player.super_beam_timer);
+        float beam_size = 2.2f * gs->scale;
+        float beam_w = pf_text_width(beam_buf, beam_size);
+        float pulse = 0.7f + 0.3f * sinf(gs->time_elapsed * 12.0f);
+        Color c = lerp_color(gs->player.laser_color, kWhite, pulse);
+        float score_line_height = 7.0f * size; /* the pixel font is 7 dots tall */
+        pf_draw_text(ctx->renderer, (float)gs->screen_w - beam_w - margin,
+                     margin + score_line_height + margin * 0.4f, beam_size, c, beam_buf);
+    }
 }
 
 static void draw_centered(SdlRendererCtx *ctx, const GameState *gs, const char *text, float y, float size, Color c) {

@@ -216,6 +216,13 @@ static void sdl_audio_play_sfx(void *self, SfxId sfx) {
         case SFX_MENU_SELECT:
             trigger_voice(ctx, VOICE_SQUARE_BEEP, 400.0, 400.0, 0.05, 0.4);
             break;
+        case SFX_ORB_CAPTURED:
+            trigger_voice(ctx, VOICE_SINE_SWEEP, 500.0, 1100.0, 0.25, 0.7);
+            break;
+        case SFX_ORB_DESTROYED:
+            trigger_voice(ctx, VOICE_SINE_SWEEP, 650.0, 140.0, 0.15, 0.55);
+            trigger_voice(ctx, VOICE_SNARE_NOISE, 0.0, 0.0, 0.12, 0.45);
+            break;
     }
     SDL_UnlockAudioDevice(ctx->device);
 }

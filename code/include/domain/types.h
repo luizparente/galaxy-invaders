@@ -29,6 +29,7 @@ typedef struct Player {
     bool alive;
     float fire_cooldown;
     Color laser_color;
+    float super_beam_timer; /* seconds remaining; 0 = inactive */
 } Player;
 
 typedef enum EnemyShape {
@@ -68,6 +69,17 @@ typedef struct Star {
     unsigned char brightness;
 } Star;
 
+/* A rare falling power-up. Captured by the player's ship it grants the
+ * super beam; shot by the player's laser it just detonates. */
+typedef struct Orb {
+    bool alive;
+    float x, y;
+    float size;
+    float hue; /* degrees, 0-360; drives the cycling gradient color below */
+    float wobble_phase;
+    Color color;
+} Orb;
+
 typedef struct GameState {
     GameStateId state;
     PauseSelection pause_selection;
@@ -85,6 +97,7 @@ typedef struct GameState {
     Projectile enemy_shots[MAX_ENEMY_PROJECTILES];
     Explosion explosions[MAX_EXPLOSIONS];
     Star stars[MAX_STARS];
+    Orb orb;
 
     int score;
     int last_game_score;

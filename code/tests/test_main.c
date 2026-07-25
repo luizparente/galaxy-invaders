@@ -241,6 +241,151 @@ static void test_laser_color_changes_every_100_points(void) {
     printf("test_laser_color_changes_every_100_points OK\n");
 }
 
+static void test_orb_capture_grants_super_beam(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    gs.orb.alive = true;
+    gs.orb.x = gs.player.x;
+    gs.orb.y = gs.player.y;
+    gs.orb.size = 20.0f;
+
+    assert(gs.player.super_beam_timer <= 0.0f);
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.orb.alive);
+    assert(fabsf(gs.player.super_beam_timer - SUPER_BEAM_DURATION) < 0.01f);
+    printf("test_orb_capture_grants_super_beam OK\n");
+}
+
+static void test_super_beam_neutralizes_without_normal_fire(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y - 100.0f;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.x;
+    gs.enemy_shots[0].y = gs.player.y - 50.0f;
+    gs.enemy_shots[0].vy = 0.0f;
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    int score_before = gs.score;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    assert(!gs.enemies[0].alive);
+    assert(!gs.enemy_shots[0].alive);
+    assert(gs.score > score_before);
+    assert(gs.player.super_beam_timer > 0.0f && gs.player.super_beam_timer < SUPER_BEAM_DURATION);
+
+    int alive_player_shots = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) alive_player_shots++;
+    }
+    assert(alive_player_shots == 0);
+    printf("test_super_beam_neutralizes_without_normal_fire OK\n");
+}
+
+static void test_shooting_orb_explodes_without_granting_beam(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    gs.orb.alive = true;
+    gs.orb.x = gs.player.x;
+    gs.orb.y = gs.player.y - PLAYER_HEIGHT / 2.0f - PLAYER_PROJECTILE_H / 2.0f;
+    gs.orb.size = 20.0f;
+
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = gs.orb.x;
+    gs.player_shots[0].y = gs.orb.y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+
+    /* Close enough to be inside the neutralize radius but far enough that
+     * the shot itself doesn't also directly hit it. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.orb.x + 40.0f;
+    gs.enemies[0].y = gs.orb.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    /* Outside the blast radius entirely. */
+    gs.enemies[1].alive = true;
+    gs.enemies[1].x = 30.0f;
+    gs.enemies[1].y = gs.orb.y;
+    gs.enemies[1].size = 20.0f;
+    gs.enemies[1].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.orb.alive);
+    assert(!gs.enemies[0].alive);
+    assert(gs.enemies[1].alive);
+    assert(gs.player.super_beam_timer <= 0.0f);
+    printf("test_shooting_orb_explodes_without_granting_beam OK\n");
+}
+
+static void test_orb_falls_off_screen_when_uncaptured(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    gs.orb.alive = true;
+    gs.orb.x = (float)gs.screen_w / 2.0f;
+    gs.orb.y = 100.0f;
+    gs.orb.size = 20.0f;
+    gs.orb.hue = 0.0f;
+    gs.orb.wobble_phase = 0.0f;
+
+    /* Keep the player well clear so it can't accidentally capture the orb
+     * while it drifts and falls. */
+    gs.player.x = 10.0f;
+
+    InputCommand none = no_input();
+    for (int i = 0; i < 400 && gs.orb.alive; i++) {
+        game_update(&gs, &none, 0.1f, &events);
+        /* This test isolates the orb's own fall-off-bottom behavior; clear
+         * any enemies the spawner produced over this simulated 40s so a
+         * stray one can't end the run (STATE_GAME_OVER would freeze the
+         * orb update entirely, which is a different behavior to test). */
+        for (int j = 0; j < MAX_ENEMIES; j++) gs.enemies[j].alive = false;
+        for (int j = 0; j < MAX_ENEMY_PROJECTILES; j++) gs.enemy_shots[j].alive = false;
+    }
+
+    assert(!gs.orb.alive);
+    assert(gs.player.super_beam_timer <= 0.0f);
+    printf("test_orb_falls_off_screen_when_uncaptured OK\n");
+}
+
+static void test_orb_spawn_chance_is_not_always_or_never(void) {
+    int spawned = 0, not_spawned = 0;
+    for (int trial = 0; trial < 30; trial++) {
+        GameState gs;
+        EventQueue events;
+        start_game(&gs, &events);
+        for (int kill = 0; kill < 20; kill++) kill_one_enemy(&gs, &events); /* 20 * 10 = exactly 200 */
+        if (gs.orb.alive) spawned++;
+        else not_spawned++;
+    }
+    /* With p=0.5 over 30 independent trials, getting all-same is
+     * astronomically unlikely (~2 * 0.5^30) - this is a real assertion
+     * on the branch, not a coin flip in the test itself. */
+    assert(spawned > 0);
+    assert(not_spawned > 0);
+    printf("test_orb_spawn_chance_is_not_always_or_never OK\n");
+}
+
 static void test_spawner_eventually_spawns(void) {
     GameState gs;
     EventQueue events;
@@ -272,6 +417,11 @@ int main(void) {
     test_enemy_kill_scores();
     test_player_enemy_collision_ends_game();
     test_laser_color_changes_every_100_points();
+    test_orb_capture_grants_super_beam();
+    test_super_beam_neutralizes_without_normal_fire();
+    test_shooting_orb_explodes_without_granting_beam();
+    test_orb_falls_off_screen_when_uncaptured();
+    test_orb_spawn_chance_is_not_always_or_never();
     test_spawner_eventually_spawns();
     printf("\nAll tests passed.\n");
     return 0;
