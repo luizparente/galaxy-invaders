@@ -1,0 +1,23 @@
+# Build outputs
+code/build/
+code/galaxy_invaders
+code/tests/test_runner
+
+# Object/debug files
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dSYM/
+*.exe
+*.out
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS cruft
+.DS_Store
