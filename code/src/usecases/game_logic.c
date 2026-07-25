@@ -12,6 +12,35 @@ static float frand01(void) {
     return (float)rand() / (float)RAND_MAX;
 }
 
+#define LASER_COLOR_SCORE_STEP 100
+
+static const Color kDefaultLaserColor = {255, 240, 120, 255};
+
+/* A random fully-saturated hue, so each reroll is clearly a different
+ * color rather than a subtle tint of the last one. */
+static Color random_vivid_color(void) {
+    float h = frand01() * 360.0f;
+    float s = 0.75f + frand01() * 0.25f;
+    float v = 0.9f + frand01() * 0.1f;
+    float c = v * s;
+    float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+    float m = v - c;
+    float r1, g1, b1;
+    if (h < 60.0f) { r1 = c; g1 = x; b1 = 0.0f; }
+    else if (h < 120.0f) { r1 = x; g1 = c; b1 = 0.0f; }
+    else if (h < 180.0f) { r1 = 0.0f; g1 = c; b1 = x; }
+    else if (h < 240.0f) { r1 = 0.0f; g1 = x; b1 = c; }
+    else if (h < 300.0f) { r1 = x; g1 = 0.0f; b1 = c; }
+    else { r1 = c; g1 = 0.0f; b1 = x; }
+
+    return (Color){
+        (unsigned char)((r1 + m) * 255.0f),
+        (unsigned char)((g1 + m) * 255.0f),
+        (unsigned char)((b1 + m) * 255.0f),
+        255,
+    };
+}
+
 /* Every spatial constant in domain/constants.h is tuned at DESIGN_W x
  * DESIGN_H. Multiplying by gs->scale (uniform in x and y) carries that
  * same proportion onto whatever the real screen measures, so shapes grow
@@ -65,6 +94,7 @@ static void reset_run(GameState *gs) {
     gs->player.y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
     gs->player.alive = true;
     gs->player.fire_cooldown = 0.0f;
+    gs->player.laser_color = kDefaultLaserColor;
 
     gs->score = 0;
     gs->time_elapsed = 0.0f;
@@ -180,7 +210,7 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
             pr->y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
             pr->vx = 0.0f;
             pr->vy = -scaled(gs, PLAYER_PROJECTILE_SPEED);
-            pr->color = (Color){255, 240, 120, 255};
+            pr->color = p->laser_color;
             p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
             event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
             break;
@@ -277,7 +307,11 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                 e->alive = false;
                 spawn_explosion(gs, e->x, e->y, e->size);
                 float mult = difficulty_score_multiplier(gs->score);
+                int old_score = gs->score;
                 gs->score += (int)((float)SCORE_PER_KILL * mult);
+                if (gs->score / LASER_COLOR_SCORE_STEP > old_score / LASER_COLOR_SCORE_STEP) {
+                    gs->player.laser_color = random_vivid_color();
+                }
                 event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
                 break;
             }

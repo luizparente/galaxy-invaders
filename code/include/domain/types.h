@@ -28,6 +28,7 @@ typedef struct Player {
     float x, y;
     bool alive;
     float fire_cooldown;
+    Color laser_color;
 } Player;
 
 typedef enum EnemyShape {

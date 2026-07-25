@@ -182,6 +182,65 @@ static void test_player_enemy_collision_ends_game(void) {
     printf("test_player_enemy_collision_ends_game OK\n");
 }
 
+static void kill_one_enemy(GameState *gs, EventQueue *events) {
+    gs->enemies[0].alive = true;
+    gs->enemies[0].x = gs->player.x;
+    gs->enemies[0].y = gs->player.y - PLAYER_HEIGHT / 2.0f - PLAYER_PROJECTILE_H / 2.0f;
+    gs->enemies[0].size = 20.0f;
+    gs->enemies[0].fire_timer = 999.0f;
+
+    gs->player_shots[0].alive = true;
+    gs->player_shots[0].x = gs->enemies[0].x;
+    gs->player_shots[0].y = gs->enemies[0].y;
+    gs->player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+
+    InputCommand none = no_input();
+    game_update(gs, &none, 0.001f, events);
+}
+
+static bool colors_equal(Color a, Color b) {
+    return a.r == b.r && a.g == b.g && a.b == b.b;
+}
+
+static void test_laser_color_changes_every_100_points(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    Color initial = gs.player.laser_color;
+
+    /* Each kill is worth exactly SCORE_PER_KILL (10) below the first score
+     * multiplier step (500), so the 10th kill lands score on exactly 100
+     * and should be the one that rerolls the laser color - not sooner. */
+    for (int kill = 1; kill <= 10; kill++) {
+        Color before = gs.player.laser_color;
+        kill_one_enemy(&gs, &events);
+        assert(gs.score == kill * SCORE_PER_KILL);
+
+        if (kill < 10) {
+            assert(colors_equal(gs.player.laser_color, before));
+        } else {
+            assert(!colors_equal(gs.player.laser_color, before));
+        }
+    }
+
+    assert(!colors_equal(gs.player.laser_color, initial));
+
+    /* The new color actually gets used by the next shot fired. */
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+    bool found_new_color_shot = false;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive && colors_equal(gs.player_shots[i].color, gs.player.laser_color)) {
+            found_new_color_shot = true;
+        }
+    }
+    assert(found_new_color_shot);
+
+    printf("test_laser_color_changes_every_100_points OK\n");
+}
+
 static void test_spawner_eventually_spawns(void) {
     GameState gs;
     EventQueue events;
@@ -212,6 +271,7 @@ int main(void) {
     test_pause_menu_exit_to_menu();
     test_enemy_kill_scores();
     test_player_enemy_collision_ends_game();
+    test_laser_color_changes_every_100_points();
     test_spawner_eventually_spawns();
     printf("\nAll tests passed.\n");
     return 0;
