@@ -20,6 +20,8 @@ static const Color kDim = {120, 120, 140, 255};
 static const Color kRed = {230, 60, 60, 255};
 static const Color kHull = {225, 225, 230, 255};
 static const Color kHullShadow = {170, 170, 180, 255};
+static const Color kGodModeHull = {255, 215, 40, 255};
+static const Color kGodModeHullShadow = {210, 165, 20, 255};
 static const Color kCockpit = {40, 40, 50, 255};
 static const Color kEngineGlow = {255, 160, 40, 255};
 
@@ -58,26 +60,28 @@ static void draw_player(SdlRendererCtx *ctx, const Player *p, float scale) {
 
     float half_w = PLAYER_WIDTH * scale / 2.0f;
     float half_h = PLAYER_HEIGHT * scale / 2.0f;
+    Color hull = p->god_mode ? kGodModeHull : kHull;
+    Color hull_shadow = p->god_mode ? kGodModeHullShadow : kHullShadow;
 
     /* Millennium-Falcon-esque top-down silhouette: a broad flattened hull
      * disc, twin forward mandibles with an off-center gap, an off-center
      * cockpit bump, a couple of panel-line details, and a rear engine
      * glow - all computed geometry, no sprite art. */
-    gp_fill_ellipse(ctx->renderer, p->x, p->y, half_w, half_h, kHull);
+    gp_fill_ellipse(ctx->renderer, p->x, p->y, half_w, half_h, hull);
 
     float mandible_w = half_w * 0.30f;
     float mandible_h = 9.0f * scale;
     gp_fill_rect(ctx->renderer, p->x - half_w * 0.70f, p->y - half_h - mandible_h + 3.0f * scale,
-                 mandible_w, mandible_h, kHull);
+                 mandible_w, mandible_h, hull);
     gp_fill_rect(ctx->renderer, p->x + half_w * 0.15f, p->y - half_h - mandible_h + 3.0f * scale,
-                 mandible_w, mandible_h, kHull);
+                 mandible_w, mandible_h, hull);
 
-    gp_draw_line(ctx->renderer, p->x - half_w * 0.6f, p->y, p->x - 2.0f * scale, p->y - half_h * 0.6f, kHullShadow);
-    gp_draw_line(ctx->renderer, p->x + half_w * 0.6f, p->y, p->x + 2.0f * scale, p->y - half_h * 0.5f, kHullShadow);
+    gp_draw_line(ctx->renderer, p->x - half_w * 0.6f, p->y, p->x - 2.0f * scale, p->y - half_h * 0.6f, hull_shadow);
+    gp_draw_line(ctx->renderer, p->x + half_w * 0.6f, p->y, p->x + 2.0f * scale, p->y - half_h * 0.5f, hull_shadow);
 
     float cockpit_r = 3.2f * scale;
     gp_fill_circle(ctx->renderer, p->x + half_w * 0.32f, p->y - half_h * 0.05f, cockpit_r, kCockpit);
-    gp_draw_circle_outline(ctx->renderer, p->x + half_w * 0.32f, p->y - half_h * 0.05f, cockpit_r, kHullShadow);
+    gp_draw_circle_outline(ctx->renderer, p->x + half_w * 0.32f, p->y - half_h * 0.05f, cockpit_r, hull_shadow);
 
     gp_fill_circle(ctx->renderer, p->x, p->y + half_h - 1.0f * scale, 3.0f * scale, kEngineGlow);
 }

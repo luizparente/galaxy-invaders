@@ -146,6 +146,7 @@ static void reset_run(GameState *gs) {
     gs->player.fire_cooldown = 0.0f;
     gs->player.laser_color = kDefaultLaserColor;
     gs->player.super_beam_timer = 0.0f;
+    gs->player.god_mode = false;
 
     gs->score = 0;
     gs->time_elapsed = 0.0f;
@@ -218,6 +219,7 @@ static void update_game_over(GameState *gs, const InputCommand *input, EventQueu
 static void kill_player(GameState *gs, EventQueue *events) {
     if (!gs->player.alive) return;
     if (gs->player.super_beam_timer > 0.0f) return; /* invincible for the duration of the beam */
+    if (gs->player.god_mode) return; /* invincible until Ctrl+G is pressed again */
     gs->player.alive = false;
     spawn_explosion(gs, gs->player.x, gs->player.y, scaled(gs, PLAYER_WIDTH));
     event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
@@ -474,6 +476,11 @@ static void check_collisions(GameState *gs, EventQueue *events) {
 
 static void update_running(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
     gs->time_elapsed += dt;
+
+    if (input->god_mode_toggle_pressed) {
+        gs->player.god_mode = !gs->player.god_mode;
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+    }
 
     update_player(gs, input, dt, events);
     spawner_update(gs, dt);

@@ -19,6 +19,7 @@ typedef struct InputCommand {
     bool back_pressed;
     bool nav_up_pressed;
     bool nav_down_pressed;
+    bool god_mode_toggle_pressed;
 
     bool quit_requested;
 } InputCommand;

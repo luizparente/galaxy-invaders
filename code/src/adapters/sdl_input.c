@@ -7,6 +7,7 @@ typedef struct SdlInputCtx {
     bool prev_back;
     bool prev_up;
     bool prev_down;
+    bool prev_god_mode_combo;
 } SdlInputCtx;
 
 static void sdl_input_poll(void *self, InputCommand *out) {
@@ -26,6 +27,8 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     bool fire = ks[SDL_SCANCODE_SPACE];
     bool confirm = ks[SDL_SCANCODE_SPACE] || ks[SDL_SCANCODE_RETURN] || ks[SDL_SCANCODE_KP_ENTER];
     bool back = ks[SDL_SCANCODE_ESCAPE];
+    bool ctrl = ks[SDL_SCANCODE_LCTRL] || ks[SDL_SCANCODE_RCTRL];
+    bool god_mode_combo = ctrl && ks[SDL_SCANCODE_G];
 
     out->move_left = left;
     out->move_right = right;
@@ -37,12 +40,14 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     out->back_pressed = back && !ctx->prev_back;
     out->nav_up_pressed = up && !ctx->prev_up;
     out->nav_down_pressed = down && !ctx->prev_down;
+    out->god_mode_toggle_pressed = god_mode_combo && !ctx->prev_god_mode_combo;
     out->quit_requested = quit;
 
     ctx->prev_confirm = confirm;
     ctx->prev_back = back;
     ctx->prev_up = up;
     ctx->prev_down = down;
+    ctx->prev_god_mode_combo = god_mode_combo;
 }
 
 static void sdl_input_destroy(void *self) {

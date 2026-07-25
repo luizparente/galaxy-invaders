@@ -318,6 +318,68 @@ static void test_player_invincible_during_super_beam(void) {
     printf("test_player_invincible_during_super_beam OK\n");
 }
 
+static void test_god_mode_toggles_on_and_off(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    assert(!gs.player.god_mode);
+
+    /* god_mode_toggle_pressed is edge-triggered by contract (the input
+     * adapter debounces it, see adapters/sdl_input.c); game_logic just
+     * flips state whenever it sees the flag true, so each call here
+     * represents one distinct key-press edge, not a held key. */
+    InputCommand toggle = no_input();
+    toggle.god_mode_toggle_pressed = true;
+    game_update(&gs, &toggle, 0.016f, &events);
+    assert(gs.player.god_mode);
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.016f, &events);
+    assert(gs.player.god_mode); /* stays on with no further presses */
+
+    game_update(&gs, &toggle, 0.016f, &events);
+    assert(!gs.player.god_mode); /* second press edge turns it back off */
+
+    printf("test_god_mode_toggles_on_and_off OK\n");
+}
+
+static void test_god_mode_prevents_death(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    InputCommand toggle = no_input();
+    toggle.god_mode_toggle_pressed = true;
+    game_update(&gs, &toggle, 0.016f, &events);
+    assert(gs.player.god_mode);
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    assert(!gs.enemies[0].alive);
+
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.x;
+    gs.enemy_shots[0].y = gs.player.y;
+    gs.enemy_shots[0].vy = 0.0f;
+
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    assert(!gs.enemy_shots[0].alive);
+
+    printf("test_god_mode_prevents_death OK\n");
+}
+
 static void test_super_beam_neutralizes_without_normal_fire(void) {
     GameState gs;
     EventQueue events;
@@ -477,6 +539,8 @@ int main(void) {
     test_laser_color_changes_every_100_points();
     test_orb_capture_grants_super_beam();
     test_player_invincible_during_super_beam();
+    test_god_mode_toggles_on_and_off();
+    test_god_mode_prevents_death();
     test_super_beam_neutralizes_without_normal_fire();
     test_shooting_orb_explodes_without_granting_beam();
     test_orb_falls_off_screen_when_uncaptured();

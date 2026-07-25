@@ -55,6 +55,7 @@ typedef struct Player {
     float fire_cooldown;
     Color laser_color;
     float super_beam_timer; /* seconds remaining; 0 = inactive */
+    bool god_mode; /* toggled by Ctrl+G; ship turns gold and cannot die */
 } Player;
 
 typedef enum EnemyShape {
