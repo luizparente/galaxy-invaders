@@ -68,6 +68,7 @@
 
 #define SUPER_BEAM_DURATION 5.0f
 #define SUPER_BEAM_WIDTH_MULTIPLIER 2.0f
+#define SUPER_BEAM_SPEED_MULTIPLIER 2.0f
 
 /* Purely cosmetic animation - the beam's *gameplay* width (what it
  * actually neutralizes) stays fixed at SUPER_BEAM_WIDTH_MULTIPLIER; only

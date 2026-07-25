@@ -240,8 +240,10 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
         dy *= inv_sqrt2;
     }
 
-    p->x += dx * scaled(gs, PLAYER_SPEED) * dt;
-    p->y += dy * scaled(gs, PLAYER_SPEED) * dt;
+    float speed = scaled(gs, PLAYER_SPEED);
+    if (p->super_beam_timer > 0.0f) speed *= SUPER_BEAM_SPEED_MULTIPLIER;
+    p->x += dx * speed * dt;
+    p->y += dy * speed * dt;
 
     float half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
     float min_y = (float)gs->screen_h * PLAYER_MIN_Y_RATIO;

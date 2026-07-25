@@ -76,6 +76,28 @@ static void test_player_movement_clamped(void) {
     printf("test_player_movement_clamped OK\n");
 }
 
+static void test_super_beam_increases_player_speed(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    InputCommand right = no_input();
+    right.move_right = true;
+
+    float x0 = gs.player.x;
+    game_update(&gs, &right, 0.05f, &events);
+    float normal_delta = gs.player.x - x0;
+
+    gs.player.x = x0;
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+    game_update(&gs, &right, 0.05f, &events);
+    float boosted_delta = gs.player.x - x0;
+
+    assert(boosted_delta > normal_delta);
+    assert(fabsf(boosted_delta / normal_delta - SUPER_BEAM_SPEED_MULTIPLIER) < 0.01f);
+    printf("test_super_beam_increases_player_speed OK\n");
+}
+
 static void test_player_fire_cooldown(void) {
     GameState gs;
     EventQueue events;
@@ -446,6 +468,7 @@ int main(void) {
     test_difficulty();
     test_menu_start_transition();
     test_player_movement_clamped();
+    test_super_beam_increases_player_speed();
     test_player_fire_cooldown();
     test_pause_toggle();
     test_pause_menu_exit_to_menu();
