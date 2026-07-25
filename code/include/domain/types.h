@@ -71,6 +71,13 @@ typedef struct GameState {
     GameStateId state;
     PauseSelection pause_selection;
 
+    /* Real playfield size in pixels (matches the physical screen exactly -
+     * see domain/constants.h) and the uniform factor every design-baseline
+     * size/speed constant is multiplied by so shapes scale without
+     * distortion. */
+    int screen_w, screen_h;
+    float scale;
+
     Player player;
     Enemy enemies[MAX_ENEMIES];
     Projectile player_shots[MAX_PLAYER_PROJECTILES];

@@ -20,8 +20,11 @@ static InputCommand no_input(void) {
     return (InputCommand){0};
 }
 
+/* Tests run at exactly the DESIGN_W x DESIGN_H baseline so gs->scale
+ * comes out to 1.0 and every design-baseline constant (PLAYER_WIDTH, etc.)
+ * can be asserted against directly without carrying a scale factor. */
 static void start_game(GameState *gs, EventQueue *events) {
-    game_init(gs);
+    game_init(gs, DESIGN_W, DESIGN_H);
     InputCommand start = no_input();
     start.confirm_pressed = true;
     game_update(gs, &start, 0.016f, events);
@@ -56,7 +59,7 @@ static void test_menu_start_transition(void) {
 
     assert(gs.state == STATE_GAME);
     assert(gs.player.alive);
-    assert(fabsf(gs.player.x - SCREEN_W / 2.0f) < 0.5f);
+    assert(fabsf(gs.player.x - DESIGN_W / 2.0f) < 0.5f);
     printf("test_menu_start_transition OK\n");
 }
 

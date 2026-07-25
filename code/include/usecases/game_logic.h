@@ -13,7 +13,7 @@
  * instead, per the dependency-inversion boundary described in
  * domain/events.h. */
 
-void game_init(GameState *gs);
+void game_init(GameState *gs, int screen_w, int screen_h);
 void game_update(GameState *gs, const InputCommand *input, float dt, EventQueue *events);
 
 #endif

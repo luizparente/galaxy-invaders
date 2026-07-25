@@ -21,13 +21,15 @@ static void spawn_one_enemy(GameState *gs) {
         Enemy *e = &gs->enemies[i];
         if (e->alive) continue;
 
-        float size = ENEMY_MIN_SIZE + frand01() * (ENEMY_MAX_SIZE - ENEMY_MIN_SIZE);
+        float min_size = ENEMY_MIN_SIZE * gs->scale;
+        float max_size = ENEMY_MAX_SIZE * gs->scale;
+        float size = min_size + frand01() * (max_size - min_size);
         e->alive = true;
         e->size = size;
-        e->x = size * 0.5f + frand01() * (SCREEN_W - size);
+        e->x = size * 0.5f + frand01() * ((float)gs->screen_w - size);
         e->y = -size;
-        e->vx = (frand01() - 0.5f) * 20.0f;
-        e->vy = difficulty_enemy_speed(gs->score) * (0.85f + frand01() * 0.3f);
+        e->vx = (frand01() - 0.5f) * 20.0f * gs->scale;
+        e->vy = difficulty_enemy_speed(gs->score) * gs->scale * (0.85f + frand01() * 0.3f);
         e->color = kEnemyPalette[rand() % ENEMY_PALETTE_SIZE];
         e->shape = (rand() % 2 == 0) ? ENEMY_SHAPE_INVADER : ENEMY_SHAPE_SAUCER;
         e->fire_timer = 0.5f + frand01() * 1.5f;

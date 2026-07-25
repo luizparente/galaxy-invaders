@@ -19,13 +19,15 @@ struct App {
     RendererPort *renderer;
     AudioPort *audio;
     InputPort *input;
+    int screen_w;
+    int screen_h;
 };
 
 App *app_create(void) {
     App *app = calloc(1, sizeof(App));
     if (!app) return NULL;
 
-    app->renderer = sdl_renderer_create("GALAXY INVADERS", SCREEN_W, SCREEN_H);
+    app->renderer = sdl_renderer_create("GALAXY INVADERS", DESIGN_W, DESIGN_H, &app->screen_w, &app->screen_h);
     app->audio = sdl_audio_create();
     app->input = sdl_input_create();
 
@@ -43,7 +45,7 @@ static double seconds_between(struct timespec a, struct timespec b) {
 
 void app_run(App *app) {
     GameState gs;
-    game_init(&gs);
+    game_init(&gs, app->screen_w, app->screen_h);
 
     EventQueue events;
     InputCommand input;

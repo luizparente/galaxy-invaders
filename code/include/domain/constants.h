@@ -3,8 +3,15 @@
 
 /* Pure domain constants. No dependency on any rendering or platform library. */
 
-#define SCREEN_W 480
-#define SCREEN_H 640
+/* Baseline design canvas the numbers below were tuned against. At runtime
+ * the actual playfield is exactly whatever the real screen measures (see
+ * GameState.screen_w/screen_h) so the game always fills it edge to edge
+ * with the screen's own aspect ratio - no letterboxing, no stretching.
+ * Every *spatial* constant here (sizes, speeds) is a value "at design
+ * scale" and must be multiplied by GameState.scale before use, which keeps
+ * width and height scaled by the same factor so nothing gets distorted. */
+#define DESIGN_W 480
+#define DESIGN_H 640
 
 #define TARGET_FPS 60
 
@@ -19,8 +26,8 @@
 #define PLAYER_HEIGHT 22.0f
 #define PLAYER_SPEED 240.0f
 #define PLAYER_FIRE_COOLDOWN 0.18f
-#define PLAYER_MIN_Y (SCREEN_H * 0.45f)
-#define PLAYER_MAX_Y (SCREEN_H - 40.0f)
+#define PLAYER_MIN_Y_RATIO 0.45f
+#define PLAYER_BOTTOM_MARGIN 40.0f
 
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f

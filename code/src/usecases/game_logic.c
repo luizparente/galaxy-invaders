@@ -12,12 +12,20 @@ static float frand01(void) {
     return (float)rand() / (float)RAND_MAX;
 }
 
+/* Every spatial constant in domain/constants.h is tuned at DESIGN_W x
+ * DESIGN_H. Multiplying by gs->scale (uniform in x and y) carries that
+ * same proportion onto whatever the real screen measures, so shapes grow
+ * or shrink together instead of stretching. */
+static float scaled(const GameState *gs, float design_value) {
+    return design_value * gs->scale;
+}
+
 static void init_stars(GameState *gs) {
     for (int i = 0; i < MAX_STARS; i++) {
         Star *s = &gs->stars[i];
-        s->x = frand01() * SCREEN_W;
-        s->y = frand01() * SCREEN_H;
-        s->speed = 20.0f + frand01() * 70.0f;
+        s->x = frand01() * (float)gs->screen_w;
+        s->y = frand01() * (float)gs->screen_h;
+        s->speed = scaled(gs, 20.0f + frand01() * 70.0f);
         s->brightness = (unsigned char)(90 + rand() % 165);
     }
 }
@@ -26,9 +34,9 @@ static void update_stars(GameState *gs, float dt) {
     for (int i = 0; i < MAX_STARS; i++) {
         Star *s = &gs->stars[i];
         s->y += s->speed * dt;
-        if (s->y > SCREEN_H) {
+        if (s->y > (float)gs->screen_h) {
             s->y = 0.0f;
-            s->x = frand01() * SCREEN_W;
+            s->x = frand01() * (float)gs->screen_w;
         }
     }
 }
@@ -53,8 +61,8 @@ static void reset_run(GameState *gs) {
     memset(&gs->enemy_shots, 0, sizeof(gs->enemy_shots));
     memset(&gs->explosions, 0, sizeof(gs->explosions));
 
-    gs->player.x = SCREEN_W / 2.0f;
-    gs->player.y = PLAYER_MAX_Y;
+    gs->player.x = (float)gs->screen_w / 2.0f;
+    gs->player.y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
     gs->player.alive = true;
     gs->player.fire_cooldown = 0.0f;
 
@@ -65,8 +73,16 @@ static void reset_run(GameState *gs) {
     gs->state = STATE_GAME;
 }
 
-void game_init(GameState *gs) {
+void game_init(GameState *gs, int screen_w, int screen_h) {
     memset(gs, 0, sizeof(*gs));
+    gs->screen_w = screen_w;
+    gs->screen_h = screen_h;
+
+    float scale = (float)screen_h / (float)DESIGN_H;
+    if (scale < 0.5f) scale = 0.5f;
+    if (scale > 4.0f) scale = 4.0f;
+    gs->scale = scale;
+
     gs->state = STATE_MENU;
     init_stars(gs);
 }
@@ -121,7 +137,7 @@ static void update_game_over(GameState *gs, const InputCommand *input, EventQueu
 static void kill_player(GameState *gs, EventQueue *events) {
     if (!gs->player.alive) return;
     gs->player.alive = false;
-    spawn_explosion(gs, gs->player.x, gs->player.y, PLAYER_WIDTH);
+    spawn_explosion(gs, gs->player.x, gs->player.y, scaled(gs, PLAYER_WIDTH));
     event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
     gs->last_game_score = gs->score;
     gs->state = STATE_GAME_OVER;
@@ -142,14 +158,16 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
         dy *= inv_sqrt2;
     }
 
-    p->x += dx * PLAYER_SPEED * dt;
-    p->y += dy * PLAYER_SPEED * dt;
+    p->x += dx * scaled(gs, PLAYER_SPEED) * dt;
+    p->y += dy * scaled(gs, PLAYER_SPEED) * dt;
 
-    float half_w = PLAYER_WIDTH / 2.0f;
+    float half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
+    float min_y = (float)gs->screen_h * PLAYER_MIN_Y_RATIO;
+    float max_y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
     if (p->x < half_w) p->x = half_w;
-    if (p->x > SCREEN_W - half_w) p->x = SCREEN_W - half_w;
-    if (p->y < PLAYER_MIN_Y) p->y = PLAYER_MIN_Y;
-    if (p->y > PLAYER_MAX_Y) p->y = PLAYER_MAX_Y;
+    if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
+    if (p->y < min_y) p->y = min_y;
+    if (p->y > max_y) p->y = max_y;
 
     if (p->fire_cooldown > 0.0f) p->fire_cooldown -= dt;
 
@@ -159,9 +177,9 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
             if (pr->alive) continue;
             pr->alive = true;
             pr->x = p->x;
-            pr->y = p->y - PLAYER_HEIGHT / 2.0f;
+            pr->y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
             pr->vx = 0.0f;
-            pr->vy = -PLAYER_PROJECTILE_SPEED;
+            pr->vy = -scaled(gs, PLAYER_PROJECTILE_SPEED);
             pr->color = (Color){255, 240, 120, 255};
             p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
             event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
@@ -178,14 +196,14 @@ static void update_enemies(GameState *gs, float dt) {
         if (!e->alive) continue;
 
         e->wobble_phase += dt * 3.0f;
-        e->x += (e->vx + sinf(e->wobble_phase) * 12.0f) * dt;
+        e->x += (e->vx + sinf(e->wobble_phase) * scaled(gs, 12.0f)) * dt;
         e->y += e->vy * dt;
 
         float half = e->size / 2.0f;
         if (e->x < half) e->x = half;
-        if (e->x > SCREEN_W - half) e->x = SCREEN_W - half;
+        if (e->x > (float)gs->screen_w - half) e->x = (float)gs->screen_w - half;
 
-        if (e->y - half > SCREEN_H) {
+        if (e->y - half > (float)gs->screen_h) {
             e->alive = false;
             continue;
         }
@@ -200,7 +218,7 @@ static void update_enemies(GameState *gs, float dt) {
                 pr->x = e->x;
                 pr->y = e->y + half;
                 pr->vx = 0.0f;
-                pr->vy = ENEMY_PROJECTILE_SPEED;
+                pr->vy = scaled(gs, ENEMY_PROJECTILE_SPEED);
                 pr->color = e->color;
                 break;
             }
@@ -209,19 +227,22 @@ static void update_enemies(GameState *gs, float dt) {
 }
 
 static void update_projectiles(GameState *gs, float dt) {
+    float player_shot_h = scaled(gs, PLAYER_PROJECTILE_H);
+    float enemy_shot_h = scaled(gs, ENEMY_PROJECTILE_H);
+
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
         if (!pr->alive) continue;
         pr->x += pr->vx * dt;
         pr->y += pr->vy * dt;
-        if (pr->y < -PLAYER_PROJECTILE_H) pr->alive = false;
+        if (pr->y < -player_shot_h) pr->alive = false;
     }
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
         Projectile *pr = &gs->enemy_shots[i];
         if (!pr->alive) continue;
         pr->x += pr->vx * dt;
         pr->y += pr->vy * dt;
-        if (pr->y > SCREEN_H + ENEMY_PROJECTILE_H) pr->alive = false;
+        if (pr->y > (float)gs->screen_h + enemy_shot_h) pr->alive = false;
     }
 }
 
@@ -235,6 +256,13 @@ static void update_explosions(GameState *gs, float dt) {
 }
 
 static void check_collisions(GameState *gs, EventQueue *events) {
+    float player_shot_half_w = scaled(gs, PLAYER_PROJECTILE_W) / 2.0f;
+    float player_shot_half_h = scaled(gs, PLAYER_PROJECTILE_H) / 2.0f;
+    float enemy_shot_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
+    float enemy_shot_half_h = scaled(gs, ENEMY_PROJECTILE_H) / 2.0f;
+    float player_half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
+    float player_half_h = scaled(gs, PLAYER_HEIGHT) / 2.0f;
+
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
         if (!pr->alive) continue;
@@ -243,7 +271,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             Enemy *e = &gs->enemies[j];
             if (!e->alive) continue;
 
-            if (collision_aabb_overlap(pr->x, pr->y, PLAYER_PROJECTILE_W / 2.0f, PLAYER_PROJECTILE_H / 2.0f,
+            if (collision_aabb_overlap(pr->x, pr->y, player_shot_half_w, player_shot_half_h,
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                 pr->alive = false;
                 e->alive = false;
@@ -260,7 +288,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         for (int j = 0; j < MAX_ENEMIES; j++) {
             Enemy *e = &gs->enemies[j];
             if (!e->alive) continue;
-            if (collision_aabb_overlap(gs->player.x, gs->player.y, PLAYER_WIDTH / 2.0f, PLAYER_HEIGHT / 2.0f,
+            if (collision_aabb_overlap(gs->player.x, gs->player.y, player_half_w, player_half_h,
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                 e->alive = false;
                 spawn_explosion(gs, e->x, e->y, e->size);
@@ -274,8 +302,8 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
             Projectile *pr = &gs->enemy_shots[i];
             if (!pr->alive) continue;
-            if (collision_aabb_overlap(pr->x, pr->y, ENEMY_PROJECTILE_W / 2.0f, ENEMY_PROJECTILE_H / 2.0f,
-                                        gs->player.x, gs->player.y, PLAYER_WIDTH / 2.0f, PLAYER_HEIGHT / 2.0f)) {
+            if (collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
+                                        gs->player.x, gs->player.y, player_half_w, player_half_h)) {
                 pr->alive = false;
                 kill_player(gs, events);
                 break;
