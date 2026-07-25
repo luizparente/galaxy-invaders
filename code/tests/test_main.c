@@ -261,6 +261,41 @@ static void test_orb_capture_grants_super_beam(void) {
     printf("test_orb_capture_grants_super_beam OK\n");
 }
 
+static void test_player_invincible_during_super_beam(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+
+    /* Direct physical contact with an enemy would normally be fatal. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    assert(!gs.enemies[0].alive); /* still destroyed on contact, just harmless to the ship */
+
+    /* An enemy projectile would normally be fatal too. */
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.x;
+    gs.enemy_shots[0].y = gs.player.y;
+    gs.enemy_shots[0].vy = 0.0f;
+
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    assert(!gs.enemy_shots[0].alive);
+
+    printf("test_player_invincible_during_super_beam OK\n");
+}
+
 static void test_super_beam_neutralizes_without_normal_fire(void) {
     GameState gs;
     EventQueue events;
@@ -418,6 +453,7 @@ int main(void) {
     test_player_enemy_collision_ends_game();
     test_laser_color_changes_every_100_points();
     test_orb_capture_grants_super_beam();
+    test_player_invincible_during_super_beam();
     test_super_beam_neutralizes_without_normal_fire();
     test_shooting_orb_explodes_without_granting_beam();
     test_orb_falls_off_screen_when_uncaptured();

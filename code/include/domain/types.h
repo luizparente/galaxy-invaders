@@ -1,6 +1,7 @@
 #ifndef GALAXY_INVADERS_DOMAIN_TYPES_H
 #define GALAXY_INVADERS_DOMAIN_TYPES_H
 
+#include <math.h>
 #include <stdbool.h>
 #include "domain/constants.h"
 
@@ -11,6 +12,30 @@
 typedef struct Color {
     unsigned char r, g, b, a;
 } Color;
+
+/* h in degrees [0, 360), s and v in [0, 1]. A value-type operation on
+ * Color, shared by usecases (e.g. rerolling the laser color, cycling the
+ * orb's gradient) and the renderer (e.g. animating the super beam) so the
+ * conversion math exists in exactly one place. */
+static inline Color color_from_hsv(float h, float s, float v) {
+    float c = v * s;
+    float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+    float m = v - c;
+    float r1, g1, b1;
+    if (h < 60.0f) { r1 = c; g1 = x; b1 = 0.0f; }
+    else if (h < 120.0f) { r1 = x; g1 = c; b1 = 0.0f; }
+    else if (h < 180.0f) { r1 = 0.0f; g1 = c; b1 = x; }
+    else if (h < 240.0f) { r1 = 0.0f; g1 = x; b1 = c; }
+    else if (h < 300.0f) { r1 = x; g1 = 0.0f; b1 = c; }
+    else { r1 = c; g1 = 0.0f; b1 = x; }
+
+    return (Color){
+        (unsigned char)((r1 + m) * 255.0f),
+        (unsigned char)((g1 + m) * 255.0f),
+        (unsigned char)((b1 + m) * 255.0f),
+        255,
+    };
+}
 
 typedef enum GameStateId {
     STATE_MENU,

@@ -19,33 +19,13 @@ static bool within_radius(float ax, float ay, float bx, float by, float r) {
 
 static const Color kDefaultLaserColor = {255, 240, 120, 255};
 
-static Color hsv_to_rgb(float h, float s, float v) {
-    float c = v * s;
-    float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
-    float m = v - c;
-    float r1, g1, b1;
-    if (h < 60.0f) { r1 = c; g1 = x; b1 = 0.0f; }
-    else if (h < 120.0f) { r1 = x; g1 = c; b1 = 0.0f; }
-    else if (h < 180.0f) { r1 = 0.0f; g1 = c; b1 = x; }
-    else if (h < 240.0f) { r1 = 0.0f; g1 = x; b1 = c; }
-    else if (h < 300.0f) { r1 = x; g1 = 0.0f; b1 = c; }
-    else { r1 = c; g1 = 0.0f; b1 = x; }
-
-    return (Color){
-        (unsigned char)((r1 + m) * 255.0f),
-        (unsigned char)((g1 + m) * 255.0f),
-        (unsigned char)((b1 + m) * 255.0f),
-        255,
-    };
-}
-
 /* A random fully-saturated hue, so each reroll is clearly a different
  * color rather than a subtle tint of the last one. */
 static Color random_vivid_color(void) {
     float h = frand01() * 360.0f;
     float s = 0.75f + frand01() * 0.25f;
     float v = 0.9f + frand01() * 0.1f;
-    return hsv_to_rgb(h, s, v);
+    return color_from_hsv(h, s, v);
 }
 
 /* Every spatial constant in domain/constants.h is tuned at DESIGN_W x
@@ -99,7 +79,7 @@ static void spawn_orb(GameState *gs) {
     o->y = -o->size;
     o->hue = frand01() * 360.0f;
     o->wobble_phase = frand01() * 6.2831853f;
-    o->color = hsv_to_rgb(o->hue, 0.9f, 1.0f);
+    o->color = color_from_hsv(o->hue, 0.9f, 1.0f);
 }
 
 /* Called right after gs->score changes. Every ORB_SCORE_STEP crossed has a
@@ -136,7 +116,7 @@ static void update_orb(GameState *gs, float dt) {
 
     o->hue += ORB_HUE_CYCLE_SPEED * dt;
     if (o->hue >= 360.0f) o->hue -= 360.0f;
-    o->color = hsv_to_rgb(o->hue, 0.9f, 1.0f);
+    o->color = color_from_hsv(o->hue, 0.9f, 1.0f);
 
     o->wobble_phase += dt * ORB_DRIFT_ANGULAR_SPEED;
     float drift = scaled(gs, ORB_DRIFT_SPEED);
@@ -237,6 +217,7 @@ static void update_game_over(GameState *gs, const InputCommand *input, EventQueu
 
 static void kill_player(GameState *gs, EventQueue *events) {
     if (!gs->player.alive) return;
+    if (gs->player.super_beam_timer > 0.0f) return; /* invincible for the duration of the beam */
     gs->player.alive = false;
     spawn_explosion(gs, gs->player.x, gs->player.y, scaled(gs, PLAYER_WIDTH));
     event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);

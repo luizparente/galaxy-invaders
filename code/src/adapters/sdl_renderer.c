@@ -162,18 +162,27 @@ static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
     const Player *p = &gs->player;
     if (p->super_beam_timer <= 0.0f || !p->alive) return;
 
-    float beam_w = PLAYER_PROJECTILE_W * gs->scale * SUPER_BEAM_WIDTH_MULTIPLIER;
+    /* Purely cosmetic: a fast width flicker and a fast-cycling hue. The
+     * beam's actual neutralize width (usecases/game_logic.c) is fixed, so
+     * this animation never changes what the beam actually hits. */
+    float base_w = PLAYER_PROJECTILE_W * gs->scale * SUPER_BEAM_WIDTH_MULTIPLIER;
+    float width_factor = 1.0f + SUPER_BEAM_WIDTH_PULSE_AMOUNT * sinf(gs->time_elapsed * SUPER_BEAM_WIDTH_PULSE_SPEED);
+    float beam_w = base_w * width_factor;
     float top = p->y - PLAYER_HEIGHT * gs->scale / 2.0f;
-    float pulse = 0.75f + 0.25f * sinf(gs->time_elapsed * 18.0f);
+    float alpha_pulse = 0.75f + 0.25f * sinf(gs->time_elapsed * 18.0f);
+
+    float hue = fmodf(gs->time_elapsed * SUPER_BEAM_COLOR_CYCLE_SPEED, 360.0f);
+    if (hue < 0.0f) hue += 360.0f;
+    Color beam_hue = color_from_hsv(hue, 0.85f, 1.0f);
 
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
 
-    Color glow = lerp_color(p->laser_color, kWhite, 0.2f);
-    glow.a = (unsigned char)(70.0f * pulse);
+    Color glow = lerp_color(beam_hue, kWhite, 0.15f);
+    glow.a = (unsigned char)(70.0f * alpha_pulse);
     gp_fill_rect(ctx->renderer, p->x - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
 
-    Color core = lerp_color(p->laser_color, kWhite, 0.6f);
-    core.a = (unsigned char)(235.0f * pulse);
+    Color core = lerp_color(beam_hue, kWhite, 0.6f);
+    core.a = (unsigned char)(235.0f * alpha_pulse);
     gp_fill_rect(ctx->renderer, p->x - beam_w / 2.0f, 0.0f, beam_w, top, core);
 }
 
@@ -200,8 +209,9 @@ static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
         snprintf(beam_buf, sizeof(beam_buf), "SUPER BEAM %.1fs", (double)gs->player.super_beam_timer);
         float beam_size = 2.2f * gs->scale;
         float beam_w = pf_text_width(beam_buf, beam_size);
-        float pulse = 0.7f + 0.3f * sinf(gs->time_elapsed * 12.0f);
-        Color c = lerp_color(gs->player.laser_color, kWhite, pulse);
+        float hue = fmodf(gs->time_elapsed * SUPER_BEAM_COLOR_CYCLE_SPEED, 360.0f);
+        if (hue < 0.0f) hue += 360.0f;
+        Color c = color_from_hsv(hue, 0.85f, 1.0f);
         float score_line_height = 7.0f * size; /* the pixel font is 7 dots tall */
         pf_draw_text(ctx->renderer, (float)gs->screen_w - beam_w - margin,
                      margin + score_line_height + margin * 0.4f, beam_size, c, beam_buf);

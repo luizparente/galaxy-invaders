@@ -69,4 +69,12 @@
 #define SUPER_BEAM_DURATION 5.0f
 #define SUPER_BEAM_WIDTH_MULTIPLIER 2.0f
 
+/* Purely cosmetic animation - the beam's *gameplay* width (what it
+ * actually neutralizes) stays fixed at SUPER_BEAM_WIDTH_MULTIPLIER; only
+ * what's drawn pulses and cycles color, so a target's fate never depends
+ * on the animation's phase. */
+#define SUPER_BEAM_WIDTH_PULSE_SPEED 16.0f
+#define SUPER_BEAM_WIDTH_PULSE_AMOUNT 0.35f
+#define SUPER_BEAM_COLOR_CYCLE_SPEED 420.0f
+
 #endif
