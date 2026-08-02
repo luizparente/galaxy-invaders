@@ -5,7 +5,8 @@
 float difficulty_spawn_interval(int score) {
     float steps = (float)score / SPAWN_INTERVAL_STEP_SCORE;
     float interval = BASE_SPAWN_INTERVAL * powf(SPAWN_INTERVAL_STEP_FACTOR, steps);
-    return interval < MIN_SPAWN_INTERVAL ? MIN_SPAWN_INTERVAL : interval;
+    if (interval < MIN_SPAWN_INTERVAL) interval = MIN_SPAWN_INTERVAL;
+    return interval * SPAWN_RATE_MULTIPLIER;
 }
 
 float difficulty_enemy_speed(int score) {

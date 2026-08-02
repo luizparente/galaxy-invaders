@@ -39,9 +39,9 @@ static void test_collision(void) {
 }
 
 static void test_difficulty(void) {
-    assert(fabsf(difficulty_spawn_interval(0) - BASE_SPAWN_INTERVAL) < 0.001f);
+    assert(fabsf(difficulty_spawn_interval(0) - BASE_SPAWN_INTERVAL * SPAWN_RATE_MULTIPLIER) < 0.001f);
     assert(difficulty_spawn_interval(5000) < difficulty_spawn_interval(0));
-    assert(difficulty_spawn_interval(1000000) >= MIN_SPAWN_INTERVAL - 0.001f);
+    assert(difficulty_spawn_interval(1000000) >= MIN_SPAWN_INTERVAL * SPAWN_RATE_MULTIPLIER - 0.001f);
 
     assert(fabsf(difficulty_enemy_speed(0) - ENEMY_BASE_SPEED) < 0.001f);
     assert(difficulty_enemy_speed(1000000) <= ENEMY_MAX_SPEED + 0.001f);

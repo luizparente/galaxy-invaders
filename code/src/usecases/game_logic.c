@@ -122,8 +122,8 @@ static void spawn_boss(GameState *gs, EventQueue *events) {
     gs->boss_count++;
     gs->score_since_last_boss = 0; /* the next one needs a full fresh BOSS_SCORE_STEP */
 
-    float min_size = ENEMY_MIN_SIZE * gs->scale;
-    float max_size = ENEMY_MAX_SIZE * gs->scale;
+    float min_size = BOSS_BASE_MIN_SIZE * gs->scale;
+    float max_size = BOSS_BASE_MAX_SIZE * gs->scale;
     float size = (min_size + frand01() * (max_size - min_size)) * BOSS_SIZE_MULTIPLIER;
 
     b->alive = true;

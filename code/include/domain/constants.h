@@ -39,8 +39,8 @@
 
 #define ENEMY_KIND_COUNT 16
 
-#define ENEMY_MIN_SIZE 15.0f
-#define ENEMY_MAX_SIZE 25.0f
+#define ENEMY_MIN_SIZE PLAYER_WIDTH
+#define ENEMY_MAX_SIZE PLAYER_WIDTH
 #define ENEMY_BASE_SPEED 55.0f
 #define ENEMY_SPEED_PER_1000_SCORE 15.0f
 #define ENEMY_MAX_SPEED 220.0f
@@ -49,6 +49,11 @@
 #define MIN_SPAWN_INTERVAL 0.22f
 #define SPAWN_INTERVAL_STEP_SCORE 500.0f
 #define SPAWN_INTERVAL_STEP_FACTOR 0.92f
+/* Single knob to tune overall spawn frequency without touching the curve
+ * above: multiplies the final interval difficulty_spawn_interval returns,
+ * so >1 spreads spawns out (slower) and <1 bunches them up (faster). 2.0
+ * halves the spawn rate. */
+#define SPAWN_RATE_MULTIPLIER 2.0f
 
 #define SCORE_PER_KILL 10
 #define SCORE_MULTIPLIER_STEP 500.0f
@@ -81,6 +86,11 @@
 
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50
+/* The boss's own baseline size range, scaled up by BOSS_SIZE_MULTIPLIER -
+ * kept independent of ENEMY_MIN_SIZE/MAX_SIZE (which enemies spawn at)
+ * so resizing ordinary enemies never changes the boss encounter. */
+#define BOSS_BASE_MIN_SIZE 15.0f
+#define BOSS_BASE_MAX_SIZE 25.0f
 #define BOSS_SIZE_MULTIPLIER 10.0f
 #define BOSS_SPEED_MULTIPLIER 0.25f /* of PLAYER_SPEED - relentlessly chases, never idles */
 #define BOSS_KILL_SCORE_MULTIPLIER 4
