@@ -6,8 +6,9 @@
 
 /* Thin, SDL-specific drawing helpers. Every shape is computed and drawn
  * from geometry at call time (rects, lines, triangles via SDL_RenderGeometry,
- * scanline-filled circles/ellipses) - there is no image or bitmap asset
- * anywhere in this pipeline. Used only by adapters/sdl_renderer, never by
+ * scanline-filled circles/ellipses) - the one exception is the player ship,
+ * which blits an embedded pixel-art grid (see adapters/player_sprite) one
+ * gp_fill_rect per cell. Used only by adapters/sdl_renderer, never by
  * usecases or app. */
 
 void gp_fill_rect(SDL_Renderer *r, float x, float y, float w, float h, Color c);

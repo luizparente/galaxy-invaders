@@ -5,6 +5,7 @@
 #include "adapters/sdl_renderer.h"
 #include "adapters/graphics_primitives.h"
 #include "adapters/pixel_font.h"
+#include "adapters/player_sprite.h"
 #include "domain/constants.h"
 
 typedef struct SdlRendererCtx {
@@ -18,12 +19,7 @@ static const Color kYellow = {235, 220, 70, 255};
 static const Color kWhite = {235, 235, 235, 255};
 static const Color kDim = {120, 120, 140, 255};
 static const Color kRed = {230, 60, 60, 255};
-static const Color kHull = {225, 225, 230, 255};
-static const Color kHullShadow = {170, 170, 180, 255};
-static const Color kGodModeHull = {255, 215, 40, 255};
-static const Color kGodModeHullShadow = {210, 165, 20, 255};
-static const Color kCockpit = {40, 40, 50, 255};
-static const Color kEngineGlow = {255, 160, 40, 255};
+static const Color kGodModeTint = {255, 215, 40, 255};
 
 static Color lerp_color(Color a, Color b, float t) {
     if (t < 0.0f) t = 0.0f;
@@ -63,32 +59,34 @@ static void draw_scanlines(SdlRendererCtx *ctx, const GameState *gs) {
 static void draw_player(SdlRendererCtx *ctx, const Player *p, float scale) {
     if (!p->alive) return;
 
-    float half_w = PLAYER_WIDTH * scale / 2.0f;
-    float half_h = PLAYER_HEIGHT * scale / 2.0f;
-    Color hull = p->god_mode ? kGodModeHull : kHull;
-    Color hull_shadow = p->god_mode ? kGodModeHullShadow : kHullShadow;
+    float w = PLAYER_WIDTH * scale;
+    float h = PLAYER_HEIGHT * scale;
+    float cell_w = w / (float)PLAYER_SPRITE_SIZE;
+    float cell_h = h / (float)PLAYER_SPRITE_SIZE;
+    float left = p->x - w / 2.0f;
+    float top = p->y - h / 2.0f;
 
-    /* Millennium-Falcon-esque top-down silhouette: a broad flattened hull
-     * disc, twin forward mandibles with an off-center gap, an off-center
-     * cockpit bump, a couple of panel-line details, and a rear engine
-     * glow - all computed geometry, no sprite art. */
-    gp_fill_ellipse(ctx->renderer, p->x, p->y, half_w, half_h, hull);
+    /* Pixel-perfect reproduction of the reference ship art, embedded as a
+     * 64x64 RGBA grid (see adapters/player_sprite) and blitted cell by
+     * cell - the only bitmap sprite in an otherwise procedural renderer. */
+    for (int gy = 0; gy < PLAYER_SPRITE_SIZE; gy++) {
+        for (int gx = 0; gx < PLAYER_SPRITE_SIZE; gx++) {
+            uint32_t packed = kPlayerSpritePixels[gy * PLAYER_SPRITE_SIZE + gx];
+            unsigned char a = (unsigned char)(packed & 0xFFu);
+            if (a == 0) continue;
 
-    float mandible_w = half_w * 0.30f;
-    float mandible_h = 9.0f * scale;
-    gp_fill_rect(ctx->renderer, p->x - half_w * 0.70f, p->y - half_h - mandible_h + 3.0f * scale,
-                 mandible_w, mandible_h, hull);
-    gp_fill_rect(ctx->renderer, p->x + half_w * 0.15f, p->y - half_h - mandible_h + 3.0f * scale,
-                 mandible_w, mandible_h, hull);
+            Color c = {
+                (unsigned char)((packed >> 24) & 0xFFu),
+                (unsigned char)((packed >> 16) & 0xFFu),
+                (unsigned char)((packed >> 8) & 0xFFu),
+                a,
+            };
+            if (p->god_mode) c = lerp_color(c, kGodModeTint, 0.6f);
 
-    gp_draw_line(ctx->renderer, p->x - half_w * 0.6f, p->y, p->x - 2.0f * scale, p->y - half_h * 0.6f, hull_shadow);
-    gp_draw_line(ctx->renderer, p->x + half_w * 0.6f, p->y, p->x + 2.0f * scale, p->y - half_h * 0.5f, hull_shadow);
-
-    float cockpit_r = 3.2f * scale;
-    gp_fill_circle(ctx->renderer, p->x + half_w * 0.32f, p->y - half_h * 0.05f, cockpit_r, kCockpit);
-    gp_draw_circle_outline(ctx->renderer, p->x + half_w * 0.32f, p->y - half_h * 0.05f, cockpit_r, hull_shadow);
-
-    gp_fill_circle(ctx->renderer, p->x, p->y + half_h - 1.0f * scale, 3.0f * scale, kEngineGlow);
+            gp_fill_rect(ctx->renderer, left + (float)gx * cell_w, top + (float)gy * cell_h,
+                         cell_w + 0.5f, cell_h + 0.5f, c);
+        }
+    }
 }
 
 /* Shared by draw_enemy and draw_boss: the boss presents as "a randomly
