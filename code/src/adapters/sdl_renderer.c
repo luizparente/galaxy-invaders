@@ -20,6 +20,10 @@ typedef struct SdlRendererCtx {
      * blitted as a whole instead of cell by cell, to keep draw-call count
      * bounded under a screen full of enemies. */
     SDL_Texture *enemy_textures[ENEMY_KIND_COUNT];
+    /* Same 16 designs at full native source resolution, used only for the
+     * boss (see adapters/enemy_sprites.h) so its ~10x-larger size doesn't
+     * stretch a small texture into visible blocks. */
+    SDL_Texture *boss_textures[ENEMY_KIND_COUNT];
 } SdlRendererCtx;
 
 static const Color kBackground = {8, 8, 26, 255};
@@ -100,32 +104,33 @@ static void draw_player(SdlRendererCtx *ctx, const Player *p, float scale) {
 
 /* Shared by draw_enemy and draw_boss: the boss presents as "a randomly
  * picked enemy" at a much larger size, so it's the same sprite blit as a
- * regular enemy just given a bigger bounding size. Pixel-perfect
- * reproduction of the 16 reference designs, embedded as RGBA grids (see
- * adapters/enemy_sprites) and uploaded once to a GPU texture per kind
- * (ctx->enemy_textures) - up to MAX_ENEMIES of these can be on screen at
- * once, so each is one textured blit rather than one gp_fill_rect per
- * pixel (SDL_HINT_RENDER_SCALE_QUALITY is set to nearest globally at
- * renderer creation, so the scale-up still lands on crisp pixel blocks,
- * not a blurred stretch). */
-static void draw_enemy_sprite(SdlRendererCtx *ctx, int kind, float x, float y, float size) {
-    const EnemySpriteSheet *sheet = &kEnemySprites[kind];
+ * regular enemy just given a bigger bounding size and, since it renders
+ * far larger, the full-native-resolution texture (see draw_boss) instead
+ * of the small one regular enemies use. Pixel-perfect reproduction of the
+ * 16 reference designs, embedded as RGBA grids (see adapters/enemy_sprites)
+ * and uploaded once to a GPU texture per kind - up to MAX_ENEMIES of these
+ * can be on screen at once, so each is one textured blit rather than one
+ * gp_fill_rect per pixel (SDL_HINT_RENDER_SCALE_QUALITY is set to nearest
+ * globally at renderer creation, so scaling still lands on crisp pixel
+ * blocks, not a blurred stretch). */
+static void draw_sprite(SdlRendererCtx *ctx, SDL_Texture *tex, const EnemySpriteSheet *sheet,
+                         float x, float y, float size) {
     int long_side = sheet->grid_w > sheet->grid_h ? sheet->grid_w : sheet->grid_h;
     float w = size * (float)sheet->grid_w / (float)long_side;
     float h = size * (float)sheet->grid_h / (float)long_side;
 
     SDL_FRect dst = {x - w / 2.0f, y - h / 2.0f, w, h};
-    SDL_RenderCopyF(ctx->renderer, ctx->enemy_textures[kind], NULL, &dst);
+    SDL_RenderCopyF(ctx->renderer, tex, NULL, &dst);
 }
 
 static void draw_enemy(SdlRendererCtx *ctx, const Enemy *e) {
     if (!e->alive) return;
-    draw_enemy_sprite(ctx, e->kind, e->x, e->y, e->size);
+    draw_sprite(ctx, ctx->enemy_textures[e->kind], &kEnemySprites[e->kind], e->x, e->y, e->size);
 }
 
 static void draw_boss(SdlRendererCtx *ctx, const Boss *b) {
     if (!b->alive) return;
-    draw_enemy_sprite(ctx, b->kind, b->x, b->y, b->size);
+    draw_sprite(ctx, ctx->boss_textures[b->kind], &kBossSprites[b->kind], b->x, b->y, b->size);
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
     /* This ring IS the fatal contact boundary (see check_collisions in
      * usecases/game_logic.c, which reads the exact same
@@ -346,6 +351,7 @@ static void sdl_render_destroy(void *self) {
     if (!ctx) return;
     for (int i = 0; i < ENEMY_KIND_COUNT; i++) {
         if (ctx->enemy_textures[i]) SDL_DestroyTexture(ctx->enemy_textures[i]);
+        if (ctx->boss_textures[i]) SDL_DestroyTexture(ctx->boss_textures[i]);
     }
     if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
     if (ctx->window) SDL_DestroyWindow(ctx->window);
@@ -353,27 +359,29 @@ static void sdl_render_destroy(void *self) {
     free(ctx);
 }
 
-/* Uploads adapters/enemy_sprites' embedded RGBA grids to GPU textures,
- * once, at startup - see draw_enemy_sprite for why enemies are blitted as
- * whole textures instead of per-pixel rects like the single player ship. */
-static bool sdl_load_enemy_textures(SdlRendererCtx *ctx) {
+/* Uploads one EnemySpriteSheet array (adapters/enemy_sprites) to a GPU
+ * texture per kind, once, at startup - see draw_sprite for why enemies
+ * and the boss are blitted as whole textures instead of one gp_fill_rect
+ * per pixel like the single player ship. */
+static bool sdl_load_sprite_textures(SDL_Renderer *renderer, const EnemySpriteSheet *sheets,
+                                      SDL_Texture **out_textures) {
     for (int i = 0; i < ENEMY_KIND_COUNT; i++) {
-        const EnemySpriteSheet *sheet = &kEnemySprites[i];
+        const EnemySpriteSheet *sheet = &sheets[i];
         /* RGBA8888, not the RGBA32 alias: RGBA8888 is a fixed bit layout
          * (R in the most significant byte of the 32-bit value, A in the
          * least), which is exactly how enemy_sprites.c packs each pixel
          * ((r<<24)|(g<<16)|(b<<8)|a). RGBA32 instead means "R is byte 0 in
          * memory," which resolves to a *different* bit layout on a
          * little-endian machine and silently scrambles every channel. */
-        SDL_Texture *tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888,
+        SDL_Texture *tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
                                               SDL_TEXTUREACCESS_STATIC, sheet->grid_w, sheet->grid_h);
         if (!tex) {
-            fprintf(stderr, "SDL_CreateTexture failed for enemy kind %d: %s\n", i, SDL_GetError());
+            fprintf(stderr, "SDL_CreateTexture failed for sprite kind %d: %s\n", i, SDL_GetError());
             return false;
         }
         SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
         SDL_UpdateTexture(tex, NULL, sheet->pixels, sheet->grid_w * (int)sizeof(uint32_t));
-        ctx->enemy_textures[i] = tex;
+        out_textures[i] = tex;
     }
     return true;
 }
@@ -414,7 +422,8 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
     }
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
 
-    if (!sdl_load_enemy_textures(ctx)) {
+    if (!sdl_load_sprite_textures(ctx->renderer, kEnemySprites, ctx->enemy_textures) ||
+        !sdl_load_sprite_textures(ctx->renderer, kBossSprites, ctx->boss_textures)) {
         SDL_DestroyRenderer(ctx->renderer);
         SDL_DestroyWindow(ctx->window);
         free(ctx);
