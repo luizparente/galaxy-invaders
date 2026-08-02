@@ -130,8 +130,7 @@ static void spawn_boss(GameState *gs, EventQueue *events) {
     b->size = size;
     b->x = (float)gs->screen_w / 2.0f;
     b->y = -size;
-    b->color = spawner_random_enemy_color();
-    b->shape = spawner_random_enemy_shape();
+    b->kind = spawner_random_enemy_kind();
     b->hits_taken = 0;
     b->hits_required = BOSS_HITS_INCREMENT * gs->boss_count;
     b->beam_contact_timer = 0.0f;

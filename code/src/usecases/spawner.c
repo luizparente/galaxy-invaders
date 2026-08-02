@@ -7,21 +7,38 @@ static float frand01(void) {
     return (float)rand() / (float)RAND_MAX;
 }
 
-static const Color kEnemyPalette[] = {
-    {220, 40, 40, 255},   /* red */
-    {40, 220, 220, 255},  /* cyan */
-    {220, 40, 220, 255},  /* magenta */
-    {230, 220, 40, 255},  /* yellow */
-    {60, 220, 80, 255},   /* green */
+/* One accent color per enemy kind (adapters/enemy_sprites), used only to
+ * tint that enemy's own projectiles - the sprite art itself carries its
+ * own fixed, exact colors and doesn't use this palette. Ordered to match
+ * kEnemySprites: phoenix, green spider, gold saucer, purple interceptor,
+ * cyan interceptor, magenta interceptor, orange turret, slate stealth,
+ * black/red stealth, hornet, heavy gunship, purple elite, teal spider,
+ * fire/ice wyrm, bat bomber, abyssal kraken. */
+static const Color kEnemyKindAccentColor[ENEMY_KIND_COUNT] = {
+    {230, 80, 40, 255},
+    {60, 200, 90, 255},
+    {230, 190, 40, 255},
+    {170, 80, 220, 255},
+    {60, 190, 230, 255},
+    {220, 60, 190, 255},
+    {230, 120, 40, 255},
+    {90, 130, 150, 255},
+    {200, 60, 60, 255},
+    {220, 190, 40, 255},
+    {190, 150, 90, 255},
+    {150, 90, 210, 255},
+    {70, 190, 140, 255},
+    {230, 140, 40, 255},
+    {200, 60, 60, 255},
+    {60, 190, 190, 255},
 };
-#define ENEMY_PALETTE_SIZE (int)(sizeof(kEnemyPalette) / sizeof(kEnemyPalette[0]))
 
-Color spawner_random_enemy_color(void) {
-    return kEnemyPalette[rand() % ENEMY_PALETTE_SIZE];
+int spawner_random_enemy_kind(void) {
+    return rand() % ENEMY_KIND_COUNT;
 }
 
-EnemyShape spawner_random_enemy_shape(void) {
-    return (rand() % 2 == 0) ? ENEMY_SHAPE_INVADER : ENEMY_SHAPE_SAUCER;
+Color spawner_enemy_kind_accent_color(int kind) {
+    return kEnemyKindAccentColor[kind];
 }
 
 static void spawn_one_enemy(GameState *gs) {
@@ -38,8 +55,8 @@ static void spawn_one_enemy(GameState *gs) {
         e->y = -size;
         e->vx = (frand01() - 0.5f) * 20.0f * gs->scale;
         e->vy = difficulty_enemy_speed(gs->score) * gs->scale * (0.85f + frand01() * 0.3f);
-        e->color = spawner_random_enemy_color();
-        e->shape = spawner_random_enemy_shape();
+        e->kind = spawner_random_enemy_kind();
+        e->color = spawner_enemy_kind_accent_color(e->kind);
         e->fire_timer = 0.5f + frand01() * 1.5f;
         e->wobble_phase = frand01() * 6.2831853f;
         return;

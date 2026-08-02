@@ -6,11 +6,20 @@
 #include "adapters/graphics_primitives.h"
 #include "adapters/pixel_font.h"
 #include "adapters/player_sprite.h"
+#include "adapters/enemy_sprites.h"
 #include "domain/constants.h"
 
 typedef struct SdlRendererCtx {
     SDL_Window *window;
     SDL_Renderer *renderer;
+    /* One GPU texture per enemy kind, uploaded once from the embedded RGBA
+     * grids in adapters/enemy_sprites at renderer creation. Enemies and the
+     * boss can appear dozens at a time (MAX_ENEMIES), so unlike the single
+     * player ship they're drawn via a single textured blit each rather than
+     * one gp_fill_rect per pixel - same exact embedded pixel data, just
+     * blitted as a whole instead of cell by cell, to keep draw-call count
+     * bounded under a screen full of enemies. */
+    SDL_Texture *enemy_textures[ENEMY_KIND_COUNT];
 } SdlRendererCtx;
 
 static const Color kBackground = {8, 8, 26, 255};
@@ -90,37 +99,33 @@ static void draw_player(SdlRendererCtx *ctx, const Player *p, float scale) {
 }
 
 /* Shared by draw_enemy and draw_boss: the boss presents as "a randomly
- * picked enemy" at a much larger size, so it's the same two shape
- * variants just drawn at whatever size/color/shape the caller gives it. */
-static void draw_monster_shape(SdlRendererCtx *ctx, float x, float y, float size, Color color, EnemyShape shape) {
-    float half = size / 2.0f;
-    Color dark = lerp_color(color, (Color){0, 0, 0, 255}, 0.55f);
+ * picked enemy" at a much larger size, so it's the same sprite blit as a
+ * regular enemy just given a bigger bounding size. Pixel-perfect
+ * reproduction of the 16 reference designs, embedded as RGBA grids (see
+ * adapters/enemy_sprites) and uploaded once to a GPU texture per kind
+ * (ctx->enemy_textures) - up to MAX_ENEMIES of these can be on screen at
+ * once, so each is one textured blit rather than one gp_fill_rect per
+ * pixel (SDL_HINT_RENDER_SCALE_QUALITY is set to nearest globally at
+ * renderer creation, so the scale-up still lands on crisp pixel blocks,
+ * not a blurred stretch). */
+static void draw_enemy_sprite(SdlRendererCtx *ctx, int kind, float x, float y, float size) {
+    const EnemySpriteSheet *sheet = &kEnemySprites[kind];
+    int long_side = sheet->grid_w > sheet->grid_h ? sheet->grid_w : sheet->grid_h;
+    float w = size * (float)sheet->grid_w / (float)long_side;
+    float h = size * (float)sheet->grid_h / (float)long_side;
 
-    if (shape == ENEMY_SHAPE_INVADER) {
-        gp_fill_triangle(ctx->renderer, x, y - half, x - half, y + half * 0.25f,
-                          x + half, y + half * 0.25f, color);
-        for (int k = -1; k <= 1; k++) {
-            gp_fill_rect(ctx->renderer, x + (float)k * half * 0.5f - half * 0.06f, y + half * 0.25f,
-                         half * 0.12f, half * 0.7f, color);
-        }
-        gp_fill_circle(ctx->renderer, x - half * 0.3f, y - half * 0.1f, half * 0.16f, dark);
-        gp_fill_circle(ctx->renderer, x + half * 0.3f, y - half * 0.1f, half * 0.16f, dark);
-    } else {
-        gp_fill_ellipse(ctx->renderer, x, y, half, half * 0.55f, color);
-        gp_fill_circle(ctx->renderer, x, y - half * 0.25f, half * 0.45f, lerp_color(color, kWhite, 0.35f));
-        gp_fill_circle(ctx->renderer, x - half * 0.35f, y + half * 0.05f, half * 0.14f, dark);
-        gp_fill_circle(ctx->renderer, x + half * 0.35f, y + half * 0.05f, half * 0.14f, dark);
-    }
+    SDL_FRect dst = {x - w / 2.0f, y - h / 2.0f, w, h};
+    SDL_RenderCopyF(ctx->renderer, ctx->enemy_textures[kind], NULL, &dst);
 }
 
 static void draw_enemy(SdlRendererCtx *ctx, const Enemy *e) {
     if (!e->alive) return;
-    draw_monster_shape(ctx, e->x, e->y, e->size, e->color, e->shape);
+    draw_enemy_sprite(ctx, e->kind, e->x, e->y, e->size);
 }
 
 static void draw_boss(SdlRendererCtx *ctx, const Boss *b) {
     if (!b->alive) return;
-    draw_monster_shape(ctx, b->x, b->y, b->size, b->color, b->shape);
+    draw_enemy_sprite(ctx, b->kind, b->x, b->y, b->size);
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
     /* This ring IS the fatal contact boundary (see check_collisions in
      * usecases/game_logic.c, which reads the exact same
@@ -339,10 +344,32 @@ static void sdl_render_frame(void *self, const GameState *gs) {
 static void sdl_render_destroy(void *self) {
     SdlRendererCtx *ctx = self;
     if (!ctx) return;
+    for (int i = 0; i < ENEMY_KIND_COUNT; i++) {
+        if (ctx->enemy_textures[i]) SDL_DestroyTexture(ctx->enemy_textures[i]);
+    }
     if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
     if (ctx->window) SDL_DestroyWindow(ctx->window);
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
     free(ctx);
+}
+
+/* Uploads adapters/enemy_sprites' embedded RGBA grids to GPU textures,
+ * once, at startup - see draw_enemy_sprite for why enemies are blitted as
+ * whole textures instead of per-pixel rects like the single player ship. */
+static bool sdl_load_enemy_textures(SdlRendererCtx *ctx) {
+    for (int i = 0; i < ENEMY_KIND_COUNT; i++) {
+        const EnemySpriteSheet *sheet = &kEnemySprites[i];
+        SDL_Texture *tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32,
+                                              SDL_TEXTUREACCESS_STATIC, sheet->grid_w, sheet->grid_h);
+        if (!tex) {
+            fprintf(stderr, "SDL_CreateTexture failed for enemy kind %d: %s\n", i, SDL_GetError());
+            return false;
+        }
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        SDL_UpdateTexture(tex, NULL, sheet->pixels, sheet->grid_w * (int)sizeof(uint32_t));
+        ctx->enemy_textures[i] = tex;
+    }
+    return true;
 }
 
 RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallback_h,
@@ -380,6 +407,14 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
         return NULL;
     }
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
+    if (!sdl_load_enemy_textures(ctx)) {
+        SDL_DestroyRenderer(ctx->renderer);
+        SDL_DestroyWindow(ctx->window);
+        free(ctx);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return NULL;
+    }
 
     /* Every draw call in this file works directly in real screen pixels -
      * the playfield's logical size *is* the physical screen, at whatever

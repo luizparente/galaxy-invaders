@@ -58,18 +58,13 @@ typedef struct Player {
     bool god_mode; /* toggled by Ctrl+G; ship turns gold and cannot die */
 } Player;
 
-typedef enum EnemyShape {
-    ENEMY_SHAPE_INVADER = 0,
-    ENEMY_SHAPE_SAUCER = 1,
-} EnemyShape;
-
 typedef struct Enemy {
     bool alive;
     float x, y;
     float vx, vy;
     float size;
-    Color color;
-    EnemyShape shape;
+    Color color; /* tints this enemy's projectiles; the sprite itself carries its own fixed colors */
+    int kind; /* index into adapters/enemy_sprites' kEnemySprites, [0, ENEMY_KIND_COUNT) */
     float fire_timer;
     float wobble_phase;
 } Enemy;
@@ -123,8 +118,7 @@ typedef struct Boss {
     bool alive;
     float x, y;
     float size;
-    Color color;
-    EnemyShape shape;
+    int kind; /* index into adapters/enemy_sprites' kEnemySprites, [0, ENEMY_KIND_COUNT) */
 
     int hits_taken;
     int hits_required;
