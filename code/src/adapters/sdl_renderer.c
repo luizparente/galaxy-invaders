@@ -359,7 +359,13 @@ static void sdl_render_destroy(void *self) {
 static bool sdl_load_enemy_textures(SdlRendererCtx *ctx) {
     for (int i = 0; i < ENEMY_KIND_COUNT; i++) {
         const EnemySpriteSheet *sheet = &kEnemySprites[i];
-        SDL_Texture *tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA32,
+        /* RGBA8888, not the RGBA32 alias: RGBA8888 is a fixed bit layout
+         * (R in the most significant byte of the 32-bit value, A in the
+         * least), which is exactly how enemy_sprites.c packs each pixel
+         * ((r<<24)|(g<<16)|(b<<8)|a). RGBA32 instead means "R is byte 0 in
+         * memory," which resolves to a *different* bit layout on a
+         * little-endian machine and silently scrambles every channel. */
+        SDL_Texture *tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888,
                                               SDL_TEXTUREACCESS_STATIC, sheet->grid_w, sheet->grid_h);
         if (!tex) {
             fprintf(stderr, "SDL_CreateTexture failed for enemy kind %d: %s\n", i, SDL_GetError());
