@@ -27,7 +27,6 @@ typedef struct SdlRendererCtx {
 } SdlRendererCtx;
 
 static const Color kBackground = {8, 8, 26, 255};
-static const Color kCyan = {70, 230, 230, 255};
 static const Color kYellow = {235, 220, 70, 255};
 static const Color kWhite = {235, 235, 235, 255};
 static const Color kDim = {120, 120, 140, 255};
@@ -275,17 +274,177 @@ static void draw_centered(SdlRendererCtx *ctx, const GameState *gs, const char *
     pf_draw_text(ctx->renderer, ((float)gs->screen_w - w) / 2.0f, y, size, c, text);
 }
 
+/* A soft atmospheric halo just outside the sphere's true edge - a few
+ * widening, dimming rings - the cheap trick that sells "glowing planet in
+ * space" instead of "flat circle." */
+static void draw_planet_atmosphere(SdlRendererCtx *ctx, float x, float y, float r, Color base) {
+    for (int i = 0; i < 3; i++) {
+        float rr = r * (1.05f + 0.06f * (float)i);
+        Color c = base;
+        c.a = (unsigned char)(65 - i * 18);
+        gp_draw_circle_outline(ctx->renderer, x, y, rr, c);
+    }
+}
+
+/* The sphere itself: a base fill, then four offset tonal blobs (two
+ * darker toward the shadow corner, two lighter toward the light-source
+ * corner), each nested strictly inside the base circle's radius so they
+ * read as a smooth shading gradient rather than extra circles poking out
+ * past the silhouette - a cheap stand-in for a real radial gradient. */
+static void draw_planet_sphere(SdlRendererCtx *ctx, float x, float y, float r, Color base) {
+    gp_fill_circle(ctx->renderer, x, y, r, base);
+
+    Color mid_dark = lerp_color(base, (Color){0, 0, 0, 255}, 0.30f);
+    Color dark = lerp_color(base, (Color){0, 0, 0, 255}, 0.55f);
+    Color mid_light = lerp_color(base, kWhite, 0.22f);
+    Color light = lerp_color(base, kWhite, 0.50f);
+
+    gp_fill_circle(ctx->renderer, x + r * 0.12f, y + r * 0.12f, r * 0.80f, mid_dark);
+    gp_fill_circle(ctx->renderer, x + r * 0.22f, y + r * 0.22f, r * 0.55f, dark);
+    gp_fill_circle(ctx->renderer, x - r * 0.20f, y - r * 0.20f, r * 0.55f, mid_light);
+    gp_fill_circle(ctx->renderer, x - r * 0.32f, y - r * 0.32f, r * 0.22f, light);
+}
+
+/* A flattened ellipse drawn *before* the sphere so the planet's own fill
+ * covers its middle third, leaving only the two tilted "wings" visible on
+ * either side - reads as a ring passing behind the planet without needing
+ * true front/back hollow-band geometry. */
+static void draw_planet_ring(SdlRendererCtx *ctx, float x, float y, float rx, float ry, Color c) {
+    gp_fill_ellipse(ctx->renderer, x, y, rx, ry, c);
+    Color rim = lerp_color(c, kWhite, 0.3f);
+    gp_fill_ellipse(ctx->renderer, x, y, rx, ry * 0.55f, rim);
+}
+
+static void draw_crater(SdlRendererCtx *ctx, float x, float y, float r, Color planet_base) {
+    Color shadow = lerp_color(planet_base, (Color){0, 0, 0, 255}, 0.55f);
+    Color rim = lerp_color(planet_base, kWhite, 0.25f);
+    gp_fill_circle(ctx->renderer, x, y, r, shadow);
+    gp_fill_circle(ctx->renderer, x - r * 0.25f, y - r * 0.25f, r * 0.4f, rim);
+}
+
+/* A textured, ringed, 3D-shaded planet: atmosphere glow, an optional ring
+ * behind it, the shaded sphere, then a scatter of surface detail on top -
+ * continents/clouds, craters, or mottling depending on `style`, so each
+ * planet reads as a distinct little world rather than a flat tinted disc. */
+typedef enum PlanetStyle { PLANET_OCEAN, PLANET_ROCKY, PLANET_MOSSY, PLANET_MISTY } PlanetStyle;
+
+static void draw_planet(SdlRendererCtx *ctx, float x, float y, float r, Color base,
+                         PlanetStyle style, bool ringed) {
+    draw_planet_atmosphere(ctx, x, y, r, base);
+    if (ringed) {
+        draw_planet_ring(ctx, x, y, r * 1.75f, r * 0.42f, lerp_color(base, kWhite, 0.4f));
+    }
+    draw_planet_sphere(ctx, x, y, r, base);
+
+    switch (style) {
+        case PLANET_OCEAN: {
+            Color land = (Color){70, 150, 80, 255};
+            gp_fill_circle(ctx->renderer, x - r * 0.30f, y - r * 0.15f, r * 0.30f, land);
+            gp_fill_circle(ctx->renderer, x - r * 0.05f, y - r * 0.35f, r * 0.20f, land);
+            gp_fill_circle(ctx->renderer, x + r * 0.15f, y + r * 0.05f, r * 0.22f, land);
+            gp_fill_circle(ctx->renderer, x - r * 0.35f, y + r * 0.30f, r * 0.16f, land);
+            Color cloud = (Color){235, 245, 250, 130};
+            SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+            gp_fill_ellipse(ctx->renderer, x + r * 0.35f, y - r * 0.30f, r * 0.28f, r * 0.09f, cloud);
+            gp_fill_ellipse(ctx->renderer, x + r * 0.10f, y + r * 0.40f, r * 0.32f, r * 0.10f, cloud);
+            break;
+        }
+        case PLANET_ROCKY:
+            draw_crater(ctx, x - r * 0.25f, y - r * 0.10f, r * 0.16f, base);
+            draw_crater(ctx, x + r * 0.15f, y - r * 0.30f, r * 0.11f, base);
+            draw_crater(ctx, x + r * 0.05f, y + r * 0.25f, r * 0.13f, base);
+            draw_crater(ctx, x - r * 0.40f, y + r * 0.20f, r * 0.09f, base);
+            break;
+        case PLANET_MOSSY: {
+            Color patch = lerp_color(base, (Color){0, 0, 0, 255}, 0.35f);
+            SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+            Color soft = patch;
+            soft.a = 160;
+            gp_fill_circle(ctx->renderer, x - r * 0.30f, y + r * 0.05f, r * 0.34f, soft);
+            gp_fill_circle(ctx->renderer, x + r * 0.20f, y + r * 0.30f, r * 0.24f, soft);
+            gp_fill_circle(ctx->renderer, x + r * 0.30f, y - r * 0.20f, r * 0.18f, soft);
+            break;
+        }
+        case PLANET_MISTY:
+        default:
+            break;
+    }
+}
+
+/* A 4-point twinkle: two crossed diamonds. */
+static void draw_sparkle(SdlRendererCtx *ctx, float x, float y, float size, Color c) {
+    float spread = size * 0.3f;
+    gp_fill_triangle(ctx->renderer, x, y - size, x - spread, y, x + spread, y, c);
+    gp_fill_triangle(ctx->renderer, x, y + size, x - spread, y, x + spread, y, c);
+    gp_fill_triangle(ctx->renderer, x - size, y, x, y - spread, x, y + spread, c);
+    gp_fill_triangle(ctx->renderer, x + size, y, x, y - spread, x, y + spread, c);
+}
+
+static void draw_menu_decorations(SdlRendererCtx *ctx, const GameState *gs) {
+    float w = (float)gs->screen_w, h = (float)gs->screen_h, s = gs->scale;
+
+    /* Two big "hero" planets anchored just past opposite corners so most
+     * of their now much larger bulk bleeds off-canvas - a bigger planet
+     * reads as closer/grander rather than just cluttering the frame if it
+     * shares the frame's edge instead of floating free inside it. Two
+     * smaller ones stay fully on-screen for scale contrast (depth cue). */
+    draw_planet(ctx, w * 0.06f, h * 0.02f, 90.0f * s, (Color){70, 130, 210, 255}, PLANET_OCEAN, false);
+    draw_planet(ctx, w * 0.08f, h * 0.90f, 155.0f * s, (Color){70, 150, 90, 255}, PLANET_MOSSY, true);
+    draw_planet(ctx, w * 0.86f, h * 0.10f, 34.0f * s, (Color){170, 100, 70, 255}, PLANET_ROCKY, false);
+    draw_planet(ctx, w * 0.85f, h * 0.66f, 24.0f * s, (Color){120, 100, 150, 255}, PLANET_MISTY, false);
+
+    static const Color kSparkleGold = {255, 210, 120, 255};
+    static const Color kSparklePink = {255, 150, 220, 255};
+    draw_sparkle(ctx, w * 0.20f, h * 0.20f, 6.0f * s, kWhite);
+    draw_sparkle(ctx, w * 0.78f, h * 0.14f, 5.0f * s, kSparkleGold);
+    draw_sparkle(ctx, w * 0.85f, h * 0.55f, 7.0f * s, kSparklePink);
+    draw_sparkle(ctx, w * 0.15f, h * 0.62f, 5.0f * s, kSparkleGold);
+    draw_sparkle(ctx, w * 0.55f, h * 0.90f, 6.0f * s, kWhite);
+    draw_sparkle(ctx, w * 0.93f, h * 0.85f, 5.0f * s, kSparklePink);
+}
+
 static void draw_menu_screen(SdlRendererCtx *ctx, const GameState *gs) {
-    float title_size = 7.0f * gs->scale;
-    draw_centered(ctx, gs, "GALAXY", (float)gs->screen_h * 0.16f, title_size, kCyan);
-    draw_centered(ctx, gs, "INVADERS", (float)gs->screen_h * 0.16f + 60.0f * gs->scale, title_size, kCyan);
+    draw_menu_decorations(ctx, gs);
+
+    float title_size = 9.0f * gs->scale;
+    float title_w1 = pf_text_width("GALAXY", title_size);
+    float title_w2 = pf_text_width("INVADERS", title_size);
+    float y1 = (float)gs->screen_h * 0.12f;
+    float y2 = y1 + 78.0f * gs->scale;
+
+    static const Color kMagentaGlow = {255, 40, 190, 255};
+    static const Color kMagentaEdge = {255, 140, 235, 255};
+    static const Color kMagentaFill = {110, 15, 85, 255};
+    static const Color kMagentaShadow = {70, 8, 55, 255};
+    static const Color kGreenGlow = {60, 255, 90, 255};
+    static const Color kGreenEdge = {180, 255, 190, 255};
+    static const Color kGreenFill = {15, 95, 35, 255};
+    static const Color kGreenShadow = {8, 55, 18, 255};
+
+    pf_draw_text_neon(ctx->renderer, ((float)gs->screen_w - title_w1) / 2.0f, y1, title_size,
+                       kMagentaGlow, kMagentaEdge, kMagentaFill, kMagentaShadow, "GALAXY");
+    pf_draw_text_neon(ctx->renderer, ((float)gs->screen_w - title_w2) / 2.0f, y2, title_size,
+                       kGreenGlow, kGreenEdge, kGreenFill, kGreenShadow, "INVADERS");
 
     bool blink_on = fmodf(gs->menu_blink_timer, 1.0f) < 0.5f;
     if (blink_on) {
         draw_centered(ctx, gs, "START GAME", (float)gs->screen_h * 0.6f, 4.0f * gs->scale, kYellow);
     }
-    draw_centered(ctx, gs, "ARROWS-WASD MOVE  SPACE FIRE  ESC PAUSE", (float)gs->screen_h * 0.85f,
-                  1.6f * gs->scale, kDim);
+
+    /* Unlike the title, this line has no outline of its own to stay
+     * legible over whatever decoration (a planet, a bright sparkle) ends
+     * up behind it, so give it a translucent backing bar instead of
+     * fighting to keep every decoration's exact position clear of it. */
+    const char *instructions = "ARROWS-WASD MOVE  SPACE FIRE  ESC PAUSE";
+    float instr_size = 1.6f * gs->scale;
+    float instr_y = (float)gs->screen_h * 0.85f;
+    float instr_w = pf_text_width(instructions, instr_size);
+    float instr_h = 7.0f * instr_size;
+    float pad_x = 8.0f * gs->scale, pad_y = 4.0f * gs->scale;
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    gp_fill_rect(ctx->renderer, ((float)gs->screen_w - instr_w) / 2.0f - pad_x, instr_y - pad_y,
+                 instr_w + pad_x * 2.0f, instr_h + pad_y * 2.0f, (Color){0, 0, 0, 130});
+    draw_centered(ctx, gs, instructions, instr_y, instr_size, kDim);
 }
 
 static void draw_pause_overlay(SdlRendererCtx *ctx, const GameState *gs) {
