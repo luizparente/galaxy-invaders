@@ -367,6 +367,7 @@ static bool sdl_load_sprite_textures(SDL_Renderer *renderer, const EnemySpriteSh
                                       SDL_Texture **out_textures) {
     for (int i = 0; i < ENEMY_KIND_COUNT; i++) {
         const EnemySpriteSheet *sheet = &sheets[i];
+        if (!sheet->pixels) continue; /* not every kind has boss-scale art (see kBossSprites) */
         /* RGBA8888, not the RGBA32 alias: RGBA8888 is a fixed bit layout
          * (R in the most significant byte of the 32-bit value, A in the
          * least), which is exactly how enemy_sprites.c packs each pixel

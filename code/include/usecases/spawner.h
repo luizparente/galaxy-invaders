@@ -15,4 +15,10 @@ void spawner_update(GameState *gs, float dt);
 int spawner_random_enemy_kind(void);
 Color spawner_enemy_kind_accent_color(int kind);
 
+/* A separate, smaller pool for the boss: only the kinds that have a
+ * dedicated richer, high-resolution redesign for the boss's ~10x size
+ * (adapters/enemy_sprites' kBossSprites) - the rest still spawn as
+ * ordinary enemies via spawner_random_enemy_kind, just never as a boss. */
+int spawner_random_boss_kind(void);
+
 #endif

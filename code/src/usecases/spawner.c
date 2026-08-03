@@ -41,6 +41,18 @@ Color spawner_enemy_kind_accent_color(int kind) {
     return kEnemyKindAccentColor[kind];
 }
 
+/* Kinds with a dedicated richer boss-scale redesign in kBossSprites (see
+ * adapters/enemy_sprites.c) - phoenix, green spider, purple interceptor,
+ * cyan interceptor, magenta interceptor, orange turret, slate stealth,
+ * purple elite, teal spider, bat bomber, abyssal kraken. The rest still
+ * spawn as ordinary enemies, just never get picked for the boss. */
+static const int kBossCapableKinds[] = { 0, 1, 3, 4, 5, 6, 7, 11, 12, 14, 15 };
+#define BOSS_CAPABLE_KIND_COUNT (int)(sizeof(kBossCapableKinds) / sizeof(kBossCapableKinds[0]))
+
+int spawner_random_boss_kind(void) {
+    return kBossCapableKinds[rand() % BOSS_CAPABLE_KIND_COUNT];
+}
+
 static void spawn_one_enemy(GameState *gs) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
