@@ -7,14 +7,23 @@
 #include "adapters/sdl_audio.h"
 
 #define SAMPLE_RATE 44100
-#define NUM_VOICES 12
-#define NUM_STEPS 16
+#define NUM_VOICES 20
+
+/* --- Song timing: 140bpm, 16th-note step sequencer, 64-bar arrangement. --- */
+#define BPM 140.0
+#define STEPS_PER_BAR 16
+#define MOTIF_BARS 2
+#define MOTIF_STEPS (STEPS_PER_BAR * MOTIF_BARS) /* 32: each pattern is a 2-bar phrase that loops within its section. */
+#define SONG_TOTAL_BARS 64
+#define TOTAL_STEPS (SONG_TOTAL_BARS * STEPS_PER_BAR)
 
 typedef enum VoiceKind {
     VOICE_SINE_SWEEP,
     VOICE_SQUARE_BEEP,
     VOICE_KICK,
     VOICE_SNARE_NOISE,
+    VOICE_HIHAT,
+    VOICE_CRASH,
 } VoiceKind;
 
 typedef struct Voice {
@@ -29,6 +38,25 @@ typedef struct Voice {
     unsigned int rng_state;
 } Voice;
 
+/* A 2-bar (32 sixteenth-note step) musical phrase: distorted guitar, bass,
+ * a lead/solo line, and a drum kit. 0.0 = rest, 0 = no drum hit. The
+ * keyboard pad is not stored per-pattern; it tracks the bass line an
+ * octave up with its own soft synth timbre (see kBass -> keys derivation). */
+typedef struct Pattern {
+    const double *guitar;
+    const double *bass;
+    const double *lead;
+    const unsigned char *kick;
+    const unsigned char *snare;
+    const unsigned char *hihat;
+    const unsigned char *crash;
+} Pattern;
+
+typedef struct SongSection {
+    const Pattern *pattern;
+    int bars;
+} SongSection;
+
 typedef struct SdlAudioCtx {
     SDL_AudioDeviceID device;
     SDL_AudioSpec spec;
@@ -40,21 +68,248 @@ typedef struct SdlAudioCtx {
     /* Audio-thread-owned sequencer state. */
     double music_time;
     int last_step_index;
-    double lead_phase;
+
+    double guitar_root_phase;
+    double guitar_fifth_phase;
+    double guitar_prev_freq;
+    double current_guitar_freq;
+
     double bass_phase;
+    double bass_prev_freq;
+    double current_bass_freq;
+
+    double lead_phase;
+    double lead_prev_freq;
+    double lead_note_time;
+    double current_lead_freq;
+
+    double keys_phase_a;
+    double keys_phase_b;
+    double keys_prev_freq;
+    double current_keys_freq;
+
     unsigned int noise_rng;
 
     Voice voices[NUM_VOICES];
 } SdlAudioCtx;
 
-/* A minor pentatonic-flavored 16-step (two-bar) riff. 0 = rest. */
-static const double kLeadNotes[NUM_STEPS] = {
-    440.00, 0.0, 523.25, 587.33,
-    659.25, 587.33, 523.25, 0.0,
-    440.00, 0.0, 392.00, 440.00,
-    523.25, 0.0, 440.00, 0.0,
+/* ---- Note frequencies (Hz), equal temperament, E minor. ---- */
+#define REST 0.0
+/* Bass register. */
+#define N_E1 41.20
+#define N_FS1 46.25
+#define N_G1 49.00
+#define N_A1 55.00
+#define N_B1 61.74
+#define N_D2 73.42
+/* Guitar register. */
+#define N_E2 82.41
+#define N_B2 123.47
+#define N_D3 146.83
+#define N_E3 164.81
+#define N_FS3 185.00
+#define N_G3 196.00
+#define N_A3 220.00
+/* Lead/solo register. */
+#define N_E4 329.63
+#define N_FS4 369.99
+#define N_G4 392.00
+#define N_A4 440.00
+#define N_B4 493.88
+#define N_C5 523.25
+#define N_D5 587.33
+#define N_E5 659.25
+#define N_G5 783.99
+
+/* ---- INTRO: sparse stab building into the main gallop. ---- */
+static const double guitar_intro[MOTIF_STEPS] = {
+    N_E3,0,0,0,      0,0,N_E3,0,      0,0,0,N_E3,      0,0,0,0,
+    N_E3,0,N_E3,0,   N_E3,0,N_E3,0,   N_E3,0,N_E3,N_E3, N_E3,N_E3,N_E3,N_E3,
 };
-static const double kBassNotes[2] = {220.00, 196.00};
+static const double bass_intro[MOTIF_STEPS] = {
+    N_E1,0,0,0, 0,0,0,0,    0,0,0,0,    0,0,0,0,
+    N_E1,0,0,0, N_E1,0,0,0, N_E1,0,0,0, N_E1,0,0,0,
+};
+static const double lead_intro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, N_E4,N_G4,N_B4,N_E5,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+};
+static const unsigned char kick_intro[MOTIF_STEPS] = {
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,1,
+};
+static const unsigned char snare_intro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_intro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char crash_intro[MOTIF_STEPS] = { 1,0,0,0 };
+
+/* ---- RIFF_A: driving verse gallop, Em -> F#m answer phrase. ---- */
+static const double guitar_riffA[MOTIF_STEPS] = {
+    N_E3,0,N_E3,0,   N_E3,0,N_E3,N_E3,   N_G3,0,N_E3,0,   N_E3,0,N_D3,N_E3,
+    N_FS3,0,N_FS3,0, N_FS3,0,N_FS3,N_FS3, N_E3,0,N_D3,0,   N_E3,0,N_B2,0,
+};
+static const double bass_riffA[MOTIF_STEPS] = {
+    N_E1,0,N_E1,0,   N_E1,0,N_E1,N_E1,   N_G1,0,N_E1,0,   N_E1,0,N_D2,N_E1,
+    N_FS1,0,N_FS1,0, N_FS1,0,N_FS1,N_FS1, N_E1,0,N_D2,0,   N_E1,0,N_B1,0,
+};
+static const double lead_riffA[MOTIF_STEPS] = {0};
+static const unsigned char kick_riffA[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,1, 1,0,1,0, 1,0,1,1,
+    1,0,1,0, 1,0,1,1, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char snare_riffA[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_riffA[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char crash_riffA[MOTIF_STEPS] = {0};
+
+/* ---- RIFF_B: anthemic chorus, Em - G - Am - B / B - D - E - E. ---- */
+static const double guitar_riffB[MOTIF_STEPS] = {
+    N_E3,0,N_E3,0, N_G3,0,N_G3,0, N_A3,0,N_A3,0, N_B2,0,N_B2,0,
+    N_B2,0,N_B2,0, N_D3,0,N_D3,0, N_E3,0,N_E3,0, N_E3,0,N_E3,N_E3,
+};
+static const double bass_riffB[MOTIF_STEPS] = {
+    N_E1,0,N_E1,0, N_G1,0,N_G1,0, N_A1,0,N_A1,0, N_B1,0,N_B1,0,
+    N_B1,0,N_B1,0, N_D2,0,N_D2,0, N_E1,0,N_E1,0, N_E1,0,N_E1,N_E1,
+};
+static const double lead_riffB[MOTIF_STEPS] = {0};
+static const unsigned char kick_riffB[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,1,
+};
+static const unsigned char snare_riffB[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_riffB[MOTIF_STEPS] = {
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+};
+static const unsigned char crash_riffB[MOTIF_STEPS] = { 1,0,0,0 };
+
+/* ---- BRIDGE: guitar/bass drop to half-time pulses, keys + lead solo on top. ---- */
+static const double guitar_bridge[MOTIF_STEPS] = {
+    N_E3,0,0,0, 0,0,0,0, N_G3,0,0,0, 0,0,0,0,
+    N_A3,0,0,0, 0,0,0,0, N_B2,0,0,0, 0,0,0,0,
+};
+static const double bass_bridge[MOTIF_STEPS] = {
+    N_E1,0,0,0, 0,0,0,0, N_G1,0,0,0, 0,0,0,0,
+    N_A1,0,0,0, 0,0,0,0, N_B1,0,0,0, 0,0,0,0,
+};
+static const double lead_bridge[MOTIF_STEPS] = {
+    N_E4,0,N_G4,N_A4, N_B4,0,N_A4,N_G4, N_B4,0,N_D5,0,     N_B4,N_A4,N_G4,0,
+    N_A4,0,N_C5,N_D5, N_E5,0,N_D5,N_C5, N_B4,N_A4,N_G4,N_FS4, N_E4,0,0,0,
+};
+static const unsigned char kick_bridge[MOTIF_STEPS] = {
+    1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0,
+    1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0,
+};
+static const unsigned char snare_bridge[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_bridge[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char crash_bridge[MOTIF_STEPS] = { 1,0,0,0 };
+
+/* ---- BREAKDOWN: heavy unison guitar/bass chugs, syncopated double kick. ---- */
+static const double guitar_breakdown[MOTIF_STEPS] = {
+    N_E2,0,0,N_E2, 0,0,N_E2,0, N_E2,0,0,N_E2, 0,0,N_E2,N_E2,
+    N_E2,0,0,0,    0,0,0,0,    N_E2,0,0,N_E2, 0,0,N_E2,N_E2,
+};
+static const double bass_breakdown[MOTIF_STEPS] = {
+    N_E2,0,0,N_E2, 0,0,N_E2,0, N_E2,0,0,N_E2, 0,0,N_E2,N_E2,
+    N_E2,0,0,0,    0,0,0,0,    N_E2,0,0,N_E2, 0,0,N_E2,N_E2,
+};
+static const double lead_breakdown[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,N_E5,N_E5,
+};
+static const unsigned char kick_breakdown[MOTIF_STEPS] = {
+    1,0,0,1, 0,0,1,0, 1,0,0,1, 0,0,1,1,
+    1,0,0,0, 0,0,0,0, 1,0,0,1, 0,0,1,1,
+};
+static const unsigned char snare_breakdown[MOTIF_STEPS] = {
+    1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0,
+    1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0,
+};
+static const unsigned char hihat_breakdown[MOTIF_STEPS] = {0};
+static const unsigned char crash_breakdown[MOTIF_STEPS] = { 1,0,0,0 };
+
+/* ---- OUTRO: big reprise, climbing lead line back into the intro. ---- */
+static const double guitar_outro[MOTIF_STEPS] = {
+    N_E3,0,N_E3,0, N_G3,0,N_E3,0, N_E3,0,N_E3,0, N_G3,0,N_A3,0,
+    N_B2,0,N_B2,0, N_D3,0,N_B2,0, N_E3,0,N_E3,0, N_E3,N_E3,N_E3,N_E3,
+};
+static const double bass_outro[MOTIF_STEPS] = {
+    N_E1,0,N_E1,0, N_G1,0,N_E1,0, N_E1,0,N_E1,0, N_G1,0,N_A1,0,
+    N_B1,0,N_B1,0, N_D2,0,N_B1,0, N_E1,0,N_E1,0, N_E1,N_E1,N_E1,N_E1,
+};
+static const double lead_outro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, N_B4,0,N_D5,0, N_E5,0,N_G5,0,
+};
+static const unsigned char kick_outro[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,1,1,1,
+};
+static const unsigned char snare_outro[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_outro[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char crash_outro[MOTIF_STEPS] = {
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0,
+};
+
+static const Pattern kPatternIntro = {
+    guitar_intro, bass_intro, lead_intro, kick_intro, snare_intro, hihat_intro, crash_intro,
+};
+static const Pattern kPatternRiffA = {
+    guitar_riffA, bass_riffA, lead_riffA, kick_riffA, snare_riffA, hihat_riffA, crash_riffA,
+};
+static const Pattern kPatternRiffB = {
+    guitar_riffB, bass_riffB, lead_riffB, kick_riffB, snare_riffB, hihat_riffB, crash_riffB,
+};
+static const Pattern kPatternBridge = {
+    guitar_bridge, bass_bridge, lead_bridge, kick_bridge, snare_bridge, hihat_bridge, crash_bridge,
+};
+static const Pattern kPatternBreakdown = {
+    guitar_breakdown, bass_breakdown, lead_breakdown, kick_breakdown, snare_breakdown, hihat_breakdown, crash_breakdown,
+};
+static const Pattern kPatternOutro = {
+    guitar_outro, bass_outro, lead_outro, kick_outro, snare_outro, hihat_outro, crash_outro,
+};
+
+/* Arrangement: intro, verse, chorus, verse, solo bridge, chorus, breakdown,
+ * verse, big outro -- 4+8+8+8+8+8+4+8+8 = 64 bars, then loops. */
+static const SongSection kSong[] = {
+    { &kPatternIntro,     4 },
+    { &kPatternRiffA,     8 },
+    { &kPatternRiffB,     8 },
+    { &kPatternRiffA,     8 },
+    { &kPatternBridge,    8 },
+    { &kPatternRiffB,     8 },
+    { &kPatternBreakdown, 4 },
+    { &kPatternRiffA,     8 },
+    { &kPatternOutro,     8 },
+};
+#define SONG_NUM_SECTIONS (int)(sizeof(kSong) / sizeof(kSong[0]))
 
 static double square_wave(double phase) {
     return phase < 0.5 ? 1.0 : -1.0;
@@ -62,6 +317,19 @@ static double square_wave(double phase) {
 
 static double triangle_wave(double phase) {
     return 4.0 * fabs(phase - floor(phase + 0.5)) - 1.0;
+}
+
+static double saw_wave(double phase) {
+    return 2.0 * (phase - floor(phase + 0.5));
+}
+
+/* Fades a step's amplitude in/out over `edge` seconds at each 16th-note
+ * boundary, giving pitched channels a picked/chugged articulation. */
+static double step_env(double time_in_step, double step_duration, double edge) {
+    if (time_in_step < edge) return time_in_step / edge;
+    double remain = step_duration - time_in_step;
+    if (remain < edge) return remain / edge;
+    return 1.0;
 }
 
 static float rng_noise(unsigned int *state) {
@@ -122,11 +390,74 @@ static float render_voice(Voice *v, double dt) {
         case VOICE_SNARE_NOISE:
             sample = rng_noise(&v->rng_state) * (float)(env * env);
             break;
+        case VOICE_HIHAT:
+            sample = rng_noise(&v->rng_state) * (float)(env * env * env);
+            break;
+        case VOICE_CRASH:
+            sample = rng_noise(&v->rng_state) * (float)env;
+            break;
     }
 
     v->t += dt;
     if (v->t >= v->duration) v->active = false;
     return sample * (float)v->amplitude;
+}
+
+/* Advances the sequencer by one 16th-note step: resolves the current song
+ * section/pattern, latches the new per-channel target notes, and (unless
+ * paused) fires any drum hits scheduled on this step. */
+static void advance_step(SdlAudioCtx *ctx, int global_step, bool paused) {
+    int bar = global_step / STEPS_PER_BAR;
+    int step_in_bar = global_step % STEPS_PER_BAR;
+
+    const Pattern *pat = kSong[0].pattern;
+    int bar_cursor = 0;
+    for (int s = 0; s < SONG_NUM_SECTIONS; s++) {
+        if (bar < bar_cursor + kSong[s].bars) {
+            pat = kSong[s].pattern;
+            break;
+        }
+        bar_cursor += kSong[s].bars;
+    }
+    int bar_in_section = bar - bar_cursor;
+    int motif_step = (bar_in_section % MOTIF_BARS) * STEPS_PER_BAR + step_in_bar;
+
+    double guitar_freq = pat->guitar[motif_step];
+    double bass_freq = pat->bass[motif_step];
+    double lead_freq = pat->lead[motif_step];
+    double keys_freq = bass_freq > 0.0 ? bass_freq * 2.0 : 0.0;
+
+    if (guitar_freq != ctx->guitar_prev_freq) {
+        ctx->guitar_root_phase = 0.0;
+        ctx->guitar_fifth_phase = 0.0;
+    }
+    ctx->guitar_prev_freq = guitar_freq;
+    ctx->current_guitar_freq = guitar_freq;
+
+    if (bass_freq != ctx->bass_prev_freq) ctx->bass_phase = 0.0;
+    ctx->bass_prev_freq = bass_freq;
+    ctx->current_bass_freq = bass_freq;
+
+    if (lead_freq != ctx->lead_prev_freq) {
+        ctx->lead_phase = 0.0;
+        ctx->lead_note_time = 0.0;
+    }
+    ctx->lead_prev_freq = lead_freq;
+    ctx->current_lead_freq = lead_freq;
+
+    if (keys_freq != ctx->keys_prev_freq) {
+        ctx->keys_phase_a = 0.0;
+        ctx->keys_phase_b = 0.0;
+    }
+    ctx->keys_prev_freq = keys_freq;
+    ctx->current_keys_freq = keys_freq;
+
+    if (!paused) {
+        if (pat->kick[motif_step]) trigger_voice(ctx, VOICE_KICK, 150.0, 45.0, 0.11, 0.55);
+        if (pat->snare[motif_step]) trigger_voice(ctx, VOICE_SNARE_NOISE, 0.0, 0.0, 0.09, 0.4);
+        if (pat->hihat[motif_step]) trigger_voice(ctx, VOICE_HIHAT, 0.0, 0.0, 0.045, 0.16);
+        if (pat->crash[motif_step]) trigger_voice(ctx, VOICE_CRASH, 0.0, 0.0, 0.9, 0.32);
+    }
 }
 
 static void audio_callback(void *userdata, Uint8 *stream, int len) {
@@ -137,44 +468,61 @@ static void audio_callback(void *userdata, Uint8 *stream, int len) {
 
     bool paused = ctx->paused;
     float difficulty01 = ctx->difficulty01;
-    double bpm = 100.0 + (double)difficulty01 * 40.0;
-    double step_duration = 60.0 / bpm / 2.0; /* eighth notes */
+    double step_duration = 60.0 / BPM / 4.0; /* sixteenth notes */
+    float energy_gain = 1.0f + 0.15f * difficulty01;
 
     for (int i = 0; i < frames; i++) {
-        int step_index = (int)fmod(ctx->music_time / step_duration, (double)NUM_STEPS);
-        if (step_index != ctx->last_step_index) {
-            ctx->last_step_index = step_index;
-            ctx->lead_phase = 0.0;
-            if (step_index % 8 == 0) ctx->bass_phase = 0.0;
-            if (!paused) {
-                if (step_index == 0 || step_index == 4) {
-                    trigger_voice(ctx, VOICE_KICK, 150.0, 40.0, 0.09, 0.5);
-                }
-                if (step_index == 2 || step_index == 6) {
-                    trigger_voice(ctx, VOICE_SNARE_NOISE, 0.0, 0.0, 0.07, 0.35);
-                }
-            }
+        int global_step = (int)fmod(ctx->music_time / step_duration, (double)TOTAL_STEPS);
+        if (global_step != ctx->last_step_index) {
+            ctx->last_step_index = global_step;
+            advance_step(ctx, global_step, paused);
         }
 
         float music_sample = 0.0f;
         if (!paused) {
-            double lead_freq = kLeadNotes[step_index];
             double time_in_step = fmod(ctx->music_time, step_duration);
-            double step_env = 1.0;
-            double edge = 0.005;
-            if (time_in_step < edge) step_env = time_in_step / edge;
-            else if (time_in_step > step_duration - edge) step_env = (step_duration - time_in_step) / edge;
+            double env_tight = step_env(time_in_step, step_duration, 0.004);
+            double env_lead = step_env(time_in_step, step_duration, 0.008);
+            double env_soft = step_env(time_in_step, step_duration, 0.015);
 
-            if (lead_freq > 0.0) {
-                music_sample += (float)(square_wave(ctx->lead_phase) * 0.16 * step_env);
-                ctx->lead_phase += lead_freq * dt;
-                if (ctx->lead_phase >= 1.0) ctx->lead_phase -= 1.0;
+            if (ctx->current_guitar_freq > 0.0) {
+                double root = saw_wave(ctx->guitar_root_phase);
+                double fifth = saw_wave(ctx->guitar_fifth_phase);
+                double mixed = root * 0.62 + fifth * 0.38;
+                double driven = tanh(mixed * 2.6);
+                music_sample += (float)(driven * 0.20 * env_tight);
+                ctx->guitar_root_phase += ctx->current_guitar_freq * dt;
+                if (ctx->guitar_root_phase >= 1.0) ctx->guitar_root_phase -= 1.0;
+                ctx->guitar_fifth_phase += ctx->current_guitar_freq * 1.5 * dt;
+                if (ctx->guitar_fifth_phase >= 1.0) ctx->guitar_fifth_phase -= 1.0;
             }
 
-            double bass_freq = kBassNotes[(step_index / 8) % 2];
-            music_sample += (float)(triangle_wave(ctx->bass_phase) * 0.14);
-            ctx->bass_phase += bass_freq * dt;
-            if (ctx->bass_phase >= 1.0) ctx->bass_phase -= 1.0;
+            if (ctx->current_bass_freq > 0.0) {
+                music_sample += (float)(triangle_wave(ctx->bass_phase) * 0.17 * env_tight);
+                ctx->bass_phase += ctx->current_bass_freq * dt;
+                if (ctx->bass_phase >= 1.0) ctx->bass_phase -= 1.0;
+            }
+
+            if (ctx->current_lead_freq > 0.0) {
+                double vibrato = 1.0 + 0.004 * sin(2.0 * M_PI * 6.0 * ctx->lead_note_time);
+                double driven = tanh(saw_wave(ctx->lead_phase) * 1.6);
+                music_sample += (float)(driven * 0.15 * env_lead);
+                ctx->lead_phase += ctx->current_lead_freq * vibrato * dt;
+                if (ctx->lead_phase >= 1.0) ctx->lead_phase -= 1.0;
+                ctx->lead_note_time += dt;
+            }
+
+            if (ctx->current_keys_freq > 0.0) {
+                double a = sin(ctx->keys_phase_a * 2.0 * M_PI);
+                double b = sin(ctx->keys_phase_b * 2.0 * M_PI);
+                music_sample += (float)((a * 0.5 + b * 0.5) * 0.09 * env_soft);
+                ctx->keys_phase_a += ctx->current_keys_freq * dt;
+                if (ctx->keys_phase_a >= 1.0) ctx->keys_phase_a -= 1.0;
+                ctx->keys_phase_b += ctx->current_keys_freq * 1.003 * dt;
+                if (ctx->keys_phase_b >= 1.0) ctx->keys_phase_b -= 1.0;
+            }
+
+            music_sample *= energy_gain;
         }
 
         float voice_sample = 0.0f;
@@ -182,7 +530,7 @@ static void audio_callback(void *userdata, Uint8 *stream, int len) {
             voice_sample += render_voice(&ctx->voices[v], dt);
         }
 
-        float sample = music_sample + voice_sample * 0.45f;
+        float sample = music_sample + voice_sample * 0.5f;
         if (sample > 1.0f) sample = 1.0f;
         if (sample < -1.0f) sample = -1.0f;
         out[i] = sample;
@@ -259,6 +607,7 @@ AudioPort *sdl_audio_create(void) {
         return NULL;
     }
     ctx->noise_rng = 0x9e3779b9u;
+    ctx->last_step_index = -1;
 
     SDL_AudioSpec desired;
     SDL_zero(desired);
