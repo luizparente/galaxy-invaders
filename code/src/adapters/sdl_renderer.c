@@ -276,8 +276,61 @@ static void draw_life_bar(SdlRendererCtx *ctx, const GameState *gs) {
     pf_draw_text(ctx->renderer, x + (w - text_w) / 2.0f, y + (h - text_h) / 2.0f, text_size, kDim, buf);
 }
 
+/* Top-center life bar for the boss fight: same grey-outline/red-fill
+ * language as the player's life bar (draw_life_bar), with a "BOSS" label
+ * centered underneath so it doesn't get read as a second player bar. Kept
+ * away from the player's own top-left bar so the two never overlap.
+ * hits_taken/hits_required drives the fill exactly like gs->player.life
+ * drives the player bar - full at 0 hits taken, empty (and the boss dead)
+ * once hits_required is reached. */
+static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
+    const Boss *b = &gs->boss;
+    if (!b->alive) return;
+
+    float bar_w = 130.0f * gs->scale;
+    float bar_h = 16.0f * gs->scale;
+    float outline_t = 2.0f * gs->scale;
+    float margin = 12.0f * gs->scale;
+
+    float bar_x = ((float)gs->screen_w - bar_w) / 2.0f;
+    float y = margin;
+
+    gp_fill_rect(ctx->renderer, bar_x, y, bar_w, bar_h, kDim);
+
+    float inner_x = bar_x + outline_t;
+    float inner_y = y + outline_t;
+    float inner_w = bar_w - outline_t * 2.0f;
+    float inner_h = bar_h - outline_t * 2.0f;
+    gp_fill_rect(ctx->renderer, inner_x, inner_y, inner_w, inner_h, kBackground);
+
+    float life = 0.0f;
+    if (b->hits_required > 0) {
+        life = 1.0f - (float)b->hits_taken / (float)b->hits_required;
+    }
+    if (life < 0.0f) life = 0.0f;
+    if (life > 1.0f) life = 1.0f;
+    float fill_w = inner_w * life;
+    if (fill_w > 0.0f) {
+        gp_fill_rect(ctx->renderer, inner_x, inner_y, fill_w, inner_h, kRed);
+    }
+
+    char pct_buf[8];
+    snprintf(pct_buf, sizeof(pct_buf), "%d%%", (int)(life * 100.0f + 0.5f));
+    float pct_size = (bar_h * 0.5f) / 7.0f;
+    float pct_w = pf_text_width(pct_buf, pct_size);
+    float pct_h = 7.0f * pct_size;
+    pf_draw_text(ctx->renderer, bar_x + (bar_w - pct_w) / 2.0f, y + (bar_h - pct_h) / 2.0f, pct_size, kDim, pct_buf);
+
+    const char *label = "BOSS";
+    float label_size = 1.3f * gs->scale; /* half the old 2.6f label size */
+    float label_w = pf_text_width(label, label_size);
+    float label_gap = 4.0f * gs->scale;
+    pf_draw_text(ctx->renderer, bar_x + (bar_w - label_w) / 2.0f, y + bar_h + label_gap, label_size, kRed, label);
+}
+
 static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
     draw_life_bar(ctx, gs);
+    draw_boss_bar(ctx, gs);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "SCORE:%d", gs->score);
@@ -299,12 +352,6 @@ static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
                      margin + score_line_height + margin * 0.4f, beam_size, c, beam_buf);
     }
 
-    if (gs->boss.alive) {
-        char boss_buf[32];
-        snprintf(boss_buf, sizeof(boss_buf), "BOSS %d/%d", gs->boss.hits_taken, gs->boss.hits_required);
-        float boss_size = 2.6f * gs->scale;
-        pf_draw_text(ctx->renderer, margin, margin, boss_size, kRed, boss_buf);
-    }
 }
 
 static void draw_centered(SdlRendererCtx *ctx, const GameState *gs, const char *text, float y, float size, Color c) {
