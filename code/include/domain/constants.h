@@ -28,6 +28,17 @@
 #define PLAYER_FIRE_COOLDOWN 0.18f
 #define PLAYER_BOTTOM_MARGIN 40.0f
 
+/* Life is tracked as a percentage, [0, 100]. Contact with an enemy
+ * spaceship or the boss's menace ring is always instantly fatal regardless
+ * of life remaining; only being hit by an enemy projectile drains life by
+ * this amount, and reaching 0 is what actually kills the player that way.
+ * Capturing the orb (see ORB_SCORE_STEP) refills life to 100 alongside
+ * granting the super beam. */
+#define PLAYER_LIFE_MAX 100.0f
+#define PLAYER_LIFE_LOSS_PER_HIT 10.0f
+/* At or below this percentage the life bar switches from yellow to red. */
+#define PLAYER_LIFE_LOW_THRESHOLD 20.0f
+
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f
 #define PLAYER_PROJECTILE_SPEED 520.0f

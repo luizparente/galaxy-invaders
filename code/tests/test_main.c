@@ -405,6 +405,124 @@ static void test_god_mode_prevents_death(void) {
     printf("test_god_mode_prevents_death OK\n");
 }
 
+static void test_player_starts_at_full_life(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    assert(fabsf(gs.player.life - PLAYER_LIFE_MAX) < 0.01f);
+    printf("test_player_starts_at_full_life OK\n");
+}
+
+static void shoot_player_once(GameState *gs, EventQueue *events) {
+    gs->enemy_shots[0] = (Projectile){0};
+    gs->enemy_shots[0].alive = true;
+    gs->enemy_shots[0].x = gs->player.x;
+    gs->enemy_shots[0].y = gs->player.y;
+    gs->enemy_shots[0].vy = 0.0f;
+
+    InputCommand none = no_input();
+    game_update(gs, &none, 0.001f, events);
+}
+
+static void test_enemy_projectile_hit_drains_life_without_killing(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    shoot_player_once(&gs, &events);
+
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    assert(!gs.enemy_shots[0].alive);
+    assert(fabsf(gs.player.life - (PLAYER_LIFE_MAX - PLAYER_LIFE_LOSS_PER_HIT)) < 0.01f);
+    printf("test_enemy_projectile_hit_drains_life_without_killing OK\n");
+}
+
+static void test_enemy_projectile_hits_exhaust_life_and_kill_player(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    int hits_to_kill = (int)(PLAYER_LIFE_MAX / PLAYER_LIFE_LOSS_PER_HIT);
+    for (int hit = 1; hit <= hits_to_kill; hit++) {
+        shoot_player_once(&gs, &events);
+        if (hit < hits_to_kill) {
+            assert(gs.player.alive);
+            assert(gs.state == STATE_GAME);
+        }
+    }
+
+    assert(!gs.player.alive);
+    assert(gs.player.life <= 0.0f);
+    assert(gs.state == STATE_GAME_OVER);
+    printf("test_enemy_projectile_hits_exhaust_life_and_kill_player OK\n");
+}
+
+static void test_enemy_ship_contact_kills_player_regardless_of_life(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    /* Life is still nearly full - contact must be instantly fatal anyway,
+     * unlike a projectile hit which only drains it. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.player.alive);
+    assert(gs.player.life <= 0.0f);
+    assert(gs.state == STATE_GAME_OVER);
+    printf("test_enemy_ship_contact_kills_player_regardless_of_life OK\n");
+}
+
+static void test_orb_capture_refills_life_to_full(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    shoot_player_once(&gs, &events);
+    assert(gs.player.life < PLAYER_LIFE_MAX);
+
+    gs.orb.alive = true;
+    gs.orb.x = gs.player.x;
+    gs.orb.y = gs.player.y;
+    gs.orb.size = 20.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.orb.alive);
+    assert(fabsf(gs.player.life - PLAYER_LIFE_MAX) < 0.01f);
+    printf("test_orb_capture_refills_life_to_full OK\n");
+}
+
+static void test_god_mode_and_super_beam_prevent_life_loss(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+
+    shoot_player_once(&gs, &events);
+    assert(fabsf(gs.player.life - PLAYER_LIFE_MAX) < 0.01f);
+
+    gs.player.super_beam_timer = 0.0f;
+    InputCommand toggle = no_input();
+    toggle.god_mode_toggle_pressed = true;
+    game_update(&gs, &toggle, 0.016f, &events);
+    assert(gs.player.god_mode);
+
+    shoot_player_once(&gs, &events);
+    assert(fabsf(gs.player.life - PLAYER_LIFE_MAX) < 0.01f);
+
+    printf("test_god_mode_and_super_beam_prevent_life_loss OK\n");
+}
+
 static void test_super_beam_neutralizes_without_normal_fire(void) {
     GameState gs;
     EventQueue events;
@@ -972,6 +1090,12 @@ int main(void) {
     test_player_invincible_during_super_beam();
     test_god_mode_toggles_on_and_off();
     test_god_mode_prevents_death();
+    test_player_starts_at_full_life();
+    test_enemy_projectile_hit_drains_life_without_killing();
+    test_enemy_projectile_hits_exhaust_life_and_kill_player();
+    test_enemy_ship_contact_kills_player_regardless_of_life();
+    test_orb_capture_refills_life_to_full();
+    test_god_mode_and_super_beam_prevent_life_loss();
     test_super_beam_neutralizes_without_normal_fire();
     test_shooting_orb_explodes_without_granting_beam();
     test_orb_falls_off_screen_when_uncaptured();

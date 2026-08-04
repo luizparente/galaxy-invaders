@@ -240,7 +240,45 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     draw_player(ctx, &gs->player, gs->scale);
 }
 
+/* Fixed top-left life bar: a grey outline always shows the full-bar
+ * extent, and a yellow fill (red once life drops to
+ * PLAYER_LIFE_LOW_THRESHOLD or below) shrinks from the right edge to
+ * reflect gs->player.life, with the percentage centered on top. */
+static void draw_life_bar(SdlRendererCtx *ctx, const GameState *gs) {
+    float margin = 12.0f * gs->scale;
+    float w = 130.0f * gs->scale;
+    float h = 16.0f * gs->scale;
+    float outline_t = 2.0f * gs->scale;
+    float x = margin, y = margin;
+
+    gp_fill_rect(ctx->renderer, x, y, w, h, kDim);
+
+    float inner_x = x + outline_t;
+    float inner_y = y + outline_t;
+    float inner_w = w - outline_t * 2.0f;
+    float inner_h = h - outline_t * 2.0f;
+    gp_fill_rect(ctx->renderer, inner_x, inner_y, inner_w, inner_h, kBackground);
+
+    float life = gs->player.life;
+    if (life < 0.0f) life = 0.0f;
+    if (life > PLAYER_LIFE_MAX) life = PLAYER_LIFE_MAX;
+    float fill_w = inner_w * (life / PLAYER_LIFE_MAX);
+    if (fill_w > 0.0f) {
+        Color fill_color = (life <= PLAYER_LIFE_LOW_THRESHOLD) ? kRed : kYellow;
+        gp_fill_rect(ctx->renderer, inner_x, inner_y, fill_w, inner_h, fill_color);
+    }
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", (int)(life + 0.5f));
+    float text_size = (h * 0.5f) / 7.0f; /* the pixel font is 7 dots tall */
+    float text_w = pf_text_width(buf, text_size);
+    float text_h = 7.0f * text_size;
+    pf_draw_text(ctx->renderer, x + (w - text_w) / 2.0f, y + (h - text_h) / 2.0f, text_size, kDim, buf);
+}
+
 static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
+    draw_life_bar(ctx, gs);
+
     char buf[32];
     snprintf(buf, sizeof(buf), "SCORE:%d", gs->score);
     float size = 3.0f * gs->scale;

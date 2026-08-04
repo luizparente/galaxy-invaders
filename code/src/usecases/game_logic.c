@@ -263,6 +263,7 @@ static void reset_run(GameState *gs) {
     gs->player.laser_color = kDefaultLaserColor;
     gs->player.super_beam_timer = 0.0f;
     gs->player.god_mode = false;
+    gs->player.life = PLAYER_LIFE_MAX;
 
     gs->score = 0;
     gs->time_elapsed = 0.0f;
@@ -337,10 +338,30 @@ static void kill_player(GameState *gs, EventQueue *events) {
     if (gs->player.super_beam_timer > 0.0f) return; /* invincible for the duration of the beam */
     if (gs->player.god_mode) return; /* invincible until Ctrl+G is pressed again */
     gs->player.alive = false;
+    gs->player.life = 0.0f;
     spawn_explosion(gs, gs->player.x, gs->player.y, scaled(gs, PLAYER_WIDTH));
     event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
     gs->last_game_score = gs->score;
     gs->state = STATE_GAME_OVER;
+}
+
+/* An enemy projectile's hit, as opposed to ship/boss contact: it only
+ * drains life instead of exploding the player outright, and only kills
+ * once life is fully spent. Immunity (super beam, god mode) is checked
+ * here too so a grazed-but-invincible player takes no life loss at all,
+ * not just no death - kill_player re-checks the same conditions since it's
+ * also reached directly by the always-fatal contact paths. */
+static void damage_player(GameState *gs, EventQueue *events, float amount) {
+    Player *p = &gs->player;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+
+    p->life -= amount;
+    if (p->life <= 0.0f) {
+        p->life = 0.0f;
+        kill_player(gs, events);
+    }
 }
 
 static void update_player(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
@@ -569,7 +590,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             if (collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
                                         gs->player.x, gs->player.y, player_half_w, player_half_h)) {
                 pr->alive = false;
-                kill_player(gs, events);
+                damage_player(gs, events, PLAYER_LIFE_LOSS_PER_HIT);
                 break;
             }
         }
@@ -659,6 +680,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                                     gs->orb.x, gs->orb.y, orb_half, orb_half)) {
             gs->orb.alive = false;
             gs->player.super_beam_timer = SUPER_BEAM_DURATION;
+            gs->player.life = PLAYER_LIFE_MAX;
             event_queue_push_sfx(events, SFX_ORB_CAPTURED);
         }
     }

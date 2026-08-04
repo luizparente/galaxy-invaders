@@ -56,6 +56,7 @@ typedef struct Player {
     Color laser_color;
     float super_beam_timer; /* seconds remaining; 0 = inactive */
     bool god_mode; /* toggled by Ctrl+G; ship turns gold and cannot die */
+    float life; /* percentage, [0, PLAYER_LIFE_MAX]; hitting 0 kills the player */
 } Player;
 
 typedef struct Enemy {
