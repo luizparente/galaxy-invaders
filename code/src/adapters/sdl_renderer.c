@@ -230,20 +230,35 @@ static void draw_explosion(SdlRendererCtx *ctx, const Explosion *e) {
     }
 }
 
+/* Same layered glow/core/hot/glint construction as draw_projectile's
+ * bolts, just built from concentric circles instead of an elongated
+ * ellipse - a soft wide aura, a saturated sphere, a near-white hot core,
+ * the crisp retro rim outline, and a specular glint. o->color (driven by
+ * the hue cycling in update_orb) still drives every layer's hue; only
+ * alpha and lerp-toward-white amounts vary, so the color-phasing logic is
+ * untouched. */
 static void draw_orb(SdlRendererCtx *ctx, const Orb *o) {
     if (!o->alive) return;
     float r = o->size / 2.0f;
 
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
     Color glow = o->color;
-    glow.a = 90;
-    gp_fill_circle(ctx->renderer, o->x, o->y, r * 1.6f, glow);
+    glow.a = 55;
+    gp_fill_circle(ctx->renderer, o->x, o->y, r * 2.2f, glow);
+    glow.a = 110;
+    gp_fill_circle(ctx->renderer, o->x, o->y, r * 1.5f, glow);
 
     gp_fill_circle(ctx->renderer, o->x, o->y, r, o->color);
+
+    Color hot = lerp_color(o->color, kWhite, 0.55f);
+    gp_fill_circle(ctx->renderer, o->x, o->y, r * 0.4f, hot);
+
     gp_draw_circle_outline(ctx->renderer, o->x, o->y, r, lerp_color(o->color, kWhite, 0.5f));
 
-    Color highlight = lerp_color(o->color, kWhite, 0.75f);
-    gp_fill_circle(ctx->renderer, o->x - r * 0.3f, o->y - r * 0.3f, r * 0.35f, highlight);
+    Color glint = kWhite;
+    glint.a = 230;
+    gp_fill_circle(ctx->renderer, o->x - r * 0.4f, o->y - r * 0.4f, r * 0.18f, glint);
 }
 
 static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
