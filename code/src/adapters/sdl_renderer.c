@@ -141,26 +141,71 @@ static void draw_boss(SdlRendererCtx *ctx, const Boss *b) {
     gp_draw_circle_outline(ctx->renderer, b->x, b->y, ring_radius - 1.0f, menace);
 }
 
+/* A downward-tapered triangle bolt centered at (cx, cy), tip toward +y -
+ * shared by every glow/core/hot layer of the enemy shot so they all stay
+ * concentric just by scaling half_w/half_h, rather than re-deriving three
+ * vertices by hand each time. */
+static void triangle_bolt(SDL_Renderer *r, float cx, float cy, float half_w, float half_h, Color c) {
+    gp_fill_triangle(r, cx, cy + half_h, cx - half_w, cy - half_h, cx + half_w, cy - half_h, c);
+}
+
+/* Both shot kinds render as a layered glow (dim, wide, translucent) around
+ * a saturated core around a near-white hot streak, the same construction
+ * Star Wars-style blaster bolts use - built from nested primitives since
+ * there's no blur to fake it with. pr->color (the cycling player laser
+ * hue, or the firing enemy's own color) still drives every layer's hue
+ * unchanged; only alpha and the lerp-toward-white amount vary between
+ * layers, so the existing color-variation logic is untouched. */
 static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_player, float scale) {
     if (!pr->alive) return;
+
+    float fade = 1.0f;
+    if (!is_player && pr->inert) {
+        fade = 1.0f - pr->inert_age / ENEMY_SHOT_FADE_DURATION;
+        if (fade < 0.0f) fade = 0.0f;
+    }
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
     if (is_player) {
-        float w = PLAYER_PROJECTILE_W * scale;
-        float h = PLAYER_PROJECTILE_H * scale;
-        gp_fill_rect(ctx->renderer, pr->x - w / 2.0f, pr->y - h / 2.0f, w, h, pr->color);
+        float core_rx = PLAYER_PROJECTILE_W * 0.9f * scale;
+        float core_ry = PLAYER_PROJECTILE_H * 0.5f * scale;
+        float cx = pr->x, cy = pr->y;
+
+        Color glow = pr->color;
+        glow.a = 55;
+        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 2.6f, core_ry * 1.2f, glow);
+        glow.a = 120;
+        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 1.7f, core_ry * 1.1f, glow);
+
+        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx, core_ry, pr->color);
+
+        Color hot = lerp_color(pr->color, kWhite, 0.85f);
+        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 0.4f, core_ry * 0.85f, hot);
+
+        Color glint = kWhite;
+        glint.a = 200;
+        gp_fill_circle(ctx->renderer, cx, cy - core_ry * 0.55f, core_rx * 0.45f, glint);
     } else {
-        Color color = pr->color;
-        if (pr->inert) {
-            float fade = 1.0f - pr->inert_age / ENEMY_SHOT_FADE_DURATION;
-            if (fade < 0.0f) fade = 0.0f;
-            color.a = (unsigned char)(255.0f * fade);
-            SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
-        }
-        float w = ENEMY_PROJECTILE_W * scale;
-        float h = ENEMY_PROJECTILE_H * scale;
-        float half = w / 2.0f;
-        gp_fill_triangle(ctx->renderer, pr->x, pr->y + h / 2.0f,
-                          pr->x - half, pr->y - h / 2.0f,
-                          pr->x + half, pr->y - h / 2.0f, color);
+        float half = ENEMY_PROJECTILE_W * scale / 2.0f;
+        float half_h = ENEMY_PROJECTILE_H * scale / 2.0f;
+        float cx = pr->x, cy = pr->y;
+
+        Color glow = pr->color;
+        glow.a = (unsigned char)(60.0f * fade);
+        triangle_bolt(ctx->renderer, cx, cy, half * 1.9f, half_h * 1.35f, glow);
+
+        Color core = pr->color;
+        core.a = (unsigned char)(255.0f * fade);
+        triangle_bolt(ctx->renderer, cx, cy, half, half_h, core);
+
+        Color hot = lerp_color(pr->color, kWhite, 0.8f);
+        hot.a = (unsigned char)(230.0f * fade);
+        triangle_bolt(ctx->renderer, cx, cy, half * 0.4f, half_h * 0.75f, hot);
+
+        Color glint = kWhite;
+        glint.a = (unsigned char)(200.0f * fade);
+        gp_fill_circle(ctx->renderer, cx, cy + half_h * 0.55f, half * 0.35f, glint);
     }
 }
 
