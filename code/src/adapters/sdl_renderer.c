@@ -8,6 +8,7 @@
 #include "adapters/player_sprite.h"
 #include "adapters/enemy_sprites.h"
 #include "adapters/menu_ship_sprite.h"
+#include "adapters/menu_planet_sprites.h"
 #include "domain/constants.h"
 
 typedef struct SdlRendererCtx {
@@ -27,9 +28,12 @@ typedef struct SdlRendererCtx {
     SDL_Texture *boss_textures[ENEMY_KIND_COUNT];
     /* The decorative hero ship on the main menu (adapters/menu_ship_sprite)
      * - a single large textured blit, same rationale as the enemy/boss
-     * textures above: its 300x249 grid is far too big to blit one
-     * gp_fill_rect per pixel every frame. */
+     * textures above: its grid is far too big to blit one gp_fill_rect per
+     * pixel every frame. */
     SDL_Texture *menu_ship_texture;
+    /* The 4 decorative menu planets (adapters/menu_planet_sprites), same
+     * one-texture-per-design technique as enemy_textures/boss_textures. */
+    SDL_Texture *planet_textures[MENU_PLANET_COUNT];
 } SdlRendererCtx;
 
 static const Color kBackground = {8, 8, 26, 255};
@@ -442,101 +446,18 @@ static void draw_centered(SdlRendererCtx *ctx, const GameState *gs, const char *
     pf_draw_text(ctx->renderer, ((float)gs->screen_w - w) / 2.0f, y, size, c, text);
 }
 
-/* A soft atmospheric halo just outside the sphere's true edge - a few
- * widening, dimming rings - the cheap trick that sells "glowing planet in
- * space" instead of "flat circle." */
-static void draw_planet_atmosphere(SdlRendererCtx *ctx, float x, float y, float r, Color base) {
-    for (int i = 0; i < 3; i++) {
-        float rr = r * (1.05f + 0.06f * (float)i);
-        Color c = base;
-        c.a = (unsigned char)(65 - i * 18);
-        gp_draw_circle_outline(ctx->renderer, x, y, rr, c);
-    }
-}
+/* One of the 4 decorative menu planets (adapters/menu_planet_sprites) -
+ * same textured-blit technique as draw_menu_ship: dst_w is the same
+ * "overall visual footprint" each planet used to occupy back when it was
+ * drawn procedurally (for the ringed planet, that includes the ring's own
+ * reach, since it's baked into this sprite too), with dst_h derived from
+ * the source image's own aspect ratio so nothing stretches. */
+static void draw_menu_planet(SdlRendererCtx *ctx, MenuPlanetId id, float x, float y, float dst_w) {
+    const MenuPlanetSprite *sprite = &kMenuPlanetSprites[id];
+    float dst_h = dst_w * (float)sprite->grid_h / (float)sprite->grid_w;
 
-/* The sphere itself: a base fill, then four offset tonal blobs (two
- * darker toward the shadow corner, two lighter toward the light-source
- * corner), each nested strictly inside the base circle's radius so they
- * read as a smooth shading gradient rather than extra circles poking out
- * past the silhouette - a cheap stand-in for a real radial gradient. */
-static void draw_planet_sphere(SdlRendererCtx *ctx, float x, float y, float r, Color base) {
-    gp_fill_circle(ctx->renderer, x, y, r, base);
-
-    Color mid_dark = lerp_color(base, (Color){0, 0, 0, 255}, 0.30f);
-    Color dark = lerp_color(base, (Color){0, 0, 0, 255}, 0.55f);
-    Color mid_light = lerp_color(base, kWhite, 0.22f);
-    Color light = lerp_color(base, kWhite, 0.50f);
-
-    gp_fill_circle(ctx->renderer, x + r * 0.12f, y + r * 0.12f, r * 0.80f, mid_dark);
-    gp_fill_circle(ctx->renderer, x + r * 0.22f, y + r * 0.22f, r * 0.55f, dark);
-    gp_fill_circle(ctx->renderer, x - r * 0.20f, y - r * 0.20f, r * 0.55f, mid_light);
-    gp_fill_circle(ctx->renderer, x - r * 0.32f, y - r * 0.32f, r * 0.22f, light);
-}
-
-/* A flattened ellipse drawn *before* the sphere so the planet's own fill
- * covers its middle third, leaving only the two tilted "wings" visible on
- * either side - reads as a ring passing behind the planet without needing
- * true front/back hollow-band geometry. */
-static void draw_planet_ring(SdlRendererCtx *ctx, float x, float y, float rx, float ry, Color c) {
-    gp_fill_ellipse(ctx->renderer, x, y, rx, ry, c);
-    Color rim = lerp_color(c, kWhite, 0.3f);
-    gp_fill_ellipse(ctx->renderer, x, y, rx, ry * 0.55f, rim);
-}
-
-static void draw_crater(SdlRendererCtx *ctx, float x, float y, float r, Color planet_base) {
-    Color shadow = lerp_color(planet_base, (Color){0, 0, 0, 255}, 0.55f);
-    Color rim = lerp_color(planet_base, kWhite, 0.25f);
-    gp_fill_circle(ctx->renderer, x, y, r, shadow);
-    gp_fill_circle(ctx->renderer, x - r * 0.25f, y - r * 0.25f, r * 0.4f, rim);
-}
-
-/* A textured, ringed, 3D-shaded planet: atmosphere glow, an optional ring
- * behind it, the shaded sphere, then a scatter of surface detail on top -
- * continents/clouds, craters, or mottling depending on `style`, so each
- * planet reads as a distinct little world rather than a flat tinted disc. */
-typedef enum PlanetStyle { PLANET_OCEAN, PLANET_ROCKY, PLANET_MOSSY, PLANET_MISTY } PlanetStyle;
-
-static void draw_planet(SdlRendererCtx *ctx, float x, float y, float r, Color base,
-                         PlanetStyle style, bool ringed) {
-    draw_planet_atmosphere(ctx, x, y, r, base);
-    if (ringed) {
-        draw_planet_ring(ctx, x, y, r * 1.75f, r * 0.42f, lerp_color(base, kWhite, 0.4f));
-    }
-    draw_planet_sphere(ctx, x, y, r, base);
-
-    switch (style) {
-        case PLANET_OCEAN: {
-            Color land = (Color){70, 150, 80, 255};
-            gp_fill_circle(ctx->renderer, x - r * 0.30f, y - r * 0.15f, r * 0.30f, land);
-            gp_fill_circle(ctx->renderer, x - r * 0.05f, y - r * 0.35f, r * 0.20f, land);
-            gp_fill_circle(ctx->renderer, x + r * 0.15f, y + r * 0.05f, r * 0.22f, land);
-            gp_fill_circle(ctx->renderer, x - r * 0.35f, y + r * 0.30f, r * 0.16f, land);
-            Color cloud = (Color){235, 245, 250, 130};
-            SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
-            gp_fill_ellipse(ctx->renderer, x + r * 0.35f, y - r * 0.30f, r * 0.28f, r * 0.09f, cloud);
-            gp_fill_ellipse(ctx->renderer, x + r * 0.10f, y + r * 0.40f, r * 0.32f, r * 0.10f, cloud);
-            break;
-        }
-        case PLANET_ROCKY:
-            draw_crater(ctx, x - r * 0.25f, y - r * 0.10f, r * 0.16f, base);
-            draw_crater(ctx, x + r * 0.15f, y - r * 0.30f, r * 0.11f, base);
-            draw_crater(ctx, x + r * 0.05f, y + r * 0.25f, r * 0.13f, base);
-            draw_crater(ctx, x - r * 0.40f, y + r * 0.20f, r * 0.09f, base);
-            break;
-        case PLANET_MOSSY: {
-            Color patch = lerp_color(base, (Color){0, 0, 0, 255}, 0.35f);
-            SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
-            Color soft = patch;
-            soft.a = 160;
-            gp_fill_circle(ctx->renderer, x - r * 0.30f, y + r * 0.05f, r * 0.34f, soft);
-            gp_fill_circle(ctx->renderer, x + r * 0.20f, y + r * 0.30f, r * 0.24f, soft);
-            gp_fill_circle(ctx->renderer, x + r * 0.30f, y - r * 0.20f, r * 0.18f, soft);
-            break;
-        }
-        case PLANET_MISTY:
-        default:
-            break;
-    }
+    SDL_FRect dst = {x - dst_w / 2.0f, y - dst_h / 2.0f, dst_w, dst_h};
+    SDL_RenderCopyF(ctx->renderer, ctx->planet_textures[id], NULL, &dst);
 }
 
 /* A 4-point twinkle: two crossed diamonds. */
@@ -570,11 +491,16 @@ static void draw_menu_decorations(SdlRendererCtx *ctx, const GameState *gs) {
      * of their now much larger bulk bleeds off-canvas - a bigger planet
      * reads as closer/grander rather than just cluttering the frame if it
      * shares the frame's edge instead of floating free inside it. Two
-     * smaller ones stay fully on-screen for scale contrast (depth cue). */
-    draw_planet(ctx, w * 0.06f, h * 0.02f, 90.0f * s, (Color){70, 130, 210, 255}, PLANET_OCEAN, false);
-    draw_planet(ctx, w * 0.08f, h * 0.90f, 155.0f * s, (Color){70, 150, 90, 255}, PLANET_MOSSY, true);
-    draw_planet(ctx, w * 0.86f, h * 0.10f, 34.0f * s, (Color){170, 100, 70, 255}, PLANET_ROCKY, false);
-    draw_planet(ctx, w * 0.85f, h * 0.66f, 24.0f * s, (Color){120, 100, 150, 255}, PLANET_MISTY, false);
+     * smaller ones stay fully on-screen for scale contrast (depth cue).
+     * Unlike the ship, these sprites' native resolution is modest (they're
+     * cropped straight from reference photos, not authored at a huge
+     * size), so display width is capped well under their old vector-drawn
+     * footprint - past that point real screens just magnify the same
+     * source pixels into visible blocks instead of showing more detail. */
+    draw_menu_planet(ctx, MENU_PLANET_OCEAN, w * 0.06f, h * 0.02f, 140.0f * s);
+    draw_menu_planet(ctx, MENU_PLANET_RINGED, w * 0.08f, h * 0.90f, 310.0f * s);
+    draw_menu_planet(ctx, MENU_PLANET_ROCKY, w * 0.86f, h * 0.10f, 68.0f * s);
+    draw_menu_planet(ctx, MENU_PLANET_GALAXY, w * 0.85f, h * 0.66f, 48.0f * s);
 
     static const Color kSparkleGold = {255, 210, 120, 255};
     static const Color kSparklePink = {255, 150, 220, 255};
@@ -698,6 +624,9 @@ static void sdl_render_destroy(void *self) {
         if (ctx->boss_textures[i]) SDL_DestroyTexture(ctx->boss_textures[i]);
     }
     if (ctx->menu_ship_texture) SDL_DestroyTexture(ctx->menu_ship_texture);
+    for (int i = 0; i < MENU_PLANET_COUNT; i++) {
+        if (ctx->planet_textures[i]) SDL_DestroyTexture(ctx->planet_textures[i]);
+    }
     if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
     if (ctx->window) SDL_DestroyWindow(ctx->window);
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -789,6 +718,23 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
     }
     SDL_SetTextureBlendMode(ctx->menu_ship_texture, SDL_BLENDMODE_BLEND);
     SDL_UpdateTexture(ctx->menu_ship_texture, NULL, kMenuShipSpritePixels, MENU_SHIP_SPRITE_W * (int)sizeof(uint32_t));
+
+    for (int i = 0; i < MENU_PLANET_COUNT; i++) {
+        const MenuPlanetSprite *sprite = &kMenuPlanetSprites[i];
+        SDL_Texture *tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC,
+                                              sprite->grid_w, sprite->grid_h);
+        if (!tex) {
+            fprintf(stderr, "SDL_CreateTexture failed for menu planet %d: %s\n", i, SDL_GetError());
+            SDL_DestroyRenderer(ctx->renderer);
+            SDL_DestroyWindow(ctx->window);
+            free(ctx);
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+            return NULL;
+        }
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        SDL_UpdateTexture(tex, NULL, sprite->pixels, sprite->grid_w * (int)sizeof(uint32_t));
+        ctx->planet_textures[i] = tex;
+    }
 
     /* Every draw call in this file works directly in real screen pixels -
      * the playfield's logical size *is* the physical screen, at whatever
