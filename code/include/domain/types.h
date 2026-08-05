@@ -68,6 +68,12 @@ typedef struct Enemy {
     int kind; /* index into adapters/enemy_sprites' kEnemySprites, [0, ENEMY_KIND_COUNT) */
     float fire_timer;
     float wobble_phase;
+
+    /* Set when a shot (not captured) power orb schedules this enemy to
+     * detonate; orb_kill_timer counts down the random per-enemy delay
+     * (see ORB_SHOT_EXPLOSION_WINDOW) before it actually happens. */
+    bool orb_kill_pending;
+    float orb_kill_timer;
 } Enemy;
 
 typedef struct Projectile {

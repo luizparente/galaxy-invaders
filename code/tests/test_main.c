@@ -558,7 +558,7 @@ static void test_super_beam_neutralizes_without_normal_fire(void) {
     printf("test_super_beam_neutralizes_without_normal_fire OK\n");
 }
 
-static void test_shooting_orb_explodes_without_granting_beam(void) {
+static void test_shooting_orb_schedules_enemies_without_granting_beam(void) {
     GameState gs;
     EventQueue events;
     start_game(&gs, &events);
@@ -573,18 +573,18 @@ static void test_shooting_orb_explodes_without_granting_beam(void) {
     gs.player_shots[0].y = gs.orb.y;
     gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
 
-    /* Close enough to be inside the neutralize radius but far enough that
-     * the shot itself doesn't also directly hit it. */
+    /* Scattered across the screen - distance from the orb no longer
+     * matters, every enemy alive at the instant of the shot should be
+     * scheduled, not just ones "nearby". */
     gs.enemies[0].alive = true;
     gs.enemies[0].x = gs.orb.x + 40.0f;
     gs.enemies[0].y = gs.orb.y;
     gs.enemies[0].size = 20.0f;
     gs.enemies[0].fire_timer = 999.0f;
 
-    /* Outside the blast radius entirely. */
     gs.enemies[1].alive = true;
     gs.enemies[1].x = 30.0f;
-    gs.enemies[1].y = gs.orb.y;
+    gs.enemies[1].y = 30.0f;
     gs.enemies[1].size = 20.0f;
     gs.enemies[1].fire_timer = 999.0f;
 
@@ -592,10 +592,64 @@ static void test_shooting_orb_explodes_without_granting_beam(void) {
     game_update(&gs, &none, 0.001f, &events);
 
     assert(!gs.orb.alive);
-    assert(!gs.enemies[0].alive);
-    assert(gs.enemies[1].alive);
     assert(gs.player.super_beam_timer <= 0.0f);
-    printf("test_shooting_orb_explodes_without_granting_beam OK\n");
+    /* Both are scheduled immediately; whether either has already
+     * detonated this same frame is down to its own random delay, so only
+     * the "pending" bookkeeping is safe to assert here. */
+    assert(gs.enemies[0].orb_kill_pending);
+    assert(gs.enemies[1].orb_kill_pending);
+
+    /* An enemy that shows up only after the shot must not be swept up by
+     * the pending detonation - it wasn't on screen at the time. */
+    gs.enemies[2].alive = true;
+    gs.enemies[2].x = 100.0f;
+    gs.enemies[2].y = 100.0f;
+    gs.enemies[2].size = 20.0f;
+    gs.enemies[2].fire_timer = 999.0f;
+
+    /* By the end of the window every enemy that was scheduled must have
+     * exploded. */
+    game_update(&gs, &none, ORB_SHOT_EXPLOSION_WINDOW + 0.1f, &events);
+
+    assert(!gs.enemies[0].alive);
+    assert(!gs.enemies[1].alive);
+    assert(gs.enemies[2].alive);
+    printf("test_shooting_orb_schedules_enemies_without_granting_beam OK\n");
+}
+
+static void test_shooting_orb_assigns_random_delay_within_window(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    gs.orb.alive = true;
+    gs.orb.x = gs.player.x;
+    gs.orb.y = gs.player.y - PLAYER_HEIGHT / 2.0f - PLAYER_PROJECTILE_H / 2.0f;
+    gs.orb.size = 20.0f;
+
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = gs.orb.x;
+    gs.player_shots[0].y = gs.orb.y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+
+    for (int i = 0; i < 5; i++) {
+        gs.enemies[i].alive = true;
+        gs.enemies[i].x = 20.0f + (float)i * 30.0f;
+        gs.enemies[i].y = 20.0f + (float)i * 30.0f;
+        gs.enemies[i].size = 20.0f;
+        gs.enemies[i].fire_timer = 999.0f;
+    }
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    for (int i = 0; i < 5; i++) {
+        assert(gs.enemies[i].orb_kill_pending);
+        assert(gs.enemies[i].orb_kill_timer >= 0.0f);
+        assert(gs.enemies[i].orb_kill_timer <= ORB_SHOT_EXPLOSION_WINDOW);
+    }
+
+    printf("test_shooting_orb_assigns_random_delay_within_window OK\n");
 }
 
 static void test_orb_falls_off_screen_when_uncaptured(void) {
@@ -1097,7 +1151,8 @@ int main(void) {
     test_orb_capture_refills_life_to_full();
     test_god_mode_and_super_beam_prevent_life_loss();
     test_super_beam_neutralizes_without_normal_fire();
-    test_shooting_orb_explodes_without_granting_beam();
+    test_shooting_orb_schedules_enemies_without_granting_beam();
+    test_shooting_orb_assigns_random_delay_within_window();
     test_orb_falls_off_screen_when_uncaptured();
     test_orb_spawn_chance_is_not_always_or_never();
     test_boss_spawns_at_500_points_with_correct_hits_required();

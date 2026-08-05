@@ -506,6 +506,28 @@ static void update_enemies(GameState *gs, float dt) {
     }
 }
 
+/* Counts down every enemy a shot orb scheduled for a delayed explosion
+ * (see check_collisions) and detonates it the moment its own random timer
+ * runs out. Never awards score - mirroring the orb's old instant-neutralize
+ * semantics, just spread out over ORB_SHOT_EXPLOSION_WINDOW instead of all
+ * at once. Enemies that died some other way first (direct laser hit, super
+ * beam, ...) are simply skipped via the alive check; no separate cleanup
+ * needed since spawner.c resets these fields whenever a slot is reused. */
+static void update_pending_orb_kills(GameState *gs, float dt, EventQueue *events) {
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (!e->alive || !e->orb_kill_pending) continue;
+
+        e->orb_kill_timer -= dt;
+        if (e->orb_kill_timer > 0.0f) continue;
+
+        e->alive = false;
+        e->orb_kill_pending = false;
+        spawn_explosion(gs, e->x, e->y, e->size);
+        event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
+    }
+}
+
 static void update_projectiles(GameState *gs, float dt) {
     float player_shot_h = scaled(gs, PLAYER_PROJECTILE_H);
     float enemy_shot_h = scaled(gs, ENEMY_PROJECTILE_H);
@@ -643,8 +665,14 @@ static void check_collisions(GameState *gs, EventQueue *events) {
     if (gs->orb.alive) {
         float orb_half = gs->orb.size / 2.0f;
 
-        /* Shooting the orb: it detonates and neutralizes nearby enemies,
-         * but does not grant the super beam. */
+        /* Shooting the orb (as opposed to capturing it): it detonates and
+         * schedules every enemy alive on screen right now - never the
+         * boss, which isn't part of gs->enemies - to explode at its own
+         * random moment within ORB_SHOT_EXPLOSION_WINDOW seconds (see
+         * update_pending_orb_kills), rather than granting the super beam.
+         * Enemies that spawn afterward, while some of these delayed
+         * explosions are still pending, are untouched - only what was
+         * actually on screen at the instant of the shot counts. */
         for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
             Projectile *pr = &gs->player_shots[i];
             if (!pr->alive) continue;
@@ -657,14 +685,11 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             gs->orb.alive = false;
             spawn_explosion(gs, gs->orb.x, gs->orb.y, gs->orb.size * 1.8f);
 
-            float neutralize_radius = scaled(gs, ORB_EXPLOSION_RADIUS);
             for (int j = 0; j < MAX_ENEMIES; j++) {
                 Enemy *e = &gs->enemies[j];
-                if (!e->alive) continue;
-                if (within_radius(e->x, e->y, gs->orb.x, gs->orb.y, neutralize_radius)) {
-                    e->alive = false;
-                    spawn_explosion(gs, e->x, e->y, e->size);
-                }
+                if (!e->alive || e->orb_kill_pending) continue;
+                e->orb_kill_pending = true;
+                e->orb_kill_timer = frand01() * ORB_SHOT_EXPLOSION_WINDOW;
             }
             event_queue_push_sfx(events, SFX_ORB_DESTROYED);
             break;
@@ -697,6 +722,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     update_player(gs, input, dt, events);
     if (!gs->boss.alive) spawner_update(gs, dt); /* no ordinary spawns during a boss fight */
     update_enemies(gs, dt);
+    update_pending_orb_kills(gs, dt, events);
     update_boss(gs, dt);
     update_orb(gs, dt);
     update_projectiles(gs, dt);

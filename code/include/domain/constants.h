@@ -81,7 +81,10 @@
 #define ORB_DRIFT_SPEED 55.0f
 #define ORB_DRIFT_ANGULAR_SPEED 1.4f
 #define ORB_HUE_CYCLE_SPEED 140.0f
-#define ORB_EXPLOSION_RADIUS 90.0f
+/* Shooting (rather than capturing) the orb schedules every enemy alive on
+ * screen at that instant - never the boss - to explode at its own random
+ * moment within this many seconds, instead of all at once. */
+#define ORB_SHOT_EXPLOSION_WINDOW 0.5f
 
 #define SUPER_BEAM_DURATION 10.0f
 #define SUPER_BEAM_WIDTH_MULTIPLIER 2.0f
@@ -103,7 +106,8 @@
 #define BOSS_BASE_MIN_SIZE 15.0f
 #define BOSS_BASE_MAX_SIZE 25.0f
 #define BOSS_SIZE_MULTIPLIER 10.0f
-#define BOSS_SPEED_MULTIPLIER 0.25f /* of PLAYER_SPEED - relentlessly chases, never idles */
+#define BOSS_SPEED_MULTIPLIER                                                  \
+  0.25f /* of PLAYER_SPEED - relentlessly chases, never idles */
 #define BOSS_KILL_SCORE_MULTIPLIER 4
 /* The visible danger ring drawn around the boss (adapters/sdl_renderer.c)
  * IS the contact hitbox - shared here so the two can never drift apart:
