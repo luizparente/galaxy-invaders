@@ -7,6 +7,7 @@
 #include "adapters/pixel_font.h"
 #include "adapters/player_sprite.h"
 #include "adapters/enemy_sprites.h"
+#include "adapters/menu_ship_sprite.h"
 #include "domain/constants.h"
 
 typedef struct SdlRendererCtx {
@@ -24,6 +25,11 @@ typedef struct SdlRendererCtx {
      * boss (see adapters/enemy_sprites.h) so its ~10x-larger size doesn't
      * stretch a small texture into visible blocks. */
     SDL_Texture *boss_textures[ENEMY_KIND_COUNT];
+    /* The decorative hero ship on the main menu (adapters/menu_ship_sprite)
+     * - a single large textured blit, same rationale as the enemy/boss
+     * textures above: its 300x249 grid is far too big to blit one
+     * gp_fill_rect per pixel every frame. */
+    SDL_Texture *menu_ship_texture;
 } SdlRendererCtx;
 
 static const Color kBackground = {8, 8, 26, 255};
@@ -542,6 +548,21 @@ static void draw_sparkle(SdlRendererCtx *ctx, float x, float y, float size, Colo
     gp_fill_triangle(ctx->renderer, x + size, y, x, y - spread, x, y + spread, c);
 }
 
+/* The decorative hero ship (adapters/menu_ship_sprite), anchored to the
+ * bottom-right corner - a single large textured blit, the same technique
+ * draw_sprite uses for enemies/the boss, just from its own dedicated
+ * texture instead of a shared per-kind array since there's only one. */
+static void draw_menu_ship(SdlRendererCtx *ctx, const GameState *gs) {
+    float w = (float)gs->screen_w, h = (float)gs->screen_h, s = gs->scale;
+    float margin = 14.0f * s;
+
+    float dst_w = w * 0.46f;
+    float dst_h = dst_w * (float)MENU_SHIP_SPRITE_H / (float)MENU_SHIP_SPRITE_W;
+
+    SDL_FRect dst = {w - margin - dst_w, h - margin - dst_h, dst_w, dst_h};
+    SDL_RenderCopyF(ctx->renderer, ctx->menu_ship_texture, NULL, &dst);
+}
+
 static void draw_menu_decorations(SdlRendererCtx *ctx, const GameState *gs) {
     float w = (float)gs->screen_w, h = (float)gs->screen_h, s = gs->scale;
 
@@ -563,6 +584,8 @@ static void draw_menu_decorations(SdlRendererCtx *ctx, const GameState *gs) {
     draw_sparkle(ctx, w * 0.15f, h * 0.62f, 5.0f * s, kSparkleGold);
     draw_sparkle(ctx, w * 0.55f, h * 0.90f, 6.0f * s, kWhite);
     draw_sparkle(ctx, w * 0.93f, h * 0.85f, 5.0f * s, kSparklePink);
+
+    draw_menu_ship(ctx, gs);
 }
 
 static void draw_menu_screen(SdlRendererCtx *ctx, const GameState *gs) {
@@ -674,6 +697,7 @@ static void sdl_render_destroy(void *self) {
         if (ctx->enemy_textures[i]) SDL_DestroyTexture(ctx->enemy_textures[i]);
         if (ctx->boss_textures[i]) SDL_DestroyTexture(ctx->boss_textures[i]);
     }
+    if (ctx->menu_ship_texture) SDL_DestroyTexture(ctx->menu_ship_texture);
     if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
     if (ctx->window) SDL_DestroyWindow(ctx->window);
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -752,6 +776,19 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return NULL;
     }
+
+    ctx->menu_ship_texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC,
+                                                MENU_SHIP_SPRITE_W, MENU_SHIP_SPRITE_H);
+    if (!ctx->menu_ship_texture) {
+        fprintf(stderr, "SDL_CreateTexture failed for menu ship: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(ctx->renderer);
+        SDL_DestroyWindow(ctx->window);
+        free(ctx);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return NULL;
+    }
+    SDL_SetTextureBlendMode(ctx->menu_ship_texture, SDL_BLENDMODE_BLEND);
+    SDL_UpdateTexture(ctx->menu_ship_texture, NULL, kMenuShipSpritePixels, MENU_SHIP_SPRITE_W * (int)sizeof(uint32_t));
 
     /* Every draw call in this file works directly in real screen pixels -
      * the playfield's logical size *is* the physical screen, at whatever
