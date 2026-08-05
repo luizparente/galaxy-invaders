@@ -209,19 +209,36 @@ static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_p
     }
 }
 
+/* Same layered glow/core/hot construction as the projectile bolts and the
+ * orb - a soft wide halo, the saturated blast color, and a near-white hot
+ * flash at the center - plus the existing radiating spark lines for the
+ * shrapnel burst. core (pale yellow-white cooling to orange-red as the
+ * explosion ages) still drives every layer's hue; only alpha and
+ * lerp-toward-white amounts vary. */
 static void draw_explosion(SdlRendererCtx *ctx, const Explosion *e) {
     if (!e->alive) return;
     float t = e->age / e->max_age;
     float radius = e->max_radius * (0.35f + 0.65f * t);
+
     Color core = lerp_color((Color){255, 255, 210, 255}, (Color){255, 120, 30, 255}, t);
-    core.a = (unsigned char)(255.0f * (1.0f - t));
+    unsigned char alpha = (unsigned char)(255.0f * (1.0f - t));
+    core.a = alpha;
 
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
+    Color glow = core;
+    glow.a = (unsigned char)((float)alpha * 0.35f);
+    gp_fill_circle(ctx->renderer, e->x, e->y, radius * 1.6f, glow);
+
     gp_fill_circle(ctx->renderer, e->x, e->y, radius, core);
+
+    Color hot = lerp_color(core, kWhite, 0.6f);
+    hot.a = alpha;
+    gp_fill_circle(ctx->renderer, e->x, e->y, radius * 0.45f, hot);
 
     if (t > 0.1f && t < 0.75f) {
         Color spark = lerp_color((Color){255, 220, 120, 255}, (Color){180, 40, 20, 255}, t);
-        spark.a = core.a;
+        spark.a = alpha;
         for (int k = 0; k < 8; k++) {
             float ang = (float)k * (float)M_PI / 4.0f + t * 1.5f;
             float len = radius * 1.6f;
