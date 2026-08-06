@@ -194,7 +194,10 @@ typedef struct GameState {
     Orb orb;
     Boss boss;
     int boss_count; /* how many bosses have appeared so far this run */
-    int score_since_last_boss; /* resets to 0 on every boss appearance; next one needs BOSS_SCORE_STEP more */
+    /* Points earned with the arena clear since the last boss encounter
+     * ended. Frozen while a boss is alive and zeroed the moment one leaves,
+     * so the next arrival always costs a full fresh BOSS_SCORE_STEP. */
+    int score_since_last_boss;
 
     int score;
     int last_game_score;

@@ -796,11 +796,12 @@ static void test_boss_reappearance_requires_fresh_points_since_defeat(void) {
     assert(gs.boss_count == 1);
     assert(gs.score_since_last_boss == 0); /* reset the instant it appeared */
 
-    int expected_bonus = gs.boss.hits_required * BOSS_KILL_SCORE_MULTIPLIER;
     defeat_current_boss(&gs, &events);
     assert(!gs.boss.alive);
-    /* The defeat bonus is the first contribution to the fresh count. */
-    assert(gs.score_since_last_boss == expected_bonus);
+    /* The defeat bonus is worth full score but contributes nothing to the
+     * gap: the counter restarts from zero the instant the boss is cleared,
+     * so the next one is always a full BOSS_SCORE_STEP of play away. */
+    assert(gs.score_since_last_boss == 0);
 
     /* One more kill's worth of points is nowhere near BOSS_SCORE_STEP -
      * the second boss must NOT appear yet, even though the underlying
@@ -814,6 +815,65 @@ static void test_boss_reappearance_requires_fresh_points_since_defeat(void) {
     assert(gs.score_since_last_boss == 0); /* reset again for the third */
 
     printf("test_boss_reappearance_requires_fresh_points_since_defeat OK\n");
+}
+
+/* Regression test for the long-standing "bosses arrive back to back" bug.
+ * The defeat bonus is hits_required * BOSS_KILL_SCORE_MULTIPLIER, so it
+ * grows with every boss (200, 400, 600, ...) and from the third one on
+ * clears BOSS_SCORE_STEP all by itself. It used to be credited to the
+ * gap counter after the boss had already been marked dead, which brought
+ * the next boss in on the very frame the previous one died - no playtime
+ * in between at all. Walks four full encounters so the two bosses whose
+ * bonus alone exceeds the threshold are both covered. */
+static void test_large_defeat_bonus_never_chains_bosses(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    bool saw_bonus_over_threshold = false;
+
+    for (int n = 1; n <= 4; n++) {
+        kill_enemies_until_boss_spawns(&gs, &events);
+        assert(gs.boss_count == n);
+
+        int bonus = gs.boss.hits_required * BOSS_KILL_SCORE_MULTIPLIER;
+        if (bonus >= BOSS_SCORE_STEP) saw_bonus_over_threshold = true;
+
+        defeat_current_boss(&gs, &events);
+
+        /* However big the payout, the arena must be empty the instant this
+         * boss dies and the gap must start over from zero. */
+        assert(!gs.boss.alive);
+        assert(gs.boss_count == n);
+        assert(gs.score_since_last_boss == 0);
+    }
+
+    /* Guards the test itself: if the bonus curve is ever retuned so no
+     * boss can single-handedly clear the threshold, this stops silently
+     * testing nothing. */
+    assert(saw_bonus_over_threshold);
+    printf("test_large_defeat_bonus_never_chains_bosses OK\n");
+}
+
+/* The other half of the gap rule: points scored while a boss is on screen
+ * (picking off enemies still fleeing the arena) are worth full score, but
+ * must not count toward bringing the next boss in either. */
+static void test_points_scored_during_boss_fight_do_not_shorten_gap(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    assert(gs.score_since_last_boss == 0);
+
+    int score_before = gs.score;
+    for (int i = 0; i < 10; i++) kill_one_enemy(&gs, &events);
+
+    assert(gs.score > score_before);       /* the points are still awarded */
+    assert(gs.score_since_last_boss == 0); /* they just don't close the gap */
+    assert(gs.boss_count == 1);            /* and certainly bring in no second boss */
+    printf("test_points_scored_during_boss_fight_do_not_shorten_gap OK\n");
 }
 
 static void test_boss_arrival_makes_enemies_flee_and_projectiles_harmless(void) {
@@ -1158,6 +1218,8 @@ int main(void) {
     test_boss_spawns_at_500_points_with_correct_hits_required();
     test_boss_hits_required_increases_each_appearance();
     test_boss_reappearance_requires_fresh_points_since_defeat();
+    test_large_defeat_bonus_never_chains_bosses();
+    test_points_scored_during_boss_fight_do_not_shorten_gap();
     test_boss_arrival_makes_enemies_flee_and_projectiles_harmless();
     test_boss_defeat_awards_bonus_score();
     test_boss_ring_contact_destroys_both_boss_and_player();

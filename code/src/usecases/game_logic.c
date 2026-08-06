@@ -167,7 +167,10 @@ static void spawn_boss(GameState *gs, EventQueue *events) {
 
     Boss *b = &gs->boss;
     gs->boss_count++;
-    gs->score_since_last_boss = 0; /* the next one needs a full fresh BOSS_SCORE_STEP */
+    /* It has served its purpose bringing this boss in; nothing may
+     * accumulate again until the encounter ends (see apply_score_delta,
+     * which stops counting entirely while a boss is alive). */
+    gs->score_since_last_boss = 0;
 
     float min_size = BOSS_BASE_MIN_SIZE * gs->scale;
     float max_size = BOSS_BASE_MAX_SIZE * gs->scale;
@@ -186,10 +189,11 @@ static void spawn_boss(GameState *gs, EventQueue *events) {
 }
 
 /* Deterministic (unlike the orb's coin flip): a boss appears once
- * gs->score_since_last_boss reaches BOSS_SCORE_STEP - a counter that
- * resets to zero on every appearance (see spawn_boss) and only resumes
- * counting once the current boss is defeated, so each one always takes a
- * full fresh BOSS_SCORE_STEP of points to bring in, never less. */
+ * gs->score_since_last_boss reaches BOSS_SCORE_STEP - a counter that is
+ * zeroed the moment a boss encounter ends (see end_boss_encounter) and
+ * only advances while no boss is on screen (see apply_score_delta), so
+ * every boss takes a full fresh BOSS_SCORE_STEP of points to bring in,
+ * never less, no matter how the previous one ended or what it paid out. */
 static void maybe_trigger_boss_spawn(GameState *gs, EventQueue *events) {
     if (gs->boss.alive) return;
     if (gs->score_since_last_boss < BOSS_SCORE_STEP) return;
@@ -202,13 +206,28 @@ static void maybe_trigger_boss_spawn(GameState *gs, EventQueue *events) {
 static void apply_score_delta(GameState *gs, EventQueue *events, int delta) {
     int old_score = gs->score;
     gs->score += delta;
-    gs->score_since_last_boss += delta;
+    /* Only points earned with the arena clear count toward bringing the
+     * next boss in. Points scored during a fight - picking off enemies
+     * still fleeing, and the defeat bonus itself (see damage_boss) - are
+     * worth full score but must never shorten the gap to the next boss. */
+    if (!gs->boss.alive) gs->score_since_last_boss += delta;
 
     if (gs->score / LASER_COLOR_SCORE_STEP > old_score / LASER_COLOR_SCORE_STEP) {
         gs->player.laser_color = random_vivid_color();
     }
     maybe_trigger_orb_spawn(gs, old_score, gs->score);
     maybe_trigger_boss_spawn(gs, events);
+}
+
+/* The single place a boss leaves the screen, by either route it can go
+ * (shot down here, or detonated by ring contact in check_collisions).
+ * Restarting the counter at the END of an encounter - not at its start -
+ * is what guarantees the full BOSS_SCORE_STEP gap before the next one:
+ * from this instant every point has to be earned fresh, with the arena
+ * clear. */
+static void end_boss_encounter(GameState *gs) {
+    gs->boss.alive = false;
+    gs->score_since_last_boss = 0;
 }
 
 /* Shared by both ways the boss can take a hit (a direct laser shot, and
@@ -220,8 +239,16 @@ static void damage_boss(GameState *gs, EventQueue *events) {
     if (b->hits_taken >= b->hits_required) {
         spawn_explosion(gs, b->x, b->y, b->size * 1.4f);
         int bonus = b->hits_required * BOSS_KILL_SCORE_MULTIPLIER;
-        b->alive = false;
+        /* Order matters: the bonus is awarded while the boss still counts
+         * as alive, so it lands in gs->score alone and is excluded from
+         * score_since_last_boss (see apply_score_delta). Awarding it after
+         * clearing the flag is what used to chain bosses back to back -
+         * the bonus is hits_required * BOSS_KILL_SCORE_MULTIPLIER, which
+         * from the third boss on (150 * 4 = 600) exceeds BOSS_SCORE_STEP
+         * all by itself and so triggered the next arrival on the very
+         * frame this one died. */
         apply_score_delta(gs, events, bonus);
+        end_boss_encounter(gs);
         event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
     } else {
         event_queue_push_sfx(events, SFX_BOSS_HIT);
@@ -866,7 +893,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             float player_radius = fmaxf(player_half_w, player_half_h);
             if (within_radius(gs->player.x, gs->player.y, gs->boss.x, gs->boss.y, ring_radius + player_radius)) {
                 spawn_explosion(gs, gs->boss.x, gs->boss.y, gs->boss.size * 1.4f);
-                gs->boss.alive = false;
+                end_boss_encounter(gs);
                 event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
                 kill_player(gs, events);
             }
