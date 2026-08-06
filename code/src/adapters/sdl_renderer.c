@@ -410,6 +410,34 @@ static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
     gp_fill_rect(ctx->renderer, p->x - beam_w / 2.0f, 0.0f, beam_w, top, core);
 }
 
+/* Engine exhaust: fades in and out over its TRAIL_PARTICLE_LIFETIME-second
+ * life (never popping in or vanishing abruptly), cooling from a fire color
+ * to smoke-grey as it ages, expanding a little the way dispersing smoke
+ * does. Capped at TRAIL_PARTICLE_MAX_ALPHA (~25%) even at its brightest, per
+ * the "subtle, kinda faded" ask - deliberately a single soft blended circle
+ * rather than the multi-layer glow/core/hot construction the projectiles
+ * and explosions use, since a whole trail of those would be anything but
+ * subtle. */
+static void draw_trail_particle(SdlRendererCtx *ctx, const TrailParticle *t) {
+    if (!t->alive) return;
+
+    float life = t->age / t->max_age; /* 0 = just spawned, 1 = about to expire */
+
+    static const Color kFireCore = {255, 140, 40, 255};
+    static const Color kSmoke = {90, 90, 95, 255};
+    float cool = life < 0.4f ? life / 0.4f : 1.0f; /* fire cools into smoke over the first 40% of its life */
+    Color color = lerp_color(kFireCore, kSmoke, cool);
+
+    float radius = t->size * (1.0f + (TRAIL_PARTICLE_SIZE_GROWTH - 1.0f) * life);
+
+    float fade_in = life < 0.08f ? life / 0.08f : 1.0f; /* brief fade-in so it doesn't pop into view */
+    float fade_out = 1.0f - life;
+    color.a = (unsigned char)((float)TRAIL_PARTICLE_MAX_ALPHA * fade_in * fade_out);
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    gp_fill_circle(ctx->renderer, t->x, t->y, radius, color);
+}
+
 static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMIES; i++) draw_enemy(ctx, &gs->enemies[i]);
     draw_boss(ctx, &gs->boss);
@@ -417,6 +445,7 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_EXPLOSIONS; i++) draw_explosion(ctx, &gs->explosions[i]);
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) draw_projectile(ctx, &gs->player_shots[i], true, gs->scale);
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, &gs->enemy_shots[i], false, gs->scale);
+    for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) draw_trail_particle(ctx, &gs->trail_particles[i]);
     draw_super_beam(ctx, gs);
     draw_player(ctx, &gs->player, gs->scale);
 }

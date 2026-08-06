@@ -19,6 +19,7 @@
 #define MAX_ENEMY_PROJECTILES 64
 #define MAX_ENEMIES 48
 #define MAX_EXPLOSIONS 32
+#define MAX_TRAIL_PARTICLES 64
 #define MAX_STARS 80
 #define MAX_EVENTS 16
 
@@ -38,6 +39,23 @@
 #define PLAYER_LIFE_LOSS_PER_HIT 10.0f
 /* At or below this percentage the life bar switches from yellow to red. */
 #define PLAYER_LIFE_LOW_THRESHOLD 20.0f
+
+/* Cosmetic engine exhaust trailing from the back of the ship - see
+ * TrailParticle in domain/types.h and update_player_trail in
+ * usecases/game_logic.c. Purely visual, never touched by collision. */
+#define TRAIL_PARTICLE_LIFETIME                                                \
+  1.0f /* "remain on screen for about 1 second"                                \
+        */
+#define TRAIL_SPAWN_INTERVAL                                                   \
+  0.02f /* ~50 particles/sec, a steady but sparse stream */
+#define TRAIL_PARTICLE_BASE_SIZE 3.0f
+#define TRAIL_PARTICLE_SIZE_GROWTH                                             \
+  2.5f /* radius multiplier reached by end of life, like dispersing smoke */
+#define TRAIL_PARTICLE_SPEED 30.0f        /* base backward drift speed */
+#define TRAIL_PARTICLE_JITTER_SPEED 18.0f /* random sideways wobble range */
+/* "subtle...25% visibility": alpha never exceeds this even at a particle's
+ * brightest instant, out of 255. */
+#define TRAIL_PARTICLE_MAX_ALPHA 32
 
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f
@@ -111,8 +129,9 @@
 
 /* Mode 3: power cannon. */
 #define POWER_CANNON_FIRE_COOLDOWN 1.0f
-#define POWER_CANNON_PROJECTILE_RADIUS 10.0f
-#define POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER 0.6f /* "a little bit slower" than a normal shot */
+#define POWER_CANNON_PROJECTILE_RADIUS 20.0f
+#define POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER                               \
+  0.6f /* "a little bit slower" than a normal shot */
 /* "25% of the screen" - of the shorter screen dimension, so the blast
  * reads sanely regardless of the display's aspect ratio. */
 #define POWER_CANNON_EXPLOSION_RADIUS_RATIO 0.25f

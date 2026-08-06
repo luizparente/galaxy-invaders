@@ -95,6 +95,27 @@ static void spawn_explosion(GameState *gs, float x, float y, float max_radius) {
     }
 }
 
+/* One puff of engine exhaust at (x, y) - see update_player_trail for the
+ * steady emission that calls this, and TrailParticle in domain/types.h for
+ * what each field drives. Drifts backward (away from the ship's nose) with
+ * a little random sideways wobble so the stream reads as flickering
+ * exhaust rather than a rigid line. */
+static void spawn_trail_particle(GameState *gs, float x, float y) {
+    for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+        TrailParticle *t = &gs->trail_particles[i];
+        if (t->alive) continue;
+        t->alive = true;
+        t->x = x;
+        t->y = y;
+        t->vx = (frand01() - 0.5f) * scaled(gs, TRAIL_PARTICLE_JITTER_SPEED);
+        t->vy = scaled(gs, TRAIL_PARTICLE_SPEED) * (0.7f + frand01() * 0.6f);
+        t->age = 0.0f;
+        t->max_age = TRAIL_PARTICLE_LIFETIME;
+        t->size = scaled(gs, TRAIL_PARTICLE_BASE_SIZE) * (0.7f + frand01() * 0.6f);
+        return;
+    }
+}
+
 /* Shared by every shooting mode's fire logic (see update_player_firing and
  * its per-mode helpers): claims the first free slot in gs->player_shots and
  * fills it in. Silently does nothing once the pool (MAX_PLAYER_PROJECTILES)
@@ -345,6 +366,7 @@ static void reset_run(GameState *gs) {
     memset(&gs->player_shots, 0, sizeof(gs->player_shots));
     memset(&gs->enemy_shots, 0, sizeof(gs->enemy_shots));
     memset(&gs->explosions, 0, sizeof(gs->explosions));
+    memset(&gs->trail_particles, 0, sizeof(gs->trail_particles));
     memset(&gs->orb, 0, sizeof(gs->orb));
     memset(&gs->boss, 0, sizeof(gs->boss));
     gs->boss_count = 0;
@@ -361,6 +383,7 @@ static void reset_run(GameState *gs) {
     gs->player.shoot_mode = SHOOT_MODE_NORMAL;
     gs->player.rapid_burst_timer = 0.0f;
     gs->player.rapid_cooldown_timer = 0.0f;
+    gs->player.trail_emit_timer = 0.0f;
 
     gs->score = 0;
     gs->time_elapsed = 0.0f;
@@ -791,6 +814,45 @@ static void update_explosions(GameState *gs, float dt) {
     }
 }
 
+/* Continuously emits engine exhaust from the back of the ship (the end
+ * opposite the nose - see spawn_player_shot's spawn point for the nose
+ * itself) while the player is alive, and ages/drifts every particle
+ * already in flight regardless. Emission stops the instant the player
+ * dies, but particles already released keep drifting and fading out on
+ * their own, same as an explosion outliving the enemy that spawned it. */
+static void update_player_trail(GameState *gs, float dt) {
+    Player *p = &gs->player;
+
+    if (p->alive) {
+        p->trail_emit_timer -= dt;
+        if (p->trail_emit_timer <= 0.0f) {
+            p->trail_emit_timer = TRAIL_SPAWN_INTERVAL;
+            float back_y = p->y + scaled(gs, PLAYER_HEIGHT) / 2.0f;
+            float jitter_x = (frand01() - 0.5f) * scaled(gs, PLAYER_WIDTH) * 0.3f;
+            spawn_trail_particle(gs, p->x + jitter_x, back_y);
+        }
+    }
+
+    for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+        TrailParticle *t = &gs->trail_particles[i];
+        if (!t->alive) continue;
+        t->age += dt;
+        if (t->age >= t->max_age) {
+            t->alive = false;
+            continue;
+        }
+
+        /* Exponential drag so the puff lingers and spreads like smoke
+         * instead of shooting off in a straight line: at this rate it
+         * loses about 85% of its speed every second. */
+        float drag = powf(0.15f, dt);
+        t->vx *= drag;
+        t->vy *= drag;
+        t->x += t->vx * dt;
+        t->y += t->vy * dt;
+    }
+}
+
 static void check_collisions(GameState *gs, EventQueue *events) {
     float enemy_shot_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
     float enemy_shot_half_h = scaled(gs, ENEMY_PROJECTILE_H) / 2.0f;
@@ -960,6 +1022,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     }
 
     update_player(gs, input, dt, events);
+    update_player_trail(gs, dt);
     if (!gs->boss.alive) spawner_update(gs, dt); /* no ordinary spawns during a boss fight */
     update_enemies(gs, dt);
     update_pending_orb_kills(gs, dt, events);

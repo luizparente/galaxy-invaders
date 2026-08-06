@@ -79,6 +79,10 @@ typedef struct Player {
      * or switch modes. Only one of the two is ever nonzero at a time. */
     float rapid_burst_timer;
     float rapid_cooldown_timer;
+
+    /* Counts down to the next engine trail particle emission (see
+     * update_player_trail) - purely cosmetic, unrelated to fire_cooldown. */
+    float trail_emit_timer;
 } Player;
 
 typedef struct Enemy {
@@ -133,6 +137,20 @@ typedef struct Explosion {
     float max_age;
     float max_radius;
 } Explosion;
+
+/* One puff of the player ship's engine exhaust - a soft dot that starts
+ * fire-colored and cools into smoke as it ages (see draw_trail_particle),
+ * spawned continuously from the back of the ship (update_player_trail) and
+ * released to drift for TRAIL_PARTICLE_LIFETIME seconds. Purely cosmetic:
+ * never collides with anything, never affects gameplay. */
+typedef struct TrailParticle {
+    bool alive;
+    float x, y;
+    float vx, vy;
+    float age;
+    float max_age;
+    float size; /* base radius at spawn, already scaled by GameState.scale */
+} TrailParticle;
 
 typedef struct Star {
     float x, y;
@@ -190,6 +208,7 @@ typedef struct GameState {
     Projectile player_shots[MAX_PLAYER_PROJECTILES];
     Projectile enemy_shots[MAX_ENEMY_PROJECTILES];
     Explosion explosions[MAX_EXPLOSIONS];
+    TrailParticle trail_particles[MAX_TRAIL_PARTICLES];
     Star stars[MAX_STARS];
     Orb orb;
     Boss boss;
