@@ -49,6 +49,19 @@ typedef enum PauseSelection {
     PAUSE_EXIT = 1,
 } PauseSelection;
 
+/* The player's selectable shooting ability - switched with the 1-5 number
+ * keys (see InputCommand). SHOOT_MODE_COUNT is also the indicator's dot
+ * count in the HUD (adapters/sdl_renderer.c), so a new mode only needs to be
+ * inserted before it to show up there automatically. */
+typedef enum ShootMode {
+    SHOOT_MODE_NORMAL = 0,
+    SHOOT_MODE_RAPID,
+    SHOOT_MODE_POWER,
+    SHOOT_MODE_DOUBLE,
+    SHOOT_MODE_SIDE,
+    SHOOT_MODE_COUNT,
+} ShootMode;
+
 typedef struct Player {
     float x, y;
     bool alive;
@@ -57,6 +70,15 @@ typedef struct Player {
     float super_beam_timer; /* seconds remaining; 0 = inactive */
     bool god_mode; /* toggled by Ctrl+G; ship turns gold and cannot die */
     float life; /* percentage, [0, PLAYER_LIFE_MAX]; hitting 0 kills the player */
+
+    ShootMode shoot_mode;
+    /* Rapid fire's own two-phase timer (see update_rapid_fire in
+     * usecases/game_logic.c): rapid_burst_timer counts down the 3s of
+     * automatic fire once triggered, then rapid_cooldown_timer counts down
+     * the following 4s lockout. Both 0 means idle - free to fire normally
+     * or switch modes. Only one of the two is ever nonzero at a time. */
+    float rapid_burst_timer;
+    float rapid_cooldown_timer;
 } Player;
 
 typedef struct Enemy {
@@ -76,11 +98,26 @@ typedef struct Enemy {
     float orb_kill_timer;
 } Enemy;
 
+/* Drives the player shot's rendering (adapters/sdl_renderer.c) and, for
+ * PROJECTILE_KIND_POWER, its explode-on-contact behavior in check_collisions.
+ * Unused (left NORMAL) by enemy shots. */
+typedef enum ProjectileKind {
+    PROJECTILE_KIND_NORMAL = 0,
+    PROJECTILE_KIND_RAPID,
+    PROJECTILE_KIND_POWER,
+} ProjectileKind;
+
 typedef struct Projectile {
     bool alive;
     float x, y;
     float vx, vy;
     Color color;
+    ProjectileKind kind;
+    /* True only for side-beam shots (ShootMode SHOOT_MODE_SIDE): the shot
+     * travels sideways instead of upward, so its visual and hitbox are
+     * elongated along x instead of y (see draw_projectile and
+     * player_shot_half_extents). */
+    bool horizontal;
 
     /* Set true only on enemy shots caught out when a boss arrives: they
      * keep drifting and visually fade (see inert_age) but can no longer

@@ -36,6 +36,30 @@ static float scaled(const GameState *gs, float design_value) {
     return design_value * gs->scale;
 }
 
+/* The hitbox a given player shot should be tested against: PROJECTILE_KIND_POWER
+ * gets a bigger round hitbox matching its bigger sprite, and a horizontal
+ * (side-beam) shot has its width/height swapped so the hitbox stays aligned
+ * with its direction of travel instead of the vertical bolt's shape. Shared
+ * by check_collisions (enemy/boss/orb hit tests) and update_projectiles (the
+ * off-screen despawn margin) so the two can never drift apart. */
+static void player_shot_half_extents(const GameState *gs, const Projectile *pr, float *half_w, float *half_h) {
+    if (pr->kind == PROJECTILE_KIND_POWER) {
+        float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
+        *half_w = r;
+        *half_h = r;
+        return;
+    }
+    float w = scaled(gs, PLAYER_PROJECTILE_W) / 2.0f;
+    float h = scaled(gs, PLAYER_PROJECTILE_H) / 2.0f;
+    if (pr->horizontal) {
+        *half_w = h;
+        *half_h = w;
+    } else {
+        *half_w = w;
+        *half_h = h;
+    }
+}
+
 static void init_stars(GameState *gs) {
     for (int i = 0; i < MAX_STARS; i++) {
         Star *s = &gs->stars[i];
@@ -67,6 +91,29 @@ static void spawn_explosion(GameState *gs, float x, float y, float max_radius) {
         e->age = 0.0f;
         e->max_age = EXPLOSION_DURATION;
         e->max_radius = max_radius;
+        return;
+    }
+}
+
+/* Shared by every shooting mode's fire logic (see update_player_firing and
+ * its per-mode helpers): claims the first free slot in gs->player_shots and
+ * fills it in. Silently does nothing once the pool (MAX_PLAYER_PROJECTILES)
+ * is exhausted, same as the original inline spawn it replaces. */
+static void spawn_player_shot(GameState *gs, float x, float y, float vx, float vy,
+                               ProjectileKind kind, bool horizontal) {
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        Projectile *pr = &gs->player_shots[i];
+        if (pr->alive) continue;
+        pr->alive = true;
+        pr->x = x;
+        pr->y = y;
+        pr->vx = vx;
+        pr->vy = vy;
+        pr->color = gs->player.laser_color;
+        pr->kind = kind;
+        pr->horizontal = horizontal;
+        pr->inert = false;
+        pr->inert_age = 0.0f;
         return;
     }
 }
@@ -194,6 +241,26 @@ static void destroy_enemy_for_score(GameState *gs, EventQueue *events, Enemy *e)
     event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
 }
 
+/* Mode 3 (power cannon): a shot explodes on contact, and every ordinary
+ * enemy within POWER_CANNON_EXPLOSION_RADIUS_RATIO of the screen's shorter
+ * dimension, centered on the contact point, explodes with it - mirroring
+ * the orb's shot-to-detonate sweep (check_collisions) but instant rather
+ * than staggered, and scoped to gs->enemies only (never the boss), same as
+ * that sweep. destroy_enemy_for_score already spawns each enemy's own
+ * explosion and awards score, so this only needs to add the single big
+ * blast at the contact point on top of that. */
+static void trigger_power_cannon_explosion(GameState *gs, EventQueue *events, float x, float y) {
+    float radius = POWER_CANNON_EXPLOSION_RADIUS_RATIO * fminf((float)gs->screen_w, (float)gs->screen_h);
+    spawn_explosion(gs, x, y, radius);
+
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (!e->alive) continue;
+        if (!within_radius(x, y, e->x, e->y, radius)) continue;
+        destroy_enemy_for_score(gs, events, e);
+    }
+}
+
 static void update_orb(GameState *gs, float dt) {
     Orb *o = &gs->orb;
     if (!o->alive) return;
@@ -264,6 +331,9 @@ static void reset_run(GameState *gs) {
     gs->player.super_beam_timer = 0.0f;
     gs->player.god_mode = false;
     gs->player.life = PLAYER_LIFE_MAX;
+    gs->player.shoot_mode = SHOOT_MODE_NORMAL;
+    gs->player.rapid_burst_timer = 0.0f;
+    gs->player.rapid_cooldown_timer = 0.0f;
 
     gs->score = 0;
     gs->time_elapsed = 0.0f;
@@ -364,6 +434,142 @@ static void damage_player(GameState *gs, EventQueue *events, float amount) {
     }
 }
 
+/* Mode switching (1-5 number keys) is locked out for the whole duration of
+ * a rapid-fire burst and its following cooldown (see update_rapid_fire) -
+ * everywhere else, switching is free even mid-flight of other shots. */
+static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->rapid_burst_timer > 0.0f || p->rapid_cooldown_timer > 0.0f) return;
+
+    ShootMode requested = p->shoot_mode;
+    if (input->shoot_mode_1_pressed) requested = SHOOT_MODE_NORMAL;
+    else if (input->shoot_mode_2_pressed) requested = SHOOT_MODE_RAPID;
+    else if (input->shoot_mode_3_pressed) requested = SHOOT_MODE_POWER;
+    else if (input->shoot_mode_4_pressed) requested = SHOOT_MODE_DOUBLE;
+    else if (input->shoot_mode_5_pressed) requested = SHOOT_MODE_SIDE;
+
+    if (requested == p->shoot_mode) return;
+    p->shoot_mode = requested;
+    event_queue_push_sfx(events, SFX_MENU_SELECT);
+}
+
+/* Mode 1 (default): a single shot from the nose, unchanged from before this
+ * ability existed. */
+static void update_normal_fire(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    spawn_player_shot(gs, p->x, p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f,
+                       0.0f, -scaled(gs, PLAYER_PROJECTILE_SPEED), PROJECTILE_KIND_NORMAL, false);
+    p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Mode 2: one press (or hold) commits to a full RAPID_FIRE_BURST_DURATION
+ * seconds of automatic fire at RAPID_FIRE_SHOTS_PER_SEC, regardless of
+ * whether the key is still held, followed by a RAPID_FIRE_LOCKOUT_DURATION
+ * cooldown during which this mode (see its early return below) fires
+ * nothing at all - update_shoot_mode_switch enforces the matching "can't
+ * switch mode either" half of that lockout. rapid_burst_timer and
+ * rapid_cooldown_timer are mutually exclusive: exactly one is nonzero
+ * while a burst is in flight or recovering, both are zero while idle. */
+static void update_rapid_fire(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
+    Player *p = &gs->player;
+
+    if (p->rapid_burst_timer > 0.0f) {
+        p->rapid_burst_timer -= dt;
+        if (p->rapid_burst_timer <= 0.0f) {
+            p->rapid_burst_timer = 0.0f;
+            p->rapid_cooldown_timer = RAPID_FIRE_LOCKOUT_DURATION;
+            return;
+        }
+        if (p->fire_cooldown <= 0.0f) {
+            spawn_player_shot(gs, p->x, p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f,
+                               0.0f, -scaled(gs, PLAYER_PROJECTILE_SPEED), PROJECTILE_KIND_RAPID, false);
+            p->fire_cooldown = RAPID_FIRE_SHOT_INTERVAL;
+            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+        }
+        return;
+    }
+
+    if (p->rapid_cooldown_timer > 0.0f) {
+        p->rapid_cooldown_timer -= dt;
+        if (p->rapid_cooldown_timer < 0.0f) p->rapid_cooldown_timer = 0.0f;
+        return;
+    }
+
+    if (input->fire_held) {
+        p->rapid_burst_timer = RAPID_FIRE_BURST_DURATION;
+        p->fire_cooldown = 0.0f; /* fire the first shot of the burst immediately */
+    }
+}
+
+/* Mode 3: a slow, heavy single shot - see trigger_power_cannon_explosion
+ * (check_collisions) for what happens when it actually lands. */
+static void update_power_cannon(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float speed = scaled(gs, PLAYER_PROJECTILE_SPEED) * POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER;
+    spawn_player_shot(gs, p->x, p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f,
+                       0.0f, -speed, PROJECTILE_KIND_POWER, false);
+    p->fire_cooldown = POWER_CANNON_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Mode 4: identical rate and shot to mode 1, just two shots fired abreast
+ * from the wingtips instead of one from the nose. */
+static void update_double_barrel(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float wing_x = scaled(gs, PLAYER_WING_OFFSET_X);
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float vy = -scaled(gs, PLAYER_PROJECTILE_SPEED);
+    spawn_player_shot(gs, p->x - wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false);
+    spawn_player_shot(gs, p->x + wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false);
+    p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Mode 5: same wingtip pair as mode 4, fired sideways (away from the ship)
+ * instead of forward. */
+static void update_side_beams(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float wing_x = scaled(gs, PLAYER_WING_OFFSET_X);
+    float speed = scaled(gs, PLAYER_PROJECTILE_SPEED);
+    spawn_player_shot(gs, p->x - wing_x, p->y, -speed, 0.0f, PROJECTILE_KIND_NORMAL, true);
+    spawn_player_shot(gs, p->x + wing_x, p->y, speed, 0.0f, PROJECTILE_KIND_NORMAL, true);
+    p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Dispatches to whichever mode is currently active. fire_cooldown is
+ * decremented once here regardless of mode - every mode but rapid fire
+ * (which drives its own pair of timers) gates its shot on it, the same
+ * single-timer pattern the original normal-only fire logic used. */
+static void update_player_firing(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->fire_cooldown > 0.0f) p->fire_cooldown -= dt;
+
+    /* While the super beam is active it replaces every shooting mode
+     * entirely - see update_super_beam, which fires automatically every
+     * frame on its own. */
+    if (p->super_beam_timer > 0.0f) return;
+
+    switch (p->shoot_mode) {
+        case SHOOT_MODE_RAPID: update_rapid_fire(gs, input, dt, events); break;
+        case SHOOT_MODE_POWER: update_power_cannon(gs, input, events); break;
+        case SHOOT_MODE_DOUBLE: update_double_barrel(gs, input, events); break;
+        case SHOOT_MODE_SIDE: update_side_beams(gs, input, events); break;
+        case SHOOT_MODE_NORMAL:
+        case SHOOT_MODE_COUNT:
+        default: update_normal_fire(gs, input, events); break;
+    }
+}
+
 static void update_player(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
     Player *p = &gs->player;
     if (!p->alive) return;
@@ -392,25 +598,8 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
     if (p->y < min_y) p->y = min_y;
     if (p->y > max_y) p->y = max_y;
 
-    if (p->fire_cooldown > 0.0f) p->fire_cooldown -= dt;
-
-    /* While the super beam is active it replaces normal shots entirely -
-     * see update_super_beam, which fires automatically every frame. */
-    if (input->fire_held && p->fire_cooldown <= 0.0f && p->super_beam_timer <= 0.0f) {
-        for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
-            Projectile *pr = &gs->player_shots[i];
-            if (pr->alive) continue;
-            pr->alive = true;
-            pr->x = p->x;
-            pr->y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
-            pr->vx = 0.0f;
-            pr->vy = -scaled(gs, PLAYER_PROJECTILE_SPEED);
-            pr->color = p->laser_color;
-            p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
-            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
-            break;
-        }
-    }
+    update_shoot_mode_switch(gs, input, events);
+    update_player_firing(gs, input, dt, events);
 }
 
 /* The super beam is a continuous column running from the ship straight up
@@ -529,7 +718,6 @@ static void update_pending_orb_kills(GameState *gs, float dt, EventQueue *events
 }
 
 static void update_projectiles(GameState *gs, float dt) {
-    float player_shot_h = scaled(gs, PLAYER_PROJECTILE_H);
     float enemy_shot_h = scaled(gs, ENEMY_PROJECTILE_H);
 
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
@@ -537,7 +725,17 @@ static void update_projectiles(GameState *gs, float dt) {
         if (!pr->alive) continue;
         pr->x += pr->vx * dt;
         pr->y += pr->vy * dt;
-        if (pr->y < -player_shot_h) pr->alive = false;
+
+        /* Every mode but side beams (SHOOT_MODE_SIDE) only ever leaves via
+         * the top, same as before this ability existed - checking all four
+         * edges is what lets a horizontal shot despawn once it clears the
+         * left/right edge instead of flying forever. */
+        float half_w, half_h;
+        player_shot_half_extents(gs, pr, &half_w, &half_h);
+        if (pr->y < -half_h || pr->y > (float)gs->screen_h + half_h ||
+            pr->x < -half_w || pr->x > (float)gs->screen_w + half_w) {
+            pr->alive = false;
+        }
     }
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
         Projectile *pr = &gs->enemy_shots[i];
@@ -567,8 +765,6 @@ static void update_explosions(GameState *gs, float dt) {
 }
 
 static void check_collisions(GameState *gs, EventQueue *events) {
-    float player_shot_half_w = scaled(gs, PLAYER_PROJECTILE_W) / 2.0f;
-    float player_shot_half_h = scaled(gs, PLAYER_PROJECTILE_H) / 2.0f;
     float enemy_shot_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
     float enemy_shot_half_h = scaled(gs, ENEMY_PROJECTILE_H) / 2.0f;
     float player_half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
@@ -578,14 +774,21 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         Projectile *pr = &gs->player_shots[i];
         if (!pr->alive) continue;
 
+        float shot_half_w, shot_half_h;
+        player_shot_half_extents(gs, pr, &shot_half_w, &shot_half_h);
+
         for (int j = 0; j < MAX_ENEMIES; j++) {
             Enemy *e = &gs->enemies[j];
             if (!e->alive) continue;
 
-            if (collision_aabb_overlap(pr->x, pr->y, player_shot_half_w, player_shot_half_h,
+            if (collision_aabb_overlap(pr->x, pr->y, shot_half_w, shot_half_h,
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                 pr->alive = false;
-                destroy_enemy_for_score(gs, events, e);
+                if (pr->kind == PROJECTILE_KIND_POWER) {
+                    trigger_power_cannon_explosion(gs, events, pr->x, pr->y);
+                } else {
+                    destroy_enemy_for_score(gs, events, e);
+                }
                 break;
             }
         }
@@ -625,12 +828,20 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
             Projectile *pr = &gs->player_shots[i];
             if (!pr->alive) continue;
-            if (!collision_aabb_overlap(pr->x, pr->y, player_shot_half_w, player_shot_half_h,
+            float shot_half_w, shot_half_h;
+            player_shot_half_extents(gs, pr, &shot_half_w, &shot_half_h);
+            if (!collision_aabb_overlap(pr->x, pr->y, shot_half_w, shot_half_h,
                                          gs->boss.x, gs->boss.y, boss_half, boss_half)) {
                 continue;
             }
             pr->alive = false;
             damage_boss(gs, events);
+            /* A power cannon shot still detonates on the boss like it would
+             * on any other contact - it just doesn't add extra damage to
+             * the boss itself beyond the one damage_boss hit above. */
+            if (pr->kind == PROJECTILE_KIND_POWER) {
+                trigger_power_cannon_explosion(gs, events, pr->x, pr->y);
+            }
             break;
         }
 
@@ -676,7 +887,9 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
             Projectile *pr = &gs->player_shots[i];
             if (!pr->alive) continue;
-            if (!collision_aabb_overlap(pr->x, pr->y, player_shot_half_w, player_shot_half_h,
+            float shot_half_w, shot_half_h;
+            player_shot_half_extents(gs, pr, &shot_half_w, &shot_half_h);
+            if (!collision_aabb_overlap(pr->x, pr->y, shot_half_w, shot_half_h,
                                          gs->orb.x, gs->orb.y, orb_half, orb_half)) {
                 continue;
             }

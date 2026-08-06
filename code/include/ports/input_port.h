@@ -21,6 +21,14 @@ typedef struct InputCommand {
     bool nav_down_pressed;
     bool god_mode_toggle_pressed;
 
+    /* Number keys 1-5 select a shooting mode (ShootMode in domain/types.h)
+     * directly, edge-triggered like every other *_pressed field. */
+    bool shoot_mode_1_pressed;
+    bool shoot_mode_2_pressed;
+    bool shoot_mode_3_pressed;
+    bool shoot_mode_4_pressed;
+    bool shoot_mode_5_pressed;
+
     bool quit_requested;
 } InputCommand;
 

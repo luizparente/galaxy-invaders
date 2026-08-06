@@ -159,13 +159,109 @@ static void triangle_bolt(SDL_Renderer *r, float cx, float cy, float half_w, flo
     gp_fill_triangle(r, cx, cy + half_h, cx - half_w, cy - half_h, cx + half_w, cy - half_h, c);
 }
 
-/* Both shot kinds render as a layered glow (dim, wide, translucent) around
- * a saturated core around a near-white hot streak, the same construction
- * Star Wars-style blaster bolts use - built from nested primitives since
- * there's no blur to fake it with. pr->color (the cycling player laser
- * hue, or the firing enemy's own color) still drives every layer's hue
- * unchanged; only alpha and the lerp-toward-white amount vary between
- * layers, so the existing color-variation logic is untouched. */
+/* Modes 1/4/5's shot (SHOOT_MODE_NORMAL, DOUBLE, SIDE): a layered glow (dim,
+ * wide, translucent) around a saturated core around a near-white hot
+ * streak, the same construction Star Wars-style blaster bolts use - built
+ * from nested primitives since there's no blur to fake it with. pr->color
+ * (the cycling player laser hue) drives every layer's hue; only alpha and
+ * the lerp-toward-white amount vary between layers. Oriented vertically
+ * (nose-forward): the horizontal counterpart below is the same
+ * construction with x/y swapped for side beams. */
+static void draw_player_bolt_vertical(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    float core_rx = PLAYER_PROJECTILE_W * 0.9f * scale;
+    float core_ry = PLAYER_PROJECTILE_H * 0.5f * scale;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = pr->color;
+    glow.a = 55;
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 2.6f, core_ry * 1.2f, glow);
+    glow.a = 120;
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 1.7f, core_ry * 1.1f, glow);
+
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx, core_ry, pr->color);
+
+    Color hot = lerp_color(pr->color, kWhite, 0.85f);
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 0.4f, core_ry * 0.85f, hot);
+
+    Color glint = kWhite;
+    glint.a = 200;
+    gp_fill_circle(ctx->renderer, cx, cy - core_ry * 0.55f, core_rx * 0.45f, glint);
+}
+
+/* Mode 5's shot (SHOOT_MODE_SIDE): the same layered bolt as
+ * draw_player_bolt_vertical, rotated 90 degrees - travel direction (vx's
+ * sign) is the long axis instead of always "up", so the glint sits at
+ * whichever end (left or right) is actually the leading tip. */
+static void draw_player_bolt_horizontal(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    float core_ry = PLAYER_PROJECTILE_W * 0.9f * scale;
+    float core_rx = PLAYER_PROJECTILE_H * 0.5f * scale;
+    float cx = pr->x, cy = pr->y;
+    float dir = pr->vx >= 0.0f ? 1.0f : -1.0f;
+
+    Color glow = pr->color;
+    glow.a = 55;
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 1.2f, core_ry * 2.6f, glow);
+    glow.a = 120;
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 1.1f, core_ry * 1.7f, glow);
+
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx, core_ry, pr->color);
+
+    Color hot = lerp_color(pr->color, kWhite, 0.85f);
+    gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 0.85f, core_ry * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = 200;
+    gp_fill_circle(ctx->renderer, cx + dir * core_rx * 0.55f, cy, core_ry * 0.45f, glint);
+}
+
+/* Mode 2's shot (SHOOT_MODE_RAPID): a small glowing sphere in the cycling
+ * laser color - same layered glow/core/hot/glint construction as the bolt
+ * above and draw_orb, just built from concentric circles since a rapid-fire
+ * shot has no "forward tip" worth emphasizing. */
+static void draw_rapid_shot(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    float r = RAPID_FIRE_PROJECTILE_RADIUS * scale;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = pr->color;
+    glow.a = 70;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 2.4f, glow);
+    glow.a = 130;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 1.5f, glow);
+
+    gp_fill_circle(ctx->renderer, cx, cy, r, pr->color);
+
+    Color hot = lerp_color(pr->color, kWhite, 0.6f);
+    gp_fill_circle(ctx->renderer, cx, cy, r * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
+}
+
+/* Mode 3's shot (SHOOT_MODE_POWER): a bigger sphere, always white per the
+ * ability's spec (unlike every other mode it ignores the cycling laser
+ * color) with a crisp rim outline so its bigger explode-on-contact hitbox
+ * reads clearly against the smaller normal/rapid shots. */
+static void draw_power_shot(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    float r = POWER_CANNON_PROJECTILE_RADIUS * scale;
+    float cx = pr->x, cy = pr->y;
+    static const Color kPowerWhite = {245, 248, 255, 255};
+    static const Color kPowerRim = {190, 215, 255, 255};
+
+    Color glow = kPowerWhite;
+    glow.a = 60;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 2.2f, glow);
+    glow.a = 120;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 1.5f, glow);
+
+    gp_fill_circle(ctx->renderer, cx, cy, r, kPowerWhite);
+    gp_draw_circle_outline(ctx->renderer, cx, cy, r, kPowerRim);
+
+    Color glint = kWhite;
+    glint.a = 235;
+    gp_fill_circle(ctx->renderer, cx - r * 0.3f, cy - r * 0.3f, r * 0.25f, glint);
+}
+
 static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_player, float scale) {
     if (!pr->alive) return;
 
@@ -178,24 +274,22 @@ static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_p
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
 
     if (is_player) {
-        float core_rx = PLAYER_PROJECTILE_W * 0.9f * scale;
-        float core_ry = PLAYER_PROJECTILE_H * 0.5f * scale;
-        float cx = pr->x, cy = pr->y;
-
-        Color glow = pr->color;
-        glow.a = 55;
-        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 2.6f, core_ry * 1.2f, glow);
-        glow.a = 120;
-        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 1.7f, core_ry * 1.1f, glow);
-
-        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx, core_ry, pr->color);
-
-        Color hot = lerp_color(pr->color, kWhite, 0.85f);
-        gp_fill_ellipse(ctx->renderer, cx, cy, core_rx * 0.4f, core_ry * 0.85f, hot);
-
-        Color glint = kWhite;
-        glint.a = 200;
-        gp_fill_circle(ctx->renderer, cx, cy - core_ry * 0.55f, core_rx * 0.45f, glint);
+        switch (pr->kind) {
+            case PROJECTILE_KIND_RAPID:
+                draw_rapid_shot(ctx, pr, scale);
+                break;
+            case PROJECTILE_KIND_POWER:
+                draw_power_shot(ctx, pr, scale);
+                break;
+            case PROJECTILE_KIND_NORMAL:
+            default:
+                if (pr->horizontal) {
+                    draw_player_bolt_horizontal(ctx, pr, scale);
+                } else {
+                    draw_player_bolt_vertical(ctx, pr, scale);
+                }
+                break;
+        }
     } else {
         float half = ENEMY_PROJECTILE_W * scale / 2.0f;
         float half_h = ENEMY_PROJECTILE_H * scale / 2.0f;
@@ -415,9 +509,59 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
     pf_draw_text(ctx->renderer, bar_x + (bar_w - label_w) / 2.0f, y + bar_h + label_gap, label_size, kRed, label);
 }
 
+static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
+    "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE",
+};
+
+/* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
+ * score don't already use): one numbered box per ShootMode (1-5 keys select
+ * them, see input_port.h), the active one lit up in yellow - or red while
+ * rapid fire's burst/lockout has switching disabled, echoing the life bar's
+ * "red means can't act right now" language - with the mode's name above. */
+static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) {
+    const Player *p = &gs->player;
+    bool locked = p->rapid_burst_timer > 0.0f || p->rapid_cooldown_timer > 0.0f;
+
+    float margin = 12.0f * gs->scale;
+    float box = 18.0f * gs->scale;
+    float gap = 4.0f * gs->scale;
+    float outline_t = 2.0f * gs->scale;
+
+    float x0 = margin;
+    float y0 = (float)gs->screen_h - margin - box;
+
+    for (int i = 0; i < SHOOT_MODE_COUNT; i++) {
+        float x = x0 + (float)i * (box + gap);
+        bool active = (i == (int)p->shoot_mode);
+
+        Color outline = active ? (locked ? kRed : kYellow) : kDim;
+        gp_fill_rect(ctx->renderer, x, y0, box, box, outline);
+
+        float inner_x = x + outline_t;
+        float inner_y = y0 + outline_t;
+        float inner_w = box - outline_t * 2.0f;
+        float inner_h = box - outline_t * 2.0f;
+        gp_fill_rect(ctx->renderer, inner_x, inner_y, inner_w, inner_h, kBackground);
+
+        char buf[2] = {(char)('1' + i), '\0'};
+        float text_size = (box * 0.5f) / 7.0f;
+        float text_w = pf_text_width(buf, text_size);
+        float text_h = 7.0f * text_size;
+        pf_draw_text(ctx->renderer, x + (box - text_w) / 2.0f, y0 + (box - text_h) / 2.0f,
+                     text_size, active ? kWhite : kDim, buf);
+    }
+
+    const char *label = kShootModeNames[p->shoot_mode];
+    Color label_color = locked ? kRed : kYellow;
+    float label_size = 1.3f * gs->scale;
+    float label_h = 7.0f * label_size;
+    pf_draw_text(ctx->renderer, x0, y0 - label_h - gap, label_size, label_color, label);
+}
+
 static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
     draw_life_bar(ctx, gs);
     draw_boss_bar(ctx, gs);
+    draw_shoot_mode_indicator(ctx, gs);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "SCORE:%d", gs->score);

@@ -98,6 +98,30 @@
 #define SUPER_BEAM_WIDTH_PULSE_AMOUNT 0.35f
 #define SUPER_BEAM_COLOR_CYCLE_SPEED 420.0f
 
+/* --- Player shooting modes (see ShootMode in domain/types.h) --- */
+
+/* Mode 2: rapid fire. A dedicated, independently tunable rate constant
+ * (rather than deriving from PLAYER_FIRE_COOLDOWN) so the burst's speed can
+ * be tuned without touching the normal mode's. */
+#define RAPID_FIRE_SHOTS_PER_SEC 10.0f
+#define RAPID_FIRE_SHOT_INTERVAL (1.0f / RAPID_FIRE_SHOTS_PER_SEC)
+#define RAPID_FIRE_BURST_DURATION 3.0f
+#define RAPID_FIRE_LOCKOUT_DURATION 4.0f
+#define RAPID_FIRE_PROJECTILE_RADIUS 5.0f
+
+/* Mode 3: power cannon. */
+#define POWER_CANNON_FIRE_COOLDOWN 1.0f
+#define POWER_CANNON_PROJECTILE_RADIUS 10.0f
+#define POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER 0.6f /* "a little bit slower" than a normal shot */
+/* "25% of the screen" - of the shorter screen dimension, so the blast
+ * reads sanely regardless of the display's aspect ratio. */
+#define POWER_CANNON_EXPLOSION_RADIUS_RATIO 0.25f
+
+/* Modes 4 & 5: double barrel / side beams fire from the wingtips instead of
+ * the nose - offset from center approximating where the ship sprite's wings
+ * sit. */
+#define PLAYER_WING_OFFSET_X (PLAYER_WIDTH * 0.42f)
+
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50
 /* The boss's own baseline size range, scaled up by BOSS_SIZE_MULTIPLIER -
