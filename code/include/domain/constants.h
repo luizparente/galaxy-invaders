@@ -118,6 +118,16 @@
 
 /* --- Player shooting modes (see ShootMode in domain/types.h) --- */
 
+/* Mode 1's per-shot damage - every other mode's damage is defined relative
+ * to this (see the per-mode DAMAGE_MULTIPLIER constants below), and
+ * everything gets programmatically funneled through Projectile.damage
+ * (set at spawn in each mode's fire function) so retuning the balance
+ * never means touching collision code. Only meaningful against the boss
+ * (see damage_boss) - every other target in the game dies to a single hit
+ * regardless of which mode landed it, having no hit-point pool of its own
+ * to scale against. */
+#define BASE_PLAYER_DAMAGE 1.0f
+
 /* Mode 2: rapid fire. A dedicated, independently tunable rate constant
  * (rather than deriving from PLAYER_FIRE_COOLDOWN) so the burst's speed can
  * be tuned without touching the normal mode's. */
@@ -127,7 +137,9 @@
 #define RAPID_FIRE_LOCKOUT_DURATION 4.0f
 #define RAPID_FIRE_PROJECTILE_RADIUS 5.0f
 
-/* Mode 3: power cannon. */
+/* Mode 3: power cannon. 3x a normal shot's damage, to go with its much
+ * slower rate of fire and heavier, explosive shot. */
+#define POWER_CANNON_DAMAGE_MULTIPLIER 3.0f
 #define POWER_CANNON_FIRE_COOLDOWN 1.0f
 #define POWER_CANNON_PROJECTILE_RADIUS 20.0f
 #define POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER                               \
@@ -140,6 +152,11 @@
  * the nose - offset from center approximating where the ship sprite's wings
  * sit. */
 #define PLAYER_WING_OFFSET_X (PLAYER_WIDTH * 0.42f)
+/* Mode 4 fires two shots per trigger pull instead of one, each at half a
+ * normal shot's damage, so landing both on the same target costs the same
+ * total damage as mode 1 - the tradeoff is being able to split them across
+ * two separate targets instead. */
+#define DOUBLE_BARREL_DAMAGE_MULTIPLIER 0.5f
 
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50

@@ -121,7 +121,7 @@ static void spawn_trail_particle(GameState *gs, float x, float y) {
  * fills it in. Silently does nothing once the pool (MAX_PLAYER_PROJECTILES)
  * is exhausted, same as the original inline spawn it replaces. */
 static void spawn_player_shot(GameState *gs, float x, float y, float vx, float vy,
-                               ProjectileKind kind, bool horizontal) {
+                               ProjectileKind kind, bool horizontal, float damage) {
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
         if (pr->alive) continue;
@@ -133,6 +133,7 @@ static void spawn_player_shot(GameState *gs, float x, float y, float vx, float v
         pr->color = gs->player.laser_color;
         pr->kind = kind;
         pr->horizontal = horizontal;
+        pr->damage = damage;
         pr->inert = false;
         pr->inert_age = 0.0f;
         return;
@@ -253,11 +254,15 @@ static void end_boss_encounter(GameState *gs) {
 
 /* Shared by both ways the boss can take a hit (a direct laser shot, and
  * the super beam touching it) so the defeat/bonus/event logic can't drift
- * out of sync between the two. */
-static void damage_boss(GameState *gs, EventQueue *events) {
+ * out of sync between the two. damage is in units of BASE_PLAYER_DAMAGE -
+ * a direct shot passes its own Projectile.damage (which varies by shooting
+ * mode, see the per-mode DAMAGE_MULTIPLIER constants), while the super
+ * beam always passes a flat BASE_PLAYER_DAMAGE since it replaces every
+ * mode's fire logic rather than being one itself. */
+static void damage_boss(GameState *gs, EventQueue *events, float damage) {
     Boss *b = &gs->boss;
-    b->hits_taken++;
-    if (b->hits_taken >= b->hits_required) {
+    b->hits_taken += damage;
+    if (b->hits_taken >= (float)b->hits_required) {
         spawn_explosion(gs, b->x, b->y, b->size * 1.4f);
         int bonus = b->hits_required * BOSS_KILL_SCORE_MULTIPLIER;
         /* Order matters: the bonus is awarded while the boss still counts
@@ -510,7 +515,8 @@ static void update_normal_fire(GameState *gs, const InputCommand *input, EventQu
     if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
 
     spawn_player_shot(gs, p->x, p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f,
-                       0.0f, -scaled(gs, PLAYER_PROJECTILE_SPEED), PROJECTILE_KIND_NORMAL, false);
+                       0.0f, -scaled(gs, PLAYER_PROJECTILE_SPEED), PROJECTILE_KIND_NORMAL, false,
+                       BASE_PLAYER_DAMAGE);
     p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
@@ -535,7 +541,8 @@ static void update_rapid_fire(GameState *gs, const InputCommand *input, float dt
         }
         if (p->fire_cooldown <= 0.0f) {
             spawn_player_shot(gs, p->x, p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f,
-                               0.0f, -scaled(gs, PLAYER_PROJECTILE_SPEED), PROJECTILE_KIND_RAPID, false);
+                               0.0f, -scaled(gs, PLAYER_PROJECTILE_SPEED), PROJECTILE_KIND_RAPID, false,
+                               BASE_PLAYER_DAMAGE);
             p->fire_cooldown = RAPID_FIRE_SHOT_INTERVAL;
             event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
         }
@@ -562,7 +569,8 @@ static void update_power_cannon(GameState *gs, const InputCommand *input, EventQ
 
     float speed = scaled(gs, PLAYER_PROJECTILE_SPEED) * POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER;
     spawn_player_shot(gs, p->x, p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f,
-                       0.0f, -speed, PROJECTILE_KIND_POWER, false);
+                       0.0f, -speed, PROJECTILE_KIND_POWER, false,
+                       BASE_PLAYER_DAMAGE * POWER_CANNON_DAMAGE_MULTIPLIER);
     p->fire_cooldown = POWER_CANNON_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
@@ -576,8 +584,9 @@ static void update_double_barrel(GameState *gs, const InputCommand *input, Event
     float wing_x = scaled(gs, PLAYER_WING_OFFSET_X);
     float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
     float vy = -scaled(gs, PLAYER_PROJECTILE_SPEED);
-    spawn_player_shot(gs, p->x - wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false);
-    spawn_player_shot(gs, p->x + wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false);
+    float damage = BASE_PLAYER_DAMAGE * DOUBLE_BARREL_DAMAGE_MULTIPLIER;
+    spawn_player_shot(gs, p->x - wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
+    spawn_player_shot(gs, p->x + wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
     p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
@@ -590,8 +599,8 @@ static void update_side_beams(GameState *gs, const InputCommand *input, EventQue
 
     float wing_x = scaled(gs, PLAYER_WING_OFFSET_X);
     float speed = scaled(gs, PLAYER_PROJECTILE_SPEED);
-    spawn_player_shot(gs, p->x - wing_x, p->y, -speed, 0.0f, PROJECTILE_KIND_NORMAL, true);
-    spawn_player_shot(gs, p->x + wing_x, p->y, speed, 0.0f, PROJECTILE_KIND_NORMAL, true);
+    spawn_player_shot(gs, p->x - wing_x, p->y, -speed, 0.0f, PROJECTILE_KIND_NORMAL, true, BASE_PLAYER_DAMAGE);
+    spawn_player_shot(gs, p->x + wing_x, p->y, speed, 0.0f, PROJECTILE_KIND_NORMAL, true, BASE_PLAYER_DAMAGE);
     p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
@@ -696,7 +705,7 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
                              fabsf(gs->boss.x - p->x) <= beam_half_w + gs->boss.size / 2.0f;
         if (boss_in_beam) {
             if (gs->boss.beam_contact_timer <= 0.0f) {
-                damage_boss(gs, events);
+                damage_boss(gs, events, BASE_PLAYER_DAMAGE);
                 gs->boss.beam_contact_timer = BEAM_BOSS_HIT_INTERVAL;
             }
         } else {
@@ -924,10 +933,13 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                 continue;
             }
             pr->alive = false;
-            damage_boss(gs, events);
-            /* A power cannon shot still detonates on the boss like it would
-             * on any other contact - it just doesn't add extra damage to
-             * the boss itself beyond the one damage_boss hit above. */
+            damage_boss(gs, events, pr->damage);
+            /* A power cannon shot still detonates on contact like it would
+             * against any other target - trigger_power_cannon_explosion
+             * only sweeps gs->enemies (never the boss, same as the orb's
+             * shot-to-detonate sweep), so this is purely a bonus against
+             * anything else caught in the blast radius, on top of the
+             * boss's own damage_boss hit above. */
             if (pr->kind == PROJECTILE_KIND_POWER) {
                 trigger_power_cannon_explosion(gs, events, pr->x, pr->y);
             }

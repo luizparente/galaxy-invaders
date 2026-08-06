@@ -702,7 +702,7 @@ static void test_orb_spawn_chance_is_not_always_or_never(void) {
     printf("test_orb_spawn_chance_is_not_always_or_never OK\n");
 }
 
-static void shoot_boss_once(GameState *gs, EventQueue *events) {
+static void shoot_boss_with_damage(GameState *gs, EventQueue *events, float damage) {
     /* The boss slides in gradually from off-screen (y = -size) when it
      * spawns, same as it would in a real run - a shot fired at it while
      * it's still off-screen would get culled by the ordinary "projectile
@@ -715,16 +715,21 @@ static void shoot_boss_once(GameState *gs, EventQueue *events) {
     gs->player_shots[0].x = gs->boss.x;
     gs->player_shots[0].y = gs->boss.y;
     gs->player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+    gs->player_shots[0].damage = damage;
 
     InputCommand none = no_input();
     game_update(gs, &none, 0.001f, events);
+}
+
+static void shoot_boss_once(GameState *gs, EventQueue *events) {
+    shoot_boss_with_damage(gs, events, BASE_PLAYER_DAMAGE);
 }
 
 /* Fast-forwards straight to "one hit away from dead" and lands the final
  * blow, so multi-boss progression tests don't need 50-150 real shots. */
 static void defeat_current_boss(GameState *gs, EventQueue *events) {
     assert(gs->boss.alive);
-    gs->boss.hits_taken = gs->boss.hits_required - 1;
+    gs->boss.hits_taken = (float)gs->boss.hits_required - 1.0f;
     shoot_boss_once(gs, events);
     assert(!gs->boss.alive);
 }
@@ -756,6 +761,95 @@ static void kill_enemies_until_boss_spawns(GameState *gs, EventQueue *events) {
         kill_one_enemy(gs, events);
     }
     assert(gs->boss.alive);
+}
+
+/* Fires once in the given mode against nothing (so the shot(s) survive to
+ * be inspected) and returns a single shot's damage - the first alive one
+ * found, which for the two-shot modes (double barrel, side beams) is
+ * either wingtip shot since both carry identical damage. Deliberately used
+ * below to compare modes against a freshly-fired mode 1 baseline instead of
+ * against the *_DAMAGE_MULTIPLIER constants themselves, so these tests
+ * actually fail if a multiplier is ever accidentally changed, rather than
+ * trivially agreeing with whatever value it happens to hold. */
+static float fired_shot_damage(ShootMode mode) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    gs.player.shoot_mode = mode;
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) return gs.player_shots[i].damage;
+    }
+    assert(false && "expected a shot to spawn");
+    return 0.0f;
+}
+
+/* Regression coverage for the per-mode damage scaling this was built for:
+ * mode 4 (double barrel) at half of mode 1's damage, mode 3 (power cannon)
+ * at triple. Every other target in the game dies to a single hit
+ * regardless of damage (see kill_one_enemy passing untouched by any of
+ * this), so the boss - the only entity with an actual hit-point pool - is
+ * the only place any of it is observable. */
+static void test_double_barrel_deals_half_the_damage_of_normal_mode(void) {
+    float normal = fired_shot_damage(SHOOT_MODE_NORMAL);
+    float doubled = fired_shot_damage(SHOOT_MODE_DOUBLE);
+    assert(normal > 0.0f);
+    assert(fabsf(doubled - normal * 0.5f) < 0.001f);
+    printf("test_double_barrel_deals_half_the_damage_of_normal_mode OK\n");
+}
+
+static void test_power_cannon_deals_triple_the_damage_of_normal_mode(void) {
+    float normal = fired_shot_damage(SHOOT_MODE_NORMAL);
+    float power = fired_shot_damage(SHOOT_MODE_POWER);
+    assert(fabsf(power - normal * 3.0f) < 0.001f);
+    printf("test_power_cannon_deals_triple_the_damage_of_normal_mode OK\n");
+}
+
+/* The other half of the feature: it's not enough for the spawned shots to
+ * carry the scaled damage value (covered above) - damage_boss must actually
+ * consume it correctly (accumulating a fractional/scaled amount into
+ * hits_taken, not silently falling back to a flat one hit per shot like it
+ * did before Projectile.damage existed). */
+static void test_boss_hit_pool_drops_by_the_exact_damage_landed(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    assert(gs.boss.hits_taken == 0.0f);
+
+    float double_barrel_damage = fired_shot_damage(SHOOT_MODE_DOUBLE);
+    shoot_boss_with_damage(&gs, &events, double_barrel_damage);
+
+    assert(fabsf(gs.boss.hits_taken - double_barrel_damage) < 0.001f);
+    assert(gs.boss.alive); /* half a hit is nowhere near enough to defeat it */
+    printf("test_boss_hit_pool_drops_by_the_exact_damage_landed OK\n");
+}
+
+/* Double barrel fires two half-damage shots per trigger pull instead of
+ * mode 1's one full-damage shot - both landing on the boss must cost the
+ * same total as a single normal hit, not double it. */
+static void test_double_barrel_pair_together_cost_one_normal_hit(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+
+    float normal = fired_shot_damage(SHOOT_MODE_NORMAL);
+    float per_wing = fired_shot_damage(SHOOT_MODE_DOUBLE);
+
+    shoot_boss_with_damage(&gs, &events, per_wing);
+    shoot_boss_with_damage(&gs, &events, per_wing);
+
+    assert(fabsf(gs.boss.hits_taken - normal) < 0.001f);
+    printf("test_double_barrel_pair_together_cost_one_normal_hit OK\n");
 }
 
 static void test_boss_hits_required_increases_each_appearance(void) {
@@ -1216,6 +1310,10 @@ int main(void) {
     test_orb_falls_off_screen_when_uncaptured();
     test_orb_spawn_chance_is_not_always_or_never();
     test_boss_spawns_at_500_points_with_correct_hits_required();
+    test_double_barrel_deals_half_the_damage_of_normal_mode();
+    test_power_cannon_deals_triple_the_damage_of_normal_mode();
+    test_boss_hit_pool_drops_by_the_exact_damage_landed();
+    test_double_barrel_pair_together_cost_one_normal_hit();
     test_boss_hits_required_increases_each_appearance();
     test_boss_reappearance_requires_fresh_points_since_defeat();
     test_large_defeat_bonus_never_chains_bosses();

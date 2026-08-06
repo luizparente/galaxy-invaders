@@ -117,6 +117,11 @@ typedef struct Projectile {
     float vx, vy;
     Color color;
     ProjectileKind kind;
+    /* How much of the boss's hit pool this shot consumes on contact (see
+     * damage_boss) - BASE_PLAYER_DAMAGE for most modes, scaled by that
+     * mode's own *_DAMAGE_MULTIPLIER constant otherwise. Every other
+     * target dies to any hit regardless of this value. */
+    float damage;
     /* True only for side-beam shots (ShootMode SHOOT_MODE_SIDE): the shot
      * travels sideways instead of upward, so its visual and hitbox are
      * elongated along x instead of y (see draw_projectile and
@@ -182,7 +187,11 @@ typedef struct Boss {
     float size;
     int kind; /* index into adapters/enemy_sprites' kEnemySprites, [0, ENEMY_KIND_COUNT) */
 
-    int hits_taken;
+    /* A running total of Projectile.damage landed so far, not a literal
+     * shot count - float because some modes deal fractional multiples of
+     * BASE_PLAYER_DAMAGE (see damage_boss). hits_required stays a whole
+     * number: the size of the pool, tuned in units of one normal-mode hit. */
+    float hits_taken;
     int hits_required;
 
     /* The super beam can still whittle the boss down over sustained
