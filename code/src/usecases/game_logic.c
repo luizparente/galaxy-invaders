@@ -116,6 +116,35 @@ static void spawn_trail_particle(GameState *gs, float x, float y) {
     }
 }
 
+/* The enemy/boss counterpart to spawn_trail_particle above, into the
+ * separate enemy_trail_particles pool (see EnemyTrailParticle in
+ * domain/types.h for why it's kept apart from the player's own). Unlike
+ * the player, neither enemies nor the boss rotate to face their direction
+ * of travel (their sprites are always drawn upright - see draw_sprite), so
+ * "backward" is a fixed upward drift/offset here too, just mirrored
+ * vertically from the player's downward one, matching their fixed-down
+ * visual orientation regardless of which way they're actually moving.
+ * size_mult and alpha_cap let a single shared routine serve both ordinary
+ * enemies (1x size, ~5% visible) and the bigger, brighter boss (3x size,
+ * ~15% visible, see update_enemy_and_boss_trails). (x, y) should already
+ * be the emitter's own back (its top edge), not its center. */
+static void spawn_enemy_trail_particle(GameState *gs, float x, float y, float size_mult, unsigned char alpha_cap) {
+    for (int i = 0; i < MAX_ENEMY_TRAIL_PARTICLES; i++) {
+        EnemyTrailParticle *t = &gs->enemy_trail_particles[i];
+        if (t->alive) continue;
+        t->alive = true;
+        t->x = x;
+        t->y = y;
+        t->vx = (frand01() - 0.5f) * scaled(gs, TRAIL_PARTICLE_JITTER_SPEED);
+        t->vy = -scaled(gs, TRAIL_PARTICLE_SPEED) * (0.7f + frand01() * 0.6f);
+        t->age = 0.0f;
+        t->max_age = TRAIL_PARTICLE_LIFETIME;
+        t->size = scaled(gs, TRAIL_PARTICLE_BASE_SIZE) * size_mult * (0.7f + frand01() * 0.6f);
+        t->alpha_cap = alpha_cap;
+        return;
+    }
+}
+
 /* Shared by every shooting mode's fire logic (see update_player_firing and
  * its per-mode helpers): claims the first free slot in gs->player_shots and
  * fills it in. Silently does nothing once the pool (MAX_PLAYER_PROJECTILES)
@@ -206,6 +235,7 @@ static void spawn_boss(GameState *gs, EventQueue *events) {
     b->hits_taken = 0;
     b->hits_required = BOSS_HITS_INCREMENT * gs->boss_count;
     b->beam_contact_timer = 0.0f;
+    b->trail_emit_timer = 0.0f;
 
     event_queue_push_sfx(events, SFX_BOSS_ARRIVED);
 }
@@ -372,6 +402,7 @@ static void reset_run(GameState *gs) {
     memset(&gs->enemy_shots, 0, sizeof(gs->enemy_shots));
     memset(&gs->explosions, 0, sizeof(gs->explosions));
     memset(&gs->trail_particles, 0, sizeof(gs->trail_particles));
+    memset(&gs->enemy_trail_particles, 0, sizeof(gs->enemy_trail_particles));
     memset(&gs->orb, 0, sizeof(gs->orb));
     memset(&gs->boss, 0, sizeof(gs->boss));
     gs->boss_count = 0;
@@ -862,6 +893,55 @@ static void update_player_trail(GameState *gs, float dt) {
     }
 }
 
+/* The enemy/boss counterpart to update_player_trail above: every alive
+ * enemy and the boss (if present) each get their own emission cadence
+ * (Enemy.trail_emit_timer / Boss.trail_emit_timer) into the shared
+ * enemy_trail_particles pool, then every particle already in flight ages
+ * and drifts exactly like the player's own (same drag physics) regardless
+ * of whether its source is still alive - a boss shot down mid-trail
+ * doesn't yank its existing puffs off screen, same as an explosion
+ * outliving whatever spawned it. */
+static void update_enemy_and_boss_trails(GameState *gs, float dt) {
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (!e->alive) continue;
+        e->trail_emit_timer -= dt;
+        if (e->trail_emit_timer <= 0.0f) {
+            e->trail_emit_timer = ENEMY_TRAIL_SPAWN_INTERVAL;
+            float back_y = e->y - e->size / 2.0f;
+            float jitter_x = (frand01() - 0.5f) * e->size * 0.3f;
+            spawn_enemy_trail_particle(gs, e->x + jitter_x, back_y, 1.0f, ENEMY_TRAIL_MAX_ALPHA);
+        }
+    }
+
+    Boss *b = &gs->boss;
+    if (b->alive) {
+        b->trail_emit_timer -= dt;
+        if (b->trail_emit_timer <= 0.0f) {
+            b->trail_emit_timer = BOSS_TRAIL_SPAWN_INTERVAL;
+            float back_y = b->y - b->size / 2.0f;
+            float jitter_x = (frand01() - 0.5f) * b->size * 0.3f;
+            spawn_enemy_trail_particle(gs, b->x + jitter_x, back_y, BOSS_TRAIL_SIZE_MULTIPLIER, BOSS_TRAIL_MAX_ALPHA);
+        }
+    }
+
+    for (int i = 0; i < MAX_ENEMY_TRAIL_PARTICLES; i++) {
+        EnemyTrailParticle *t = &gs->enemy_trail_particles[i];
+        if (!t->alive) continue;
+        t->age += dt;
+        if (t->age >= t->max_age) {
+            t->alive = false;
+            continue;
+        }
+
+        float drag = powf(0.15f, dt);
+        t->vx *= drag;
+        t->vy *= drag;
+        t->x += t->vx * dt;
+        t->y += t->vy * dt;
+    }
+}
+
 static void check_collisions(GameState *gs, EventQueue *events) {
     float enemy_shot_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
     float enemy_shot_half_h = scaled(gs, ENEMY_PROJECTILE_H) / 2.0f;
@@ -1039,6 +1119,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     update_enemies(gs, dt);
     update_pending_orb_kills(gs, dt, events);
     update_boss(gs, dt);
+    update_enemy_and_boss_trails(gs, dt);
     update_orb(gs, dt);
     update_projectiles(gs, dt);
     update_super_beam(gs, dt, events);

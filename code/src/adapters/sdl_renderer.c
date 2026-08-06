@@ -438,7 +438,34 @@ static void draw_trail_particle(SdlRendererCtx *ctx, const TrailParticle *t) {
     gp_fill_circle(ctx->renderer, t->x, t->y, radius, color);
 }
 
+/* Same fire-cooling-to-smoke construction as draw_trail_particle (the
+ * player's own engine trail) above, reused for enemies and the boss -
+ * t->alpha_cap (baked in at spawn, see spawn_enemy_trail_particle) is what
+ * makes enemies read at ~5% visibility and the boss at ~15%, both fainter
+ * than the player's own TRAIL_PARTICLE_MAX_ALPHA so neither ever competes
+ * with it for attention. */
+static void draw_enemy_trail_particle(SdlRendererCtx *ctx, const EnemyTrailParticle *t) {
+    if (!t->alive) return;
+
+    float life = t->age / t->max_age;
+
+    static const Color kFireCore = {255, 140, 40, 255};
+    static const Color kSmoke = {90, 90, 95, 255};
+    float cool = life < 0.4f ? life / 0.4f : 1.0f;
+    Color color = lerp_color(kFireCore, kSmoke, cool);
+
+    float radius = t->size * (1.0f + (TRAIL_PARTICLE_SIZE_GROWTH - 1.0f) * life);
+
+    float fade_in = life < 0.08f ? life / 0.08f : 1.0f;
+    float fade_out = 1.0f - life;
+    color.a = (unsigned char)((float)t->alpha_cap * fade_in * fade_out);
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    gp_fill_circle(ctx->renderer, t->x, t->y, radius, color);
+}
+
 static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
+    for (int i = 0; i < MAX_ENEMY_TRAIL_PARTICLES; i++) draw_enemy_trail_particle(ctx, &gs->enemy_trail_particles[i]);
     for (int i = 0; i < MAX_ENEMIES; i++) draw_enemy(ctx, &gs->enemies[i]);
     draw_boss(ctx, &gs->boss);
     draw_orb(ctx, &gs->orb);

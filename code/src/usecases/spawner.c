@@ -73,6 +73,10 @@ static void spawn_one_enemy(GameState *gs) {
         e->wobble_phase = frand01() * 6.2831853f;
         e->orb_kill_pending = false; /* slot may have been left pending by a past orb detonation */
         e->orb_kill_timer = 0.0f;
+        /* Staggered like wobble_phase above, so a whole wave spawned at
+         * once doesn't all puff its first trail particle on the exact same
+         * frame. */
+        e->trail_emit_timer = frand01() * ENEMY_TRAIL_SPAWN_INTERVAL;
         return;
     }
 }

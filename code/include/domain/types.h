@@ -100,6 +100,11 @@ typedef struct Enemy {
      * (see ORB_SHOT_EXPLOSION_WINDOW) before it actually happens. */
     bool orb_kill_pending;
     float orb_kill_timer;
+
+    /* Counts down to this enemy's next engine trail particle emission -
+     * see update_enemy_and_boss_trails, the enemy/boss counterpart to the
+     * player's own update_player_trail. Purely cosmetic. */
+    float trail_emit_timer;
 } Enemy;
 
 /* Drives the player shot's rendering (adapters/sdl_renderer.c) and, for
@@ -157,6 +162,26 @@ typedef struct TrailParticle {
     float size; /* base radius at spawn, already scaled by GameState.scale */
 } TrailParticle;
 
+/* The same fire/smoke exhaust as TrailParticle above, applied to enemies
+ * and the boss instead of the player - see spawn_enemy_trail_particle and
+ * update_enemy_and_boss_trails in usecases/game_logic.c. A separate pool
+ * (rather than sharing the player's trail_particles) so a screen full of
+ * enemies can never starve the player's own trail of slots, and so the
+ * player's existing trail code stays completely untouched by this.
+ * alpha_cap bakes in each source's max visibility at spawn time (~5% for
+ * enemies, ~15% for the boss, see draw_enemy_trail_particle) so the
+ * renderer doesn't need to know which kind of ship a particle came from,
+ * just how to draw one. */
+typedef struct EnemyTrailParticle {
+    bool alive;
+    float x, y;
+    float vx, vy;
+    float age;
+    float max_age;
+    float size;
+    unsigned char alpha_cap;
+} EnemyTrailParticle;
+
 typedef struct Star {
     float x, y;
     float speed;
@@ -199,6 +224,10 @@ typedef struct Boss {
      * paces those repeat hits. Breaking contact resets it so the next
      * beam touch deals damage instantly again. */
     float beam_contact_timer;
+
+    /* Counts down to the boss's next engine trail particle emission - see
+     * update_enemy_and_boss_trails. Purely cosmetic. */
+    float trail_emit_timer;
 } Boss;
 
 typedef struct GameState {
@@ -218,6 +247,7 @@ typedef struct GameState {
     Projectile enemy_shots[MAX_ENEMY_PROJECTILES];
     Explosion explosions[MAX_EXPLOSIONS];
     TrailParticle trail_particles[MAX_TRAIL_PARTICLES];
+    EnemyTrailParticle enemy_trail_particles[MAX_ENEMY_TRAIL_PARTICLES];
     Star stars[MAX_STARS];
     Orb orb;
     Boss boss;

@@ -57,6 +57,27 @@
  * brightest instant, out of 255. */
 #define TRAIL_PARTICLE_MAX_ALPHA 32
 
+/* The same exhaust effect as above, applied to enemies and the boss too -
+ * see EnemyTrailParticle in domain/types.h. Shares TRAIL_PARTICLE_LIFETIME/
+ * BASE_SIZE/SIZE_GROWTH/SPEED/JITTER_SPEED above ("the same effect"); only
+ * visibility differs, plus the boss reads bigger. MAX_ENEMY_TRAIL_PARTICLES
+ * is one pool shared by every enemy and the boss (never the player's own
+ * trail_particles, so the two can never compete for slots).
+ * ENEMY_TRAIL_SPAWN_INTERVAL is deliberately far sparser than the player's
+ * TRAIL_SPAWN_INTERVAL - up to MAX_ENEMIES emitters share that one pool at
+ * once, where the player is always exactly one, so each has to emit far
+ * less often to keep the total population sane; that's a density/
+ * performance knob, not a visual difference, so it doesn't apply to the
+ * boss (always exactly one on screen at a time, like the player). */
+#define MAX_ENEMY_TRAIL_PARTICLES 160
+#define ENEMY_TRAIL_SPAWN_INTERVAL 0.25f /* ~4 particles/sec per enemy */
+#define ENEMY_TRAIL_MAX_ALPHA 26         /* ~10% of 255 */
+#define BOSS_TRAIL_SPAWN_INTERVAL                                              \
+  0.05f                         /* ~20 particles/sec - a single big emitter */
+#define BOSS_TRAIL_MAX_ALPHA 38 /* ~15% of 255 */
+#define BOSS_TRAIL_SIZE_MULTIPLIER                                             \
+  3.0f /* "bigger" - on top of TRAIL_PARTICLE_BASE_SIZE */
+
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f
 #define PLAYER_PROJECTILE_SPEED 520.0f
