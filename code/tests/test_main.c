@@ -22,12 +22,19 @@ static InputCommand no_input(void) {
 
 /* Tests run at exactly the DESIGN_W x DESIGN_H baseline so gs->scale
  * comes out to 1.0 and every design-baseline constant (PLAYER_WIDTH, etc.)
- * can be asserted against directly without carrying a scale factor. */
+ * can be asserted against directly without carrying a scale factor. Two
+ * confirms: the main menu now leads to the difficulty-select screen
+ * (STATE_DIFFICULTY_SELECT) instead of starting the run directly - the
+ * second confirm accepts whatever difficulty game_init defaults to
+ * (DIFFICULTY_NORMAL), matching this suite's pre-existing behavior/tuning
+ * assumptions since normal was also the game's original single-tier
+ * default before difficulty levels existed. */
 static void start_game(GameState *gs, EventQueue *events) {
     game_init(gs, DESIGN_W, DESIGN_H);
-    InputCommand start = no_input();
-    start.confirm_pressed = true;
-    game_update(gs, &start, 0.016f, events);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events);
+    game_update(gs, &confirm, 0.016f, events);
 }
 
 static void test_collision(void) {
@@ -39,9 +46,23 @@ static void test_collision(void) {
 }
 
 static void test_difficulty(void) {
-    assert(fabsf(difficulty_spawn_interval(0) - BASE_SPAWN_INTERVAL * SPAWN_RATE_MULTIPLIER) < 0.001f);
-    assert(difficulty_spawn_interval(5000) < difficulty_spawn_interval(0));
-    assert(difficulty_spawn_interval(1000000) >= MIN_SPAWN_INTERVAL * SPAWN_RATE_MULTIPLIER - 0.001f);
+    float normal_multiplier = difficulty_spawn_rate_multiplier(DIFFICULTY_NORMAL, 0.0f);
+    assert(fabsf(difficulty_spawn_interval(0, DIFFICULTY_NORMAL, 0.0f) - BASE_SPAWN_INTERVAL * normal_multiplier) < 0.001f);
+    assert(difficulty_spawn_interval(5000, DIFFICULTY_NORMAL, 0.0f) < difficulty_spawn_interval(0, DIFFICULTY_NORMAL, 0.0f));
+    assert(difficulty_spawn_interval(1000000, DIFFICULTY_NORMAL, 0.0f) >= MIN_SPAWN_INTERVAL * normal_multiplier - 0.001f);
+
+    /* Easier difficulties spawn slower (bigger interval) than harder ones,
+     * and the multiplier ramps down (faster) over time - see
+     * SPAWN_RATE_RAMP_INTERVAL/STEP in domain/constants.h. */
+    assert(difficulty_spawn_rate_multiplier(DIFFICULTY_BABY, 0.0f) > difficulty_spawn_rate_multiplier(DIFFICULTY_INSANE, 0.0f));
+    assert(difficulty_spawn_rate_multiplier(DIFFICULTY_NORMAL, 600.0f) < difficulty_spawn_rate_multiplier(DIFFICULTY_NORMAL, 0.0f));
+    assert(difficulty_spawn_rate_multiplier(DIFFICULTY_NORMAL, 1000000.0f) >= SPAWN_RATE_MULTIPLIER_MIN - 0.001f);
+
+    /* Harder difficulties fire more often than easier ones, and the fire
+     * chance ramps up over time - see FIRE_CHANCE_RAMP_INTERVAL/STEP. */
+    assert(difficulty_enemy_fire_chance_per_sec(DIFFICULTY_INSANE, 0.0f) > difficulty_enemy_fire_chance_per_sec(DIFFICULTY_BABY, 0.0f));
+    assert(difficulty_enemy_fire_chance_per_sec(DIFFICULTY_NORMAL, 600.0f) > difficulty_enemy_fire_chance_per_sec(DIFFICULTY_NORMAL, 0.0f));
+    assert(difficulty_enemy_fire_chance_per_sec(DIFFICULTY_NORMAL, 1000000.0f) <= ENEMY_FIRE_CHANCE_MAX + 0.001f);
 
     assert(fabsf(difficulty_enemy_speed(0) - ENEMY_BASE_SPEED) < 0.001f);
     assert(difficulty_enemy_speed(1000000) <= ENEMY_MAX_SPEED + 0.001f);
@@ -61,6 +82,78 @@ static void test_menu_start_transition(void) {
     assert(gs.player.alive);
     assert(fabsf(gs.player.x - DESIGN_W / 2.0f) < 0.5f);
     printf("test_menu_start_transition OK\n");
+}
+
+static void test_menu_confirm_leads_to_difficulty_select(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    assert(gs.state == STATE_MENU);
+    assert(gs.selected_difficulty == DIFFICULTY_NORMAL);
+
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_DIFFICULTY_SELECT);
+    assert(gs.selected_difficulty == DIFFICULTY_NORMAL); /* untouched until navigated */
+    printf("test_menu_confirm_leads_to_difficulty_select OK\n");
+}
+
+static void test_difficulty_select_navigation_clamps_at_ends(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_DIFFICULTY_SELECT);
+
+    InputCommand up = no_input();
+    up.nav_up_pressed = true;
+    for (int i = 0; i < 10; i++) game_update(&gs, &up, 0.016f, &events);
+    assert(gs.selected_difficulty == DIFFICULTY_BABY); /* clamped, doesn't wrap past the top */
+
+    InputCommand down = no_input();
+    down.nav_down_pressed = true;
+    for (int i = 0; i < 10; i++) game_update(&gs, &down, 0.016f, &events);
+    assert(gs.selected_difficulty == DIFFICULTY_INSANE); /* clamped, doesn't wrap past the bottom */
+    printf("test_difficulty_select_navigation_clamps_at_ends OK\n");
+}
+
+static void test_difficulty_select_back_returns_to_menu_without_starting(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_DIFFICULTY_SELECT);
+
+    InputCommand esc = no_input();
+    esc.back_pressed = true;
+    game_update(&gs, &esc, 0.016f, &events);
+    assert(gs.state == STATE_MENU);
+    printf("test_difficulty_select_back_returns_to_menu_without_starting OK\n");
+}
+
+static void test_difficulty_select_confirm_starts_game_with_chosen_difficulty(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_DIFFICULTY_SELECT);
+
+    InputCommand down = no_input();
+    down.nav_down_pressed = true;
+    game_update(&gs, &down, 0.016f, &events); /* NORMAL -> HARD */
+    assert(gs.selected_difficulty == DIFFICULTY_HARD);
+
+    game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_GAME);
+    assert(gs.selected_difficulty == DIFFICULTY_HARD); /* the run keeps the chosen difficulty */
+    printf("test_difficulty_select_confirm_starts_game_with_chosen_difficulty OK\n");
 }
 
 static void test_player_movement_clamped(void) {
@@ -1285,6 +1378,10 @@ int main(void) {
     test_collision();
     test_difficulty();
     test_menu_start_transition();
+    test_menu_confirm_leads_to_difficulty_select();
+    test_difficulty_select_navigation_clamps_at_ends();
+    test_difficulty_select_back_returns_to_menu_without_starting();
+    test_difficulty_select_confirm_starts_game_with_chosen_difficulty();
     test_player_movement_clamped();
     test_player_can_reach_top_of_screen();
     test_super_beam_increases_player_speed();

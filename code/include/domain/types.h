@@ -39,6 +39,7 @@ static inline Color color_from_hsv(float h, float s, float v) {
 
 typedef enum GameStateId {
     STATE_MENU,
+    STATE_DIFFICULTY_SELECT,
     STATE_GAME,
     STATE_PAUSE,
     STATE_GAME_OVER,
@@ -48,6 +49,21 @@ typedef enum PauseSelection {
     PAUSE_RESUME = 0,
     PAUSE_EXIT = 1,
 } PauseSelection;
+
+/* Chosen on the difficulty-select screen (see update_difficulty_select in
+ * usecases/game_logic.c) reached right after confirming START GAME on the
+ * main menu, and kept for the whole run - see GameState.selected_difficulty
+ * and usecases/difficulty.c for how each level maps to actual spawn/fire
+ * tuning. Ordered easiest to hardest so the enum value alone can drive both
+ * menu cursor navigation and the difficulty curve's steepness. */
+typedef enum Difficulty {
+    DIFFICULTY_BABY = 0,
+    DIFFICULTY_EASY,
+    DIFFICULTY_NORMAL,
+    DIFFICULTY_HARD,
+    DIFFICULTY_INSANE,
+    DIFFICULTY_COUNT,
+} Difficulty;
 
 /* The player's selectable shooting ability - switched with the 1-5 number
  * keys (see InputCommand). SHOOT_MODE_COUNT is also the indicator's dot
@@ -303,6 +319,14 @@ typedef struct Boss {
 typedef struct GameState {
     GameStateId state;
     PauseSelection pause_selection;
+    /* The cursor on the difficulty-select screen (see
+     * update_difficulty_select in usecases/game_logic.c) and, once
+     * confirmed, the difficulty the run in progress was started at - kept
+     * across STATE_MENU/STATE_DIFFICULTY_SELECT round trips (reset_run
+     * deliberately never touches it) so the last choice is remembered
+     * instead of resetting every time. Defaults to DIFFICULTY_NORMAL at
+     * startup (see game_init). */
+    Difficulty selected_difficulty;
 
     /* Real playfield size in pixels (matches the physical screen exactly -
      * see domain/constants.h) and the uniform factor every design-baseline

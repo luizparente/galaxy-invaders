@@ -523,6 +523,7 @@ void game_init(GameState *gs, int screen_w, int screen_h) {
     gs->scale = scale;
 
     gs->state = STATE_MENU;
+    gs->selected_difficulty = DIFFICULTY_NORMAL;
     init_stars(gs);
 }
 
@@ -542,6 +543,10 @@ static void handle_global_back(GameState *gs, const InputCommand *input, EventQu
         case STATE_MENU:
             gs->quit_requested = true;
             break;
+        case STATE_DIFFICULTY_SELECT:
+            gs->state = STATE_MENU;
+            event_queue_push_sfx(events, SFX_MENU_SELECT);
+            break;
         case STATE_GAME_OVER:
             break;
     }
@@ -549,6 +554,28 @@ static void handle_global_back(GameState *gs, const InputCommand *input, EventQu
 
 static void update_menu(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
     gs->menu_blink_timer += dt;
+    if (input->confirm_pressed) {
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+        gs->state = STATE_DIFFICULTY_SELECT;
+    }
+}
+
+/* The difficulty-select screen reached right after confirming START GAME -
+ * up/down moves the cursor (gs->selected_difficulty doubles as both the
+ * cursor position and, once confirmed, the run's actual difficulty - same
+ * "selection is the state" pattern as PauseSelection), clamped rather than
+ * wrapping at the ends of the DIFFICULTY_BABY..DIFFICULTY_INSANE range.
+ * Confirming starts the run via reset_run, same as the old direct
+ * STATE_MENU -> reset_run path this screen was inserted in front of. */
+static void update_difficulty_select(GameState *gs, const InputCommand *input, EventQueue *events) {
+    if (input->nav_up_pressed && gs->selected_difficulty > 0) {
+        gs->selected_difficulty--;
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+    }
+    if (input->nav_down_pressed && gs->selected_difficulty < DIFFICULTY_COUNT - 1) {
+        gs->selected_difficulty++;
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+    }
     if (input->confirm_pressed) {
         event_queue_push_sfx(events, SFX_MENU_SELECT);
         reset_run(gs);
@@ -914,7 +941,8 @@ static void fire_enemy_shot_style(GameState *gs, Enemy *e, EnemyShootStyle style
 }
 
 static void update_enemies(GameState *gs, float dt) {
-    float mean_fire_interval = 1.0f / ENEMY_FIRE_CHANCE_PER_SEC;
+    float fire_chance = difficulty_enemy_fire_chance_per_sec(gs->selected_difficulty, gs->time_elapsed);
+    float mean_fire_interval = 1.0f / fire_chance;
 
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
@@ -1356,6 +1384,9 @@ void game_update(GameState *gs, const InputCommand *input, float dt, EventQueue 
     switch (gs->state) {
         case STATE_MENU:
             update_menu(gs, input, dt, events);
+            break;
+        case STATE_DIFFICULTY_SELECT:
+            update_difficulty_select(gs, input, events);
             break;
         case STATE_GAME:
             update_running(gs, input, dt, events);

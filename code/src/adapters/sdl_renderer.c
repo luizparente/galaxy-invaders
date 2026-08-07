@@ -851,6 +851,36 @@ static void draw_menu_screen(SdlRendererCtx *ctx, const GameState *gs) {
     draw_centered(ctx, gs, instructions, instr_y, instr_size, kDim);
 }
 
+static const char *const kDifficultyLabels[DIFFICULTY_COUNT] = {
+    "BABY", "EASY", "NORMAL", "HARD", "INSANE",
+};
+
+/* Reached right after confirming START GAME on the main menu (see
+ * update_difficulty_select in usecases/game_logic.c) - same decorative
+ * backdrop as draw_menu_screen (this is still part of the same "getting
+ * into a game" flow, not gameplay), dimmed with a translucent overlay the
+ * same way draw_pause_overlay dims the game field, so 5 stacked plain-text
+ * options stay legible over the bright planets/sparkles/ship behind them. */
+static void draw_difficulty_select_screen(SdlRendererCtx *ctx, const GameState *gs) {
+    draw_menu_decorations(ctx, gs);
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    gp_fill_rect(ctx->renderer, 0, 0, (float)gs->screen_w, (float)gs->screen_h, (Color){5, 5, 15, 150});
+
+    draw_centered(ctx, gs, "SELECT DIFFICULTY", (float)gs->screen_h * 0.24f, 4.0f * gs->scale, kWhite);
+
+    float first_y = (float)gs->screen_h * 0.40f;
+    float step_y = 42.0f * gs->scale;
+    for (int i = 0; i < DIFFICULTY_COUNT; i++) {
+        Color c = ((int)gs->selected_difficulty == i) ? kYellow : kDim;
+        draw_centered(ctx, gs, kDifficultyLabels[i], first_y + step_y * (float)i, 3.5f * gs->scale, c);
+    }
+
+    const char *instructions = "ARROWS CHOOSE  ENTER/SPACE START  ESC BACK";
+    float instr_size = 1.6f * gs->scale;
+    draw_centered(ctx, gs, instructions, (float)gs->screen_h * 0.88f, instr_size, kDim);
+}
+
 static void draw_pause_overlay(SdlRendererCtx *ctx, const GameState *gs) {
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
     gp_fill_rect(ctx->renderer, 0, 0, (float)gs->screen_w, (float)gs->screen_h, (Color){5, 5, 15, 170});
@@ -889,6 +919,9 @@ static void sdl_render_frame(void *self, const GameState *gs) {
     switch (gs->state) {
         case STATE_MENU:
             draw_menu_screen(ctx, gs);
+            break;
+        case STATE_DIFFICULTY_SELECT:
+            draw_difficulty_select_screen(ctx, gs);
             break;
         case STATE_GAME:
             draw_gameplay(ctx, gs);

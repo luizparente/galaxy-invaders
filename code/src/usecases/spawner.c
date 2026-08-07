@@ -100,7 +100,7 @@ void spawner_update(GameState *gs, float dt) {
     gs->spawn_timer -= dt;
     if (gs->spawn_timer > 0.0f) return;
 
-    gs->spawn_timer = difficulty_spawn_interval(gs->score);
+    gs->spawn_timer = difficulty_spawn_interval(gs->score, gs->selected_difficulty, gs->time_elapsed);
 
     int burst = 1 + rand() % 3; /* 1-3 enemies per spawn event */
     for (int i = 0; i < burst; i++) {

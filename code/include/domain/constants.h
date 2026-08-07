@@ -113,7 +113,9 @@
 #define PLAYER_PROJECTILE_SPEED 520.0f
 
 #define ENEMY_PROJECTILE_SPEED 260.0f
-#define ENEMY_FIRE_CHANCE_PER_SEC 0.35f
+/* Per-difficulty base enemy fire chance and its time ramp live in
+ * usecases/difficulty.c (difficulty_enemy_fire_chance_per_sec) - see the
+ * "Difficulty levels" section below for the ramp constants. */
 
 /* --- Enemy shooting styles (see EnemyShootStyle in domain/types.h) ---
  * Each of the 16 enemy designs (see kEnemyKindShootStyle in
@@ -161,11 +163,36 @@
 #define MIN_SPAWN_INTERVAL 0.22f
 #define SPAWN_INTERVAL_STEP_SCORE 500.0f
 #define SPAWN_INTERVAL_STEP_FACTOR 0.92f
-/* Single knob to tune overall spawn frequency without touching the curve
- * above: multiplies the final interval difficulty_spawn_interval returns,
- * so >1 spreads spawns out (slower) and <1 bunches them up (faster). 2.0
- * halves the spawn rate. */
-#define SPAWN_RATE_MULTIPLIER 2.0f
+
+/* --- Difficulty levels (see Difficulty in domain/types.h) ---
+ * Chosen on the difficulty-select screen reached from the main menu (see
+ * update_difficulty_select in usecases/game_logic.c) and kept for the
+ * whole run. Each level's own base spawn-rate multiplier and enemy fire
+ * chance live in usecases/difficulty.c (kDifficultyBaseSpawnRateMultiplier/
+ * kDifficultyBaseFireChancePerSec) - this domain layer only owns the knobs
+ * that don't vary by level: how both ramp up over the course of a single
+ * run (gs->time_elapsed, reset to 0 by reset_run) regardless of which
+ * difficulty was picked, since every level should feel like it's escalating
+ * the longer a run lasts, not just start harder and stay flat. */
+
+/* The spawn-rate multiplier (see difficulty_spawn_interval -
+ * multiplies the computed interval, so *lower* means *faster* spawns)
+ * drops by this amount every SPAWN_RATE_RAMP_INTERVAL seconds, floored at
+ * SPAWN_RATE_MULTIPLIER_MIN so a very long run never spawns absurdly fast
+ * on top of MIN_SPAWN_INTERVAL's own floor. Values are starting points -
+ * the actual "1 minute" cadence and step size are meant to be tuned by
+ * feel. */
+#define SPAWN_RATE_RAMP_INTERVAL 60.0f
+#define SPAWN_RATE_RAMP_STEP 0.12f
+#define SPAWN_RATE_MULTIPLIER_MIN 0.5f
+
+/* The enemy fire chance (see difficulty_enemy_fire_chance_per_sec - higher
+ * means enemies fire more often) climbs by this amount every
+ * FIRE_CHANCE_RAMP_INTERVAL seconds, capped at ENEMY_FIRE_CHANCE_MAX.
+ * Same "tune by feel" caveat as the spawn-rate ramp above. */
+#define FIRE_CHANCE_RAMP_INTERVAL 180.0f
+#define FIRE_CHANCE_RAMP_STEP 0.05f
+#define ENEMY_FIRE_CHANCE_MAX 1.5f
 
 #define SCORE_PER_KILL 10
 #define SCORE_MULTIPLIER_STEP 500.0f
