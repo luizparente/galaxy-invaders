@@ -85,15 +85,35 @@ typedef struct Player {
     float trail_emit_timer;
 } Player;
 
+/* Which of the 5 shooting patterns an enemy design fires - see
+ * kEnemyKindShootStyle in usecases/spawner.c for which of the 16 designs
+ * (Enemy.kind) uses which, and the per-style constants in domain/constants.h.
+ * Purely a difference in what the player has to dodge, not how hard it
+ * hits: every style still deals PLAYER_LIFE_LOSS_PER_HIT per contact. */
+typedef enum EnemyShootStyle {
+    ENEMY_SHOOT_THIN_BEAM = 0, /* a slim beam, like the player's own but thinner */
+    ENEMY_SHOOT_LONG_BEAM,     /* the same beam, stretched much longer */
+    ENEMY_SHOOT_TRIBURST,      /* 3 small round shots fired back-to-back */
+    ENEMY_SHOOT_TRISHOT,       /* 3 beams per trigger: forward + both diagonals */
+    ENEMY_SHOOT_OMNI,          /* 8 small round shots fired at once, all directions */
+} EnemyShootStyle;
+
 typedef struct Enemy {
     bool alive;
     float x, y;
     float vx, vy;
     float size;
-    Color color; /* tints this enemy's projectiles; the sprite itself carries its own fixed colors */
-    int kind; /* index into adapters/enemy_sprites' kEnemySprites, [0, ENEMY_KIND_COUNT) */
+    Color color; /* a random color rolled at spawn time (see spawner.c); tints this enemy's projectiles - the sprite itself carries its own fixed colors */
+    int kind; /* index into adapters/enemy_sprites' kEnemySprites, [0, ENEMY_KIND_COUNT); also picks this enemy's EnemyShootStyle, see kEnemyKindShootStyle */
     float fire_timer;
     float wobble_phase;
+
+    /* ENEMY_SHOOT_TRIBURST's own state: burst_shots_remaining counts down
+     * shots left in the in-progress burst (0 = idle, waiting on
+     * fire_timer like every other style); burst_shot_timer paces the short
+     * gap between each shot within a burst. Unused by every other style. */
+    int burst_shots_remaining;
+    float burst_shot_timer;
 
     /* Set when a shot (not captured) power orb schedules this enemy to
      * detonate; orb_kill_timer counts down the random per-enemy delay
@@ -115,6 +135,17 @@ typedef enum ProjectileKind {
     PROJECTILE_KIND_RAPID,
     PROJECTILE_KIND_POWER,
 } ProjectileKind;
+
+/* Drives an enemy shot's rendering (adapters/sdl_renderer.c) and hitbox
+ * (enemy_shot_half_extents in usecases/game_logic.c) - BEAM shots (styles
+ * thin/long/trishot) are a slim bolt oriented along their own travel
+ * direction, sized by Projectile.half_len/half_wid; ORB shots (styles
+ * triburst/omni) are a glowing sphere, sized by half_len alone (its
+ * radius; half_wid unused). Unused by player shots (see ProjectileKind). */
+typedef enum EnemyProjectileKind {
+    ENEMY_PROJECTILE_BEAM = 0,
+    ENEMY_PROJECTILE_ORB,
+} EnemyProjectileKind;
 
 typedef struct Projectile {
     bool alive;
@@ -138,6 +169,16 @@ typedef struct Projectile {
      * harm the player. Unused by player shots. */
     bool inert;
     float inert_age;
+
+    /* Enemy shots only (see EnemyProjectileKind above and
+     * enemy_shot_half_extents in usecases/game_logic.c): half_len is a
+     * beam's half-length along its travel direction or an orb's radius;
+     * half_wid is a beam's half-width across its travel direction (unused
+     * by orbs). Already scaled by GameState.scale at spawn time, same
+     * convention spawn_player_shot's vx/vy already follow. */
+    EnemyProjectileKind enemy_kind;
+    float half_len;
+    float half_wid;
 } Projectile;
 
 typedef struct Explosion {

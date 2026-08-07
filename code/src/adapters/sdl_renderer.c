@@ -151,12 +151,24 @@ static void draw_boss(SdlRendererCtx *ctx, const Boss *b) {
     gp_draw_circle_outline(ctx->renderer, b->x, b->y, ring_radius - 1.0f, menace);
 }
 
-/* A downward-tapered triangle bolt centered at (cx, cy), tip toward +y -
- * shared by every glow/core/hot layer of the enemy shot so they all stay
- * concentric just by scaling half_w/half_h, rather than re-deriving three
- * vertices by hand each time. */
-static void triangle_bolt(SDL_Renderer *r, float cx, float cy, float half_w, float half_h, Color c) {
-    gp_fill_triangle(r, cx, cy + half_h, cx - half_w, cy - half_h, cx + half_w, cy - half_h, c);
+/* A rounded capsule (a straight-sided rectangular body with a circular cap
+ * at each end - a "stadium" shape) centered at (cx, cy) and oriented along
+ * (dx, dy) (a unit vector) instead of always straight down - the enemy
+ * beam styles' counterpart to draw_player_bolt_vertical's ellipse,
+ * generalized to any direction since gp_fill_ellipse has no rotation of
+ * its own. Unlike a tapered/pointed bolt (which reads as a plain triangle
+ * at this game's small scale), the body never narrows, so this stays a
+ * visibly rounded, modern beam at any width. (px, py) is the perpendicular
+ * of (dx, dy), passed in rather than derived here since every caller
+ * already has it. */
+static void capsule_bolt(SDL_Renderer *r, float cx, float cy, float dx, float dy, float px, float py,
+                          float half_len, float half_wid, Color c) {
+    float bx = dx * half_len, by = dy * half_len;
+    float wx = px * half_wid, wy = py * half_wid;
+    gp_fill_quad(r, cx + bx + wx, cy + by + wy, cx - bx + wx, cy - by + wy,
+                 cx - bx - wx, cy - by - wy, cx + bx - wx, cy + by - wy, c);
+    gp_fill_circle(r, cx + bx, cy + by, half_wid, c);
+    gp_fill_circle(r, cx - bx, cy - by, half_wid, c);
 }
 
 /* Modes 1/4/5's shot (SHOOT_MODE_NORMAL, DOUBLE, SIDE): a layered glow (dim,
@@ -262,6 +274,73 @@ static void draw_power_shot(SdlRendererCtx *ctx, const Projectile *pr, float sca
     gp_fill_circle(ctx->renderer, cx - r * 0.3f, cy - r * 0.3f, r * 0.25f, glint);
 }
 
+/* Enemy shooting styles thin beam/long beam/trishot's shot
+ * (EnemyProjectileKind ENEMY_PROJECTILE_BEAM): the same layered glow/core/
+ * hot/glint construction and proportions as draw_player_bolt_vertical
+ * ("like the player's, but slimmer"), built from capsule_bolt instead of
+ * gp_fill_ellipse so it can point along its own travel direction rather
+ * than always straight down - trishot's two diagonal beams need that to
+ * visibly aim where they're actually going. fade scales every layer's
+ * alpha (see draw_projectile) for an inert shot's fade-out. pr->half_len/
+ * half_wid (already scaled at spawn) are this shot's own proportions, so
+ * one function serves every beam style. */
+static void draw_enemy_beam(SdlRendererCtx *ctx, const Projectile *pr, float fade) {
+    float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+    float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+    float dy = speed > 0.0f ? pr->vy / speed : 1.0f;
+    float px = -dy, py = dx;
+    float cx = pr->x, cy = pr->y;
+    float half_len = pr->half_len, half_wid = pr->half_wid;
+
+    Color glow = pr->color;
+    glow.a = (unsigned char)(55.0f * fade);
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.2f, half_wid * 2.6f, glow);
+    glow.a = (unsigned char)(120.0f * fade);
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.1f, half_wid * 1.7f, glow);
+
+    Color core = pr->color;
+    core.a = (unsigned char)(255.0f * fade);
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len, half_wid, core);
+
+    Color hot = lerp_color(pr->color, kWhite, 0.85f);
+    hot.a = (unsigned char)(230.0f * fade);
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 0.85f, half_wid * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = (unsigned char)(200.0f * fade);
+    gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.55f, cy + dy * half_len * 0.55f,
+                   half_wid * 0.45f, glint);
+}
+
+/* Enemy shooting styles triburst/omni-shot's shot (EnemyProjectileKind
+ * ENEMY_PROJECTILE_ORB): the same layered glow/core/hot/glint sphere as
+ * draw_rapid_shot, just driven by pr->color (varies enemy to enemy - see
+ * Enemy.color in domain/types.h) and pr->half_len as its radius (already
+ * scaled at spawn) instead of a single fixed player constant, plus fade
+ * support for an inert shot's fade-out. */
+static void draw_enemy_orb(SdlRendererCtx *ctx, const Projectile *pr, float fade) {
+    float r = pr->half_len;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = pr->color;
+    glow.a = (unsigned char)(70.0f * fade);
+    gp_fill_circle(ctx->renderer, cx, cy, r * 2.2f, glow);
+    glow.a = (unsigned char)(130.0f * fade);
+    gp_fill_circle(ctx->renderer, cx, cy, r * 1.4f, glow);
+
+    Color core = pr->color;
+    core.a = (unsigned char)(255.0f * fade);
+    gp_fill_circle(ctx->renderer, cx, cy, r, core);
+
+    Color hot = lerp_color(pr->color, kWhite, 0.6f);
+    hot.a = (unsigned char)(230.0f * fade);
+    gp_fill_circle(ctx->renderer, cx, cy, r * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = (unsigned char)(220.0f * fade);
+    gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
+}
+
 static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_player, float scale) {
     if (!pr->alive) return;
 
@@ -291,25 +370,15 @@ static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_p
                 break;
         }
     } else {
-        float half = ENEMY_PROJECTILE_W * scale / 2.0f;
-        float half_h = ENEMY_PROJECTILE_H * scale / 2.0f;
-        float cx = pr->x, cy = pr->y;
-
-        Color glow = pr->color;
-        glow.a = (unsigned char)(60.0f * fade);
-        triangle_bolt(ctx->renderer, cx, cy, half * 1.9f, half_h * 1.35f, glow);
-
-        Color core = pr->color;
-        core.a = (unsigned char)(255.0f * fade);
-        triangle_bolt(ctx->renderer, cx, cy, half, half_h, core);
-
-        Color hot = lerp_color(pr->color, kWhite, 0.8f);
-        hot.a = (unsigned char)(230.0f * fade);
-        triangle_bolt(ctx->renderer, cx, cy, half * 0.4f, half_h * 0.75f, hot);
-
-        Color glint = kWhite;
-        glint.a = (unsigned char)(200.0f * fade);
-        gp_fill_circle(ctx->renderer, cx, cy + half_h * 0.55f, half * 0.35f, glint);
+        switch (pr->enemy_kind) {
+            case ENEMY_PROJECTILE_ORB:
+                draw_enemy_orb(ctx, pr, fade);
+                break;
+            case ENEMY_PROJECTILE_BEAM:
+            default:
+                draw_enemy_beam(ctx, pr, fade);
+                break;
+        }
     }
 }
 

@@ -16,7 +16,13 @@
 #define TARGET_FPS 60
 
 #define MAX_PLAYER_PROJECTILES 32
-#define MAX_ENEMY_PROJECTILES 64
+/* Sized for MAX_ENEMIES all firing at once, including the shooting styles
+ * that spawn several shots per trigger (ENEMY_SHOOT_TRISHOT: 3,
+ * ENEMY_SHOOT_OMNI: 8 - see EnemyShootStyle in domain/types.h) - comfortably
+ * bigger than 64 (the old single-shot-per-enemy baseline) so a full pool
+ * stays rare enough that enemy_shot_slots_available's all-or-nothing guard
+ * (usecases/game_logic.c) rarely has anything to gate. */
+#define MAX_ENEMY_PROJECTILES 160
 #define MAX_ENEMIES 48
 #define MAX_EXPLOSIONS 32
 #define MAX_TRAIL_PARTICLES 64
@@ -82,10 +88,42 @@
 #define PLAYER_PROJECTILE_H 14.0f
 #define PLAYER_PROJECTILE_SPEED 520.0f
 
-#define ENEMY_PROJECTILE_W 6.0f
-#define ENEMY_PROJECTILE_H 8.0f
 #define ENEMY_PROJECTILE_SPEED 260.0f
 #define ENEMY_FIRE_CHANCE_PER_SEC 0.35f
+
+/* --- Enemy shooting styles (see EnemyShootStyle in domain/types.h) ---
+ * Each of the 16 enemy designs (see kEnemyKindShootStyle in
+ * usecases/spawner.c) is wired to exactly one of these 5 patterns; only the
+ * pattern and projectile shape vary between them - every style still deals
+ * PLAYER_LIFE_LOSS_PER_HIT per hit, so the difference is purely which shots
+ * the player has to dodge, never how hard they hit. */
+
+/* Style 1 (ENEMY_SHOOT_THIN_BEAM): a slim beam, like the player's own bolt
+ * (PLAYER_PROJECTILE_W/H) but thinner. */
+#define ENEMY_THIN_BEAM_HALF_LENGTH 5.0f
+#define ENEMY_THIN_BEAM_HALF_WIDTH 1.8f
+
+/* Style 2 (ENEMY_SHOOT_LONG_BEAM): the same beam, stretched much longer. */
+#define ENEMY_LONG_BEAM_HALF_LENGTH 32.0f
+#define ENEMY_LONG_BEAM_HALF_WIDTH 1.8f
+
+/* Style 3 (ENEMY_SHOOT_TRIBURST): 3 small round shots fired back-to-back
+ * rather than a single beam, then the normal enemy fire timer restarts. */
+#define ENEMY_TRIBURST_SHOT_COUNT 3
+#define ENEMY_TRIBURST_SHOT_INTERVAL 0.08f
+#define ENEMY_TRIBURST_ORB_RADIUS 4.0f
+
+/* Style 4 (ENEMY_SHOOT_TRISHOT): 3 beams per trigger - one straight ahead
+ * and two angled diagonally (down-left/down-right, at 45 degrees). */
+#define ENEMY_TRISHOT_HALF_LENGTH 6.0f
+#define ENEMY_TRISHOT_HALF_WIDTH 2.0f
+
+/* Style 5 (ENEMY_SHOOT_OMNI): 8 small round shots fired at once in every
+ * direction, evenly spaced like the points of an octagon. Slower than a
+ * normal straight shot since there are 8x the shots to dodge at once. */
+#define ENEMY_OMNI_SHOT_COUNT 8
+#define ENEMY_OMNI_ORB_RADIUS 4.0f
+#define ENEMY_OMNI_SPEED_RATIO 0.75f
 
 #define ENEMY_KIND_COUNT 16
 

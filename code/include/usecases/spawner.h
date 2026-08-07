@@ -13,7 +13,12 @@ void spawner_update(GameState *gs, float dt);
  * draws from, exposed so the boss (usecases/game_logic.c) can present
  * itself as "a randomly picked enemy" too, just scaled way up. */
 int spawner_random_enemy_kind(void);
-Color spawner_enemy_kind_accent_color(int kind);
+
+/* Which of the 5 shooting patterns (see EnemyShootStyle in domain/types.h)
+ * a given enemy design fires - a fixed per-kind lookup, same shape as the
+ * old accent-color table this replaced now that projectile color is
+ * rolled randomly per enemy instead (see spawn_one_enemy). */
+EnemyShootStyle spawner_enemy_kind_shoot_style(int kind);
 
 /* A separate, smaller pool for the boss: only the kinds that have a
  * dedicated richer, high-resolution redesign for the boss's ~10x size

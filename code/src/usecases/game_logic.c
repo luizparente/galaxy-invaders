@@ -60,6 +60,28 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
     }
 }
 
+/* The hitbox for a given enemy shot: ORB-shaped shots (triburst/omni) get a
+ * round hitbox sized by their own radius (half_len, reused for both axes);
+ * BEAM-shaped shots (thin/long/trishot) get the exact bounding box of their
+ * own oriented rectangle - half_len along the travel direction, half_wid
+ * across it - so an angled trishot beam's hitbox actually lines up with
+ * what's drawn instead of assuming it's always vertical. Shared by
+ * check_collisions, update_projectiles (off-screen despawn margin) and
+ * update_super_beam (enemy shot sweep) so the three can never drift apart -
+ * the enemy-shot counterpart to player_shot_half_extents above. */
+static void enemy_shot_half_extents(const Projectile *pr, float *half_w, float *half_h) {
+    if (pr->enemy_kind == ENEMY_PROJECTILE_ORB) {
+        *half_w = pr->half_len;
+        *half_h = pr->half_len;
+        return;
+    }
+    float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+    float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+    float dy = speed > 0.0f ? pr->vy / speed : 1.0f;
+    *half_w = pr->half_len * fabsf(dx) + pr->half_wid * fabsf(dy);
+    *half_h = pr->half_len * fabsf(dy) + pr->half_wid * fabsf(dx);
+}
+
 static void init_stars(GameState *gs) {
     for (int i = 0; i < MAX_STARS; i++) {
         Star *s = &gs->stars[i];
@@ -163,6 +185,33 @@ static void spawn_player_shot(GameState *gs, float x, float y, float vx, float v
         pr->kind = kind;
         pr->horizontal = horizontal;
         pr->damage = damage;
+        pr->inert = false;
+        pr->inert_age = 0.0f;
+        return;
+    }
+}
+
+/* The enemy-shot counterpart to spawn_player_shot above: claims the first
+ * free slot in gs->enemy_shots and fills it in, including resetting
+ * inert/inert_age (a reused slot may have been left inert - and fully
+ * faded - by a past boss fight; see
+ * test_enemy_projectile_slot_reset_after_boss_fade). half_len/half_wid
+ * should already be scaled by the caller, same convention vx/vy follow. */
+static void spawn_enemy_shot(GameState *gs, float x, float y, float vx, float vy,
+                              EnemyProjectileKind enemy_kind, float half_len, float half_wid,
+                              Color color) {
+    for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+        Projectile *pr = &gs->enemy_shots[i];
+        if (pr->alive) continue;
+        pr->alive = true;
+        pr->x = x;
+        pr->y = y;
+        pr->vx = vx;
+        pr->vy = vy;
+        pr->color = color;
+        pr->enemy_kind = enemy_kind;
+        pr->half_len = half_len;
+        pr->half_wid = half_wid;
         pr->inert = false;
         pr->inert_age = 0.0f;
         return;
@@ -725,7 +774,8 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
         Projectile *pr = &gs->enemy_shots[i];
         if (!pr->alive) continue;
         if (pr->y >= p->y) continue;
-        float pr_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
+        float pr_half_w, pr_half_h;
+        enemy_shot_half_extents(pr, &pr_half_w, &pr_half_h);
         if (fabsf(pr->x - p->x) <= beam_half_w + pr_half_w) {
             pr->alive = false;
         }
@@ -742,6 +792,89 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
         } else {
             gs->boss.beam_contact_timer = 0.0f;
         }
+    }
+}
+
+/* The 8 unit direction vectors ENEMY_SHOOT_OMNI fires along, evenly spaced
+ * like the points of an octagon (N/NE/E/SE/S/SW/W/NW in screen space,
+ * where +y is down) - written out rather than computed with sinf/cosf
+ * since all 8 land on exact multiples of 45 degrees. */
+static const float kOmniDirX[ENEMY_OMNI_SHOT_COUNT] = {
+    0.0f, 0.70710678f, 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f,
+};
+static const float kOmniDirY[ENEMY_OMNI_SHOT_COUNT] = {
+    1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f, 0.70710678f,
+};
+
+/* True if at least `count` slots in gs->enemy_shots are currently free -
+ * checked before firing a same-frame multi-shot pattern (ENEMY_SHOOT_TRISHOT,
+ * ENEMY_SHOOT_OMNI) so a volley always lands as its whole recognizable shape
+ * or not at all, rather than silently losing individual shots to pool
+ * contention when many enemies are onscreen at once (spawn_enemy_shot just
+ * drops a shot once the pool is exhausted) - losing, say, the second
+ * diagonal of a 3-way spread would otherwise read as a broken pattern
+ * instead of a merely skipped volley (the enemy's fire_timer already retries
+ * on its own next interval). Single-shot styles don't need this: losing one
+ * shot to a full pool is imperceptible either way. */
+static bool enemy_shot_slots_available(const GameState *gs, int count) {
+    int free_slots = 0;
+    for (int i = 0; i < MAX_ENEMY_PROJECTILES && free_slots < count; i++) {
+        if (!gs->enemy_shots[i].alive) free_slots++;
+    }
+    return free_slots >= count;
+}
+
+/* Fires one shooting style's non-bursting pattern (see EnemyShootStyle) -
+ * everything except ENEMY_SHOOT_TRIBURST, whose 3 shots are staggered over
+ * time instead of landing in the same frame and so are driven separately
+ * by burst_shots_remaining/burst_shot_timer in update_enemies below. half
+ * is the enemy's own half-size (e->size / 2), used to spawn beams just off
+ * its leading edge. */
+static void fire_enemy_shot_style(GameState *gs, Enemy *e, EnemyShootStyle style, float half) {
+    float speed = scaled(gs, ENEMY_PROJECTILE_SPEED);
+
+    switch (style) {
+        case ENEMY_SHOOT_LONG_BEAM:
+            spawn_enemy_shot(gs, e->x, e->y + half, 0.0f, speed, ENEMY_PROJECTILE_BEAM,
+                              scaled(gs, ENEMY_LONG_BEAM_HALF_LENGTH),
+                              scaled(gs, ENEMY_LONG_BEAM_HALF_WIDTH), e->color);
+            break;
+
+        case ENEMY_SHOOT_TRISHOT: {
+            if (!enemy_shot_slots_available(gs, 3)) break;
+            float diag = 0.70710678f;
+            float half_len = scaled(gs, ENEMY_TRISHOT_HALF_LENGTH);
+            float half_wid = scaled(gs, ENEMY_TRISHOT_HALF_WIDTH);
+            spawn_enemy_shot(gs, e->x, e->y + half, 0.0f, speed,
+                              ENEMY_PROJECTILE_BEAM, half_len, half_wid, e->color);
+            spawn_enemy_shot(gs, e->x, e->y + half, -speed * diag, speed * diag,
+                              ENEMY_PROJECTILE_BEAM, half_len, half_wid, e->color);
+            spawn_enemy_shot(gs, e->x, e->y + half, speed * diag, speed * diag,
+                              ENEMY_PROJECTILE_BEAM, half_len, half_wid, e->color);
+            break;
+        }
+
+        case ENEMY_SHOOT_OMNI: {
+            if (!enemy_shot_slots_available(gs, ENEMY_OMNI_SHOT_COUNT)) break;
+            float omni_speed = speed * ENEMY_OMNI_SPEED_RATIO;
+            float radius = scaled(gs, ENEMY_OMNI_ORB_RADIUS);
+            for (int k = 0; k < ENEMY_OMNI_SHOT_COUNT; k++) {
+                spawn_enemy_shot(gs, e->x, e->y, kOmniDirX[k] * omni_speed, kOmniDirY[k] * omni_speed,
+                                  ENEMY_PROJECTILE_ORB, radius, 0.0f, e->color);
+            }
+            break;
+        }
+
+        case ENEMY_SHOOT_TRIBURST:
+            /* driven separately, over several frames - see update_enemies */
+            break;
+
+        case ENEMY_SHOOT_THIN_BEAM:
+        default:
+            spawn_enemy_shot(gs, e->x, e->y + half, 0.0f, speed, ENEMY_PROJECTILE_BEAM,
+                              scaled(gs, ENEMY_THIN_BEAM_HALF_LENGTH),
+                              scaled(gs, ENEMY_THIN_BEAM_HALF_WIDTH), e->color);
+            break;
     }
 }
 
@@ -765,21 +898,26 @@ static void update_enemies(GameState *gs, float dt) {
             continue;
         }
 
+        if (e->burst_shots_remaining > 0) {
+            e->burst_shot_timer -= dt;
+            if (e->burst_shot_timer <= 0.0f) {
+                e->burst_shot_timer = ENEMY_TRIBURST_SHOT_INTERVAL;
+                e->burst_shots_remaining--;
+                spawn_enemy_shot(gs, e->x, e->y + half, 0.0f, scaled(gs, ENEMY_PROJECTILE_SPEED),
+                                  ENEMY_PROJECTILE_ORB, scaled(gs, ENEMY_TRIBURST_ORB_RADIUS), 0.0f,
+                                  e->color);
+            }
+        }
+
         e->fire_timer -= dt;
-        if (e->fire_timer <= 0.0f) {
+        if (e->fire_timer <= 0.0f && e->burst_shots_remaining == 0) {
             e->fire_timer = mean_fire_interval * (0.6f + frand01() * 0.8f);
-            for (int j = 0; j < MAX_ENEMY_PROJECTILES; j++) {
-                Projectile *pr = &gs->enemy_shots[j];
-                if (pr->alive) continue;
-                pr->alive = true;
-                pr->x = e->x;
-                pr->y = e->y + half;
-                pr->vx = 0.0f;
-                pr->vy = scaled(gs, ENEMY_PROJECTILE_SPEED);
-                pr->color = e->color;
-                pr->inert = false; /* slot may have been left inert by a past boss fight */
-                pr->inert_age = 0.0f;
-                break;
+            EnemyShootStyle style = spawner_enemy_kind_shoot_style(e->kind);
+            if (style == ENEMY_SHOOT_TRIBURST) {
+                e->burst_shots_remaining = ENEMY_TRIBURST_SHOT_COUNT;
+                e->burst_shot_timer = 0.0f;
+            } else {
+                fire_enemy_shot_style(gs, e, style, half);
             }
         }
     }
@@ -808,8 +946,6 @@ static void update_pending_orb_kills(GameState *gs, float dt, EventQueue *events
 }
 
 static void update_projectiles(GameState *gs, float dt) {
-    float enemy_shot_h = scaled(gs, ENEMY_PROJECTILE_H);
-
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
         if (!pr->alive) continue;
@@ -841,7 +977,9 @@ static void update_projectiles(GameState *gs, float dt) {
             }
         }
 
-        if (pr->y > (float)gs->screen_h + enemy_shot_h) pr->alive = false;
+        float half_w, half_h;
+        enemy_shot_half_extents(pr, &half_w, &half_h);
+        if (pr->y > (float)gs->screen_h + half_h) pr->alive = false;
     }
 }
 
@@ -943,8 +1081,6 @@ static void update_enemy_and_boss_trails(GameState *gs, float dt) {
 }
 
 static void check_collisions(GameState *gs, EventQueue *events) {
-    float enemy_shot_half_w = scaled(gs, ENEMY_PROJECTILE_W) / 2.0f;
-    float enemy_shot_half_h = scaled(gs, ENEMY_PROJECTILE_H) / 2.0f;
     float player_half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
     float player_half_h = scaled(gs, PLAYER_HEIGHT) / 2.0f;
 
@@ -990,6 +1126,8 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
             Projectile *pr = &gs->enemy_shots[i];
             if (!pr->alive || pr->inert) continue; /* inert = fading out after a boss arrived; harmless */
+            float enemy_shot_half_w, enemy_shot_half_h;
+            enemy_shot_half_extents(pr, &enemy_shot_half_w, &enemy_shot_half_h);
             if (collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
                                         gs->player.x, gs->player.y, player_half_w, player_half_h)) {
                 pr->alive = false;
