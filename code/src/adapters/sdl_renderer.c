@@ -533,12 +533,36 @@ static void draw_enemy_trail_particle(SdlRendererCtx *ctx, const EnemyTrailParti
     gp_fill_circle(ctx->renderer, t->x, t->y, radius, color);
 }
 
+/* The projectile counterpart to draw_trail_particle/draw_enemy_trail_particle
+ * above - unlike those (which cool from a fixed fire-orange into gray
+ * smoke as they age), t->color is captured once at spawn from the exact
+ * projectile that emitted it (see spawn_projectile_trail_particle) and
+ * never shifts hue here; only alpha (fade) and radius (growth) still
+ * follow the same smoke curve, so every trail reads as "this shot's own
+ * color" trailing behind it. */
+static void draw_projectile_trail_particle(SdlRendererCtx *ctx, const ProjectileTrailParticle *t) {
+    if (!t->alive) return;
+
+    float life = t->age / t->max_age;
+    Color color = t->color;
+
+    float radius = t->size * (1.0f + (PROJECTILE_TRAIL_SIZE_GROWTH - 1.0f) * life);
+
+    float fade_in = life < 0.08f ? life / 0.08f : 1.0f;
+    float fade_out = 1.0f - life;
+    color.a = (unsigned char)((float)PROJECTILE_TRAIL_MAX_ALPHA * fade_in * fade_out);
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    gp_fill_circle(ctx->renderer, t->x, t->y, radius, color);
+}
+
 static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMY_TRAIL_PARTICLES; i++) draw_enemy_trail_particle(ctx, &gs->enemy_trail_particles[i]);
     for (int i = 0; i < MAX_ENEMIES; i++) draw_enemy(ctx, &gs->enemies[i]);
     draw_boss(ctx, &gs->boss);
     draw_orb(ctx, &gs->orb);
     for (int i = 0; i < MAX_EXPLOSIONS; i++) draw_explosion(ctx, &gs->explosions[i]);
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) draw_projectile_trail_particle(ctx, &gs->projectile_trails[i]);
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) draw_projectile(ctx, &gs->player_shots[i], true, gs->scale);
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, &gs->enemy_shots[i], false, gs->scale);
     for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) draw_trail_particle(ctx, &gs->trail_particles[i]);

@@ -179,6 +179,13 @@ typedef struct Projectile {
     EnemyProjectileKind enemy_kind;
     float half_len;
     float half_wid;
+
+    /* Counts down to this shot's next smoke-trail puff emission - see
+     * spawn_projectile_trail_particle/update_projectile_trails in
+     * usecases/game_logic.c, the projectile counterpart to
+     * Player.trail_emit_timer/Enemy.trail_emit_timer. Shared by both
+     * player_shots and enemy_shots. Purely cosmetic. */
+    float trail_emit_timer;
 } Projectile;
 
 typedef struct Explosion {
@@ -222,6 +229,28 @@ typedef struct EnemyTrailParticle {
     float size;
     unsigned char alpha_cap;
 } EnemyTrailParticle;
+
+/* The same smoke-puff mechanics as TrailParticle/EnemyTrailParticle above
+ * (drift, drag, grow, fade - see draw_projectile_trail_particle), trailing
+ * every projectile - player and enemy shots alike - instead of a ship; see
+ * spawn_projectile_trail_particle and update_projectile_trails in
+ * usecases/game_logic.c. Unlike the ship trails, which start fire-colored
+ * and cool into gray smoke as they age, color is captured once at spawn
+ * from the exact Projectile.color that emitted it and never shifts -
+ * only alpha (fade) and size (growth) animate over the puff's life, so the
+ * trail always reads as "this projectile's own color," never a generic
+ * fire/smoke tone. A single pool shared by both player_shots and
+ * enemy_shots (each Projectile carries its own trail_emit_timer) since
+ * projectiles of either side get identical treatment. */
+typedef struct ProjectileTrailParticle {
+    bool alive;
+    float x, y;
+    float vx, vy;
+    float age;
+    float max_age;
+    float size;
+    Color color;
+} ProjectileTrailParticle;
 
 typedef struct Star {
     float x, y;
@@ -289,6 +318,7 @@ typedef struct GameState {
     Explosion explosions[MAX_EXPLOSIONS];
     TrailParticle trail_particles[MAX_TRAIL_PARTICLES];
     EnemyTrailParticle enemy_trail_particles[MAX_ENEMY_TRAIL_PARTICLES];
+    ProjectileTrailParticle projectile_trails[MAX_PROJECTILE_TRAIL_PARTICLES];
     Star stars[MAX_STARS];
     Orb orb;
     Boss boss;

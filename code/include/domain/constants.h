@@ -84,6 +84,30 @@
 #define BOSS_TRAIL_SIZE_MULTIPLIER                                             \
   3.0f /* "bigger" - on top of TRAIL_PARTICLE_BASE_SIZE */
 
+/* The same smoke-puff effect as above, trailing every projectile - player
+ * and enemy shots alike - instead of a ship; see ProjectileTrailParticle
+ * in domain/types.h. Unlike the ship trails (TRAIL_PARTICLE_* /
+ * ENEMY_TRAIL_*), which start fire-colored and cool into gray smoke, these
+ * keep the exact color of the projectile that spawned them for their whole
+ * life - only alpha/size still follow the same fade/grow curve. One pool
+ * shared by both player_shots and enemy_shots (up to
+ * MAX_PLAYER_PROJECTILES + MAX_ENEMY_PROJECTILES = 192 emitters, far more
+ * than the single ship/handful of enemies the ship trails budget for). At
+ * steady state each emitter keeps roughly
+ * PROJECTILE_TRAIL_LIFETIME / PROJECTILE_TRAIL_SPAWN_INTERVAL (~10) puffs
+ * alive at once, so the pool needs real headroom over that 192-emitter
+ * worst case - too small a pool (a former 256 was not enough) means
+ * spawn_projectile_trail_particle silently drops puffs once it's full
+ * (same "just does nothing" convention every spawn_* here follows), which
+ * read as some projectiles randomly missing their trail entirely during
+ * busy scenes rather than merely a shorter trail. */
+#define MAX_PROJECTILE_TRAIL_PARTICLES 768
+#define PROJECTILE_TRAIL_SPAWN_INTERVAL 0.035f /* ~29 particles/sec per projectile */
+#define PROJECTILE_TRAIL_LIFETIME 0.35f
+#define PROJECTILE_TRAIL_BASE_SIZE 2.2f
+#define PROJECTILE_TRAIL_SIZE_GROWTH 2.2f
+#define PROJECTILE_TRAIL_MAX_ALPHA 40 /* ~16% of 255 - half of the previous 80, for a subtler wake */
+
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f
 #define PLAYER_PROJECTILE_SPEED 520.0f

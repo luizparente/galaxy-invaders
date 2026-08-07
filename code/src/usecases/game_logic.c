@@ -167,6 +167,35 @@ static void spawn_enemy_trail_particle(GameState *gs, float x, float y, float si
     }
 }
 
+/* The projectile counterpart to spawn_trail_particle/spawn_enemy_trail_particle
+ * above, into the shared projectile_trails pool - see ProjectileTrailParticle
+ * in domain/types.h for why its color never shifts the way the ship trails'
+ * does. (back_dx, back_dy) is the unit vector pointing opposite the
+ * projectile's own travel direction (its "backward"), so the puff drifts
+ * away from the direction the shot is heading regardless of which way that
+ * is - unlike the ship trails, a projectile can travel in any direction,
+ * not just down or up. */
+static void spawn_projectile_trail_particle(GameState *gs, float x, float y, float back_dx, float back_dy,
+                                             Color color) {
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        ProjectileTrailParticle *t = &gs->projectile_trails[i];
+        if (t->alive) continue;
+        t->alive = true;
+        t->x = x;
+        t->y = y;
+        float perp_x = -back_dy, perp_y = back_dx;
+        float jitter = (frand01() - 0.5f) * scaled(gs, TRAIL_PARTICLE_JITTER_SPEED);
+        float drift = scaled(gs, TRAIL_PARTICLE_SPEED) * (0.7f + frand01() * 0.6f);
+        t->vx = back_dx * drift + perp_x * jitter;
+        t->vy = back_dy * drift + perp_y * jitter;
+        t->age = 0.0f;
+        t->max_age = PROJECTILE_TRAIL_LIFETIME;
+        t->size = scaled(gs, PROJECTILE_TRAIL_BASE_SIZE) * (0.7f + frand01() * 0.6f);
+        t->color = color;
+        return;
+    }
+}
+
 /* Shared by every shooting mode's fire logic (see update_player_firing and
  * its per-mode helpers): claims the first free slot in gs->player_shots and
  * fills it in. Silently does nothing once the pool (MAX_PLAYER_PROJECTILES)
@@ -187,6 +216,10 @@ static void spawn_player_shot(GameState *gs, float x, float y, float vx, float v
         pr->damage = damage;
         pr->inert = false;
         pr->inert_age = 0.0f;
+        /* Staggered like Enemy.trail_emit_timer at spawn, so a burst of
+         * shots fired the same frame doesn't all puff their first smoke
+         * trail particle on the exact same frame too. */
+        pr->trail_emit_timer = frand01() * PROJECTILE_TRAIL_SPAWN_INTERVAL;
         return;
     }
 }
@@ -214,6 +247,7 @@ static void spawn_enemy_shot(GameState *gs, float x, float y, float vx, float vy
         pr->half_wid = half_wid;
         pr->inert = false;
         pr->inert_age = 0.0f;
+        pr->trail_emit_timer = frand01() * PROJECTILE_TRAIL_SPAWN_INTERVAL;
         return;
     }
 }
@@ -452,6 +486,7 @@ static void reset_run(GameState *gs) {
     memset(&gs->explosions, 0, sizeof(gs->explosions));
     memset(&gs->trail_particles, 0, sizeof(gs->trail_particles));
     memset(&gs->enemy_trail_particles, 0, sizeof(gs->enemy_trail_particles));
+    memset(&gs->projectile_trails, 0, sizeof(gs->projectile_trails));
     memset(&gs->orb, 0, sizeof(gs->orb));
     memset(&gs->boss, 0, sizeof(gs->boss));
     gs->boss_count = 0;
@@ -1080,6 +1115,53 @@ static void update_enemy_and_boss_trails(GameState *gs, float dt) {
     }
 }
 
+/* One shared emitter loop for every projectile on screen - player_shots and
+ * enemy_shots alike - into the one projectile_trails pool (see
+ * ProjectileTrailParticle in domain/types.h). Each shot's own
+ * trail_emit_timer paces its puffs independently, same convention as
+ * Player.trail_emit_timer/Enemy.trail_emit_timer; the backward direction is
+ * derived from the shot's own vx/vy (falling back to "straight up" if
+ * somehow stationary, matching draw_enemy_beam's own guard) since unlike a
+ * ship, a projectile can travel in any direction, not just down or up.
+ * Runs after update_projectiles so it emits from this frame's fresh
+ * position. Existing puffs age/drift the same way regardless of whether
+ * their source projectile is still alive, same as every other trail here -
+ * a shot that just hit something doesn't yank its trailing smoke away. */
+static void update_projectile_trails(GameState *gs, float dt) {
+    for (int side = 0; side < 2; side++) {
+        Projectile *shots = side == 0 ? gs->player_shots : gs->enemy_shots;
+        int count = side == 0 ? MAX_PLAYER_PROJECTILES : MAX_ENEMY_PROJECTILES;
+        for (int i = 0; i < count; i++) {
+            Projectile *pr = &shots[i];
+            if (!pr->alive) continue;
+            pr->trail_emit_timer -= dt;
+            if (pr->trail_emit_timer <= 0.0f) {
+                pr->trail_emit_timer = PROJECTILE_TRAIL_SPAWN_INTERVAL;
+                float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+                float back_dx = speed > 0.0f ? -pr->vx / speed : 0.0f;
+                float back_dy = speed > 0.0f ? -pr->vy / speed : -1.0f;
+                spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, pr->color);
+            }
+        }
+    }
+
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        ProjectileTrailParticle *t = &gs->projectile_trails[i];
+        if (!t->alive) continue;
+        t->age += dt;
+        if (t->age >= t->max_age) {
+            t->alive = false;
+            continue;
+        }
+
+        float drag = powf(0.15f, dt);
+        t->vx *= drag;
+        t->vy *= drag;
+        t->x += t->vx * dt;
+        t->y += t->vy * dt;
+    }
+}
+
 static void check_collisions(GameState *gs, EventQueue *events) {
     float player_half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
     float player_half_h = scaled(gs, PLAYER_HEIGHT) / 2.0f;
@@ -1260,6 +1342,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     update_enemy_and_boss_trails(gs, dt);
     update_orb(gs, dt);
     update_projectiles(gs, dt);
+    update_projectile_trails(gs, dt);
     update_super_beam(gs, dt, events);
     update_explosions(gs, dt);
     check_collisions(gs, events);
