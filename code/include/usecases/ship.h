@@ -73,4 +73,22 @@ float ship_damage_taken_multiplier(Ship ship);
 float ship_speed_percent(Ship ship);
 float ship_life_loss_percent_per_hit(Ship ship);
 
+/* Each ship's own moveset: which ShootMode the 1-5 number keys reach, in
+ * order, and how many of those 5 keys actually do anything. B-20 has all 5
+ * of its own original modes in their original key order; C-24 has only 3
+ * (pressing 4 or 5 does nothing - see update_shoot_mode_switch in
+ * usecases/game_logic.c, the only reader of these). A future ship with its
+ * own distinct moveset just needs its own slot table in usecases/ship.c;
+ * nothing outside it needs to change. */
+int ship_shoot_mode_slot_count(Ship ship);
+/* slot is 0-based (key 1 is slot 0); must be < ship_shoot_mode_slot_count(ship). */
+ShootMode ship_shoot_mode_for_slot(Ship ship, int slot);
+/* Reverse lookup for the HUD's mode indicator (draw_shoot_mode_indicator in
+ * adapters/sdl_renderer.c): which slot, if any, holds `mode` on this ship's
+ * table. Returns -1 if `mode` isn't reachable on this ship at all - can't
+ * happen for whatever ship is actually flying (Player.shoot_mode is only
+ * ever set from this same table - see reset_run/update_shoot_mode_switch),
+ * but the HUD has no other way to know that without asking. */
+int ship_shoot_mode_slot_index(Ship ship, ShootMode mode);
+
 #endif

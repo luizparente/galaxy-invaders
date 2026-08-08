@@ -36,3 +36,46 @@ float ship_speed_percent(Ship ship) {
 float ship_life_loss_percent_per_hit(Ship ship) {
     return PLAYER_LIFE_LOSS_PER_HIT * ship_damage_taken_multiplier(ship);
 }
+
+/* B-20 keeps its original 5-mode lineup in its original key order. */
+static const ShootMode kB20ShootModeSlots[] = {
+    SHOOT_MODE_NORMAL, SHOOT_MODE_RAPID, SHOOT_MODE_POWER, SHOOT_MODE_DOUBLE, SHOOT_MODE_SIDE,
+};
+
+/* C-24's own moveset: B-20's double barrel and power cannon, reused as-is
+ * (same fire rate/damage - see usecases/game_logic.c's spawn call sites),
+ * just under different keys, plus a ship-exclusive third mode. Every one of
+ * these renders/hit-tests differently for C-24 than for B-20 despite
+ * sharing a ShootMode value - see player_shot_half_extents and
+ * draw_c24_sphere_shot, both of which branch on GameState.selected_ship
+ * directly rather than on ShootMode, since the same mode looks and hits
+ * different depending on which ship fired it. */
+static const ShootMode kC24ShootModeSlots[] = {
+    SHOOT_MODE_DOUBLE, SHOOT_MODE_POWER, SHOOT_MODE_OMNI,
+};
+
+typedef struct ShipShootModeSlots {
+    const ShootMode *modes;
+    int count;
+} ShipShootModeSlots;
+
+static const ShipShootModeSlots kShipShootModeSlots[SHIP_COUNT] = {
+    [SHIP_B20] = {kB20ShootModeSlots, 5},
+    [SHIP_C24] = {kC24ShootModeSlots, 3},
+};
+
+int ship_shoot_mode_slot_count(Ship ship) {
+    return kShipShootModeSlots[ship].count;
+}
+
+ShootMode ship_shoot_mode_for_slot(Ship ship, int slot) {
+    return kShipShootModeSlots[ship].modes[slot];
+}
+
+int ship_shoot_mode_slot_index(Ship ship, ShootMode mode) {
+    const ShipShootModeSlots *slots = &kShipShootModeSlots[ship];
+    for (int i = 0; i < slots->count; i++) {
+        if (slots->modes[i] == mode) return i;
+    }
+    return -1;
+}

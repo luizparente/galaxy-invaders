@@ -44,6 +44,21 @@ static float scaled(const GameState *gs, float design_value) {
  * by check_collisions (enemy/boss/orb hit tests) and update_projectiles (the
  * off-screen despawn margin) so the two can never drift apart. */
 static void player_shot_half_extents(const GameState *gs, const Projectile *pr, float *half_w, float *half_h) {
+    /* Every one of C-24's shots is a sphere regardless of which mode fired
+     * it (see draw_c24_sphere_shot in adapters/sdl_renderer.c) - checked
+     * before ProjectileKind below so a C-24 power-cannon-style shot (still
+     * PROJECTILE_KIND_POWER, for its damage multiplier and explode-on-
+     * contact behavior - see check_collisions) hit-tests at C-24's own
+     * sphere size instead of B-20's POWER_CANNON_PROJECTILE_RADIUS - just
+     * C-24's own *bigger* sphere (SHIP_C24_POWER_MODE_RADIUS, 8x its other
+     * two modes' SHIP_C24_PROJECTILE_RADIUS), matching how much heavier
+     * this shot already is. */
+    if (gs->selected_ship == SHIP_C24) {
+        float r = scaled(gs, pr->kind == PROJECTILE_KIND_POWER ? SHIP_C24_POWER_MODE_RADIUS : SHIP_C24_PROJECTILE_RADIUS);
+        *half_w = r;
+        *half_h = r;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -221,6 +236,10 @@ static void spawn_player_shot(GameState *gs, float x, float y, float vx, float v
          * shots fired the same frame doesn't all puff their first smoke
          * trail particle on the exact same frame too. */
         pr->trail_emit_timer = frand01() * PROJECTILE_TRAIL_SPAWN_INTERVAL;
+        /* Only read by C-24's own sphere-shot rendering (see
+         * draw_c24_sphere_shot in adapters/sdl_renderer.c) - harmless to
+         * set unconditionally for every ship. */
+        pr->phase_seed = frand01() * 6.2831853f;
         return;
     }
 }
@@ -252,6 +271,21 @@ static void spawn_enemy_shot(GameState *gs, float x, float y, float vx, float vy
         return;
     }
 }
+
+/* The 8 unit direction vectors an all-directions burst fires along, evenly
+ * spaced like the points of an octagon (N/NE/E/SE/S/SW/W/NW in screen
+ * space, where +y is down) - written out rather than computed with
+ * sinf/cosf since all 8 land on exact multiples of 45 degrees. Shared by
+ * ENEMY_SHOOT_OMNI (fire_enemy_shot_style below) and C-24's own
+ * SHOOT_MODE_OMNI (update_omni_burst below) - the player's version is
+ * explicitly the same pattern, just centered on the player instead of an
+ * enemy. */
+static const float kOmniDirX[ENEMY_OMNI_SHOT_COUNT] = {
+    0.0f, 0.70710678f, 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f,
+};
+static const float kOmniDirY[ENEMY_OMNI_SHOT_COUNT] = {
+    1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f, 0.70710678f,
+};
 
 static void spawn_orb(GameState *gs) {
     Orb *o = &gs->orb;
@@ -501,7 +535,7 @@ static void reset_run(GameState *gs) {
     gs->player.super_beam_timer = 0.0f;
     gs->player.god_mode = false;
     gs->player.life = PLAYER_LIFE_MAX;
-    gs->player.shoot_mode = SHOOT_MODE_NORMAL;
+    gs->player.shoot_mode = ship_shoot_mode_for_slot(gs->selected_ship, 0);
     gs->player.rapid_burst_timer = 0.0f;
     gs->player.rapid_cooldown_timer = 0.0f;
     gs->player.trail_emit_timer = 0.0f;
@@ -667,24 +701,30 @@ static void damage_player(GameState *gs, EventQueue *events, float amount) {
 /* Mode switching (1-5 number keys) is locked out for the whole duration of
  * a rapid-fire burst and its following cooldown (see update_rapid_fire) -
  * everywhere else, switching is free even mid-flight of other shots. */
+/* Which key (1-5) selects which ShootMode is entirely per-ship (see
+ * ship_shoot_mode_for_slot in usecases/ship.h) - a key past that ship's own
+ * ship_shoot_mode_slot_count (e.g. 4 or 5 for C-24, which only has 3) does
+ * nothing, same as pressing an already-active key does nothing. */
 static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, EventQueue *events) {
     Player *p = &gs->player;
     if (p->rapid_burst_timer > 0.0f || p->rapid_cooldown_timer > 0.0f) return;
 
-    ShootMode requested = p->shoot_mode;
-    if (input->shoot_mode_1_pressed) requested = SHOOT_MODE_NORMAL;
-    else if (input->shoot_mode_2_pressed) requested = SHOOT_MODE_RAPID;
-    else if (input->shoot_mode_3_pressed) requested = SHOOT_MODE_POWER;
-    else if (input->shoot_mode_4_pressed) requested = SHOOT_MODE_DOUBLE;
-    else if (input->shoot_mode_5_pressed) requested = SHOOT_MODE_SIDE;
+    int slot = -1;
+    if (input->shoot_mode_1_pressed) slot = 0;
+    else if (input->shoot_mode_2_pressed) slot = 1;
+    else if (input->shoot_mode_3_pressed) slot = 2;
+    else if (input->shoot_mode_4_pressed) slot = 3;
+    else if (input->shoot_mode_5_pressed) slot = 4;
+    if (slot < 0 || slot >= ship_shoot_mode_slot_count(gs->selected_ship)) return;
 
+    ShootMode requested = ship_shoot_mode_for_slot(gs->selected_ship, slot);
     if (requested == p->shoot_mode) return;
     p->shoot_mode = requested;
     event_queue_push_sfx(events, SFX_MENU_SELECT);
 }
 
-/* Mode 1 (default): a single shot from the nose, unchanged from before this
- * ability existed. */
+/* B-20's mode 1 (default): a single shot from the nose, unchanged from
+ * before this ability existed. Not part of C-24's own moveset. */
 static void update_normal_fire(GameState *gs, const InputCommand *input, EventQueue *events) {
     Player *p = &gs->player;
     if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
@@ -696,7 +736,7 @@ static void update_normal_fire(GameState *gs, const InputCommand *input, EventQu
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
-/* Mode 2: one press (or hold) commits to a full RAPID_FIRE_BURST_DURATION
+/* B-20's mode 2 (not part of C-24's own moveset): one press (or hold) commits to a full RAPID_FIRE_BURST_DURATION
  * seconds of automatic fire at RAPID_FIRE_SHOTS_PER_SEC, regardless of
  * whether the key is still held, followed by a RAPID_FIRE_LOCKOUT_DURATION
  * cooldown during which this mode (see its early return below) fires
@@ -736,8 +776,12 @@ static void update_rapid_fire(GameState *gs, const InputCommand *input, float dt
     }
 }
 
-/* Mode 3: a slow, heavy single shot - see trigger_power_cannon_explosion
- * (check_collisions) for what happens when it actually lands. */
+/* B-20's mode 3, reused as C-24's own mode 2 at the exact same rate/damage
+ * (see ship_shoot_mode_for_slot) - a slow, heavy single shot; see
+ * trigger_power_cannon_explosion (check_collisions) for what happens when
+ * it actually lands, unaffected by which ship fired it. C-24 renders and
+ * hit-tests this one at its own bigger sphere size - see
+ * player_shot_half_extents. */
 static void update_power_cannon(GameState *gs, const InputCommand *input, EventQueue *events) {
     Player *p = &gs->player;
     if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
@@ -750,8 +794,9 @@ static void update_power_cannon(GameState *gs, const InputCommand *input, EventQ
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
-/* Mode 4: identical rate and shot to mode 1, just two shots fired abreast
- * from the wingtips instead of one from the nose. */
+/* B-20's mode 4, reused as C-24's own mode 1 at the exact same rate/damage
+ * (see ship_shoot_mode_for_slot): two shots fired abreast from the
+ * wingtips instead of one from the nose. */
 static void update_double_barrel(GameState *gs, const InputCommand *input, EventQueue *events) {
     Player *p = &gs->player;
     if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
@@ -766,8 +811,8 @@ static void update_double_barrel(GameState *gs, const InputCommand *input, Event
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
-/* Mode 5: same wingtip pair as mode 4, fired sideways (away from the ship)
- * instead of forward. */
+/* B-20's mode 5 (not part of C-24's own moveset): same wingtip pair as
+ * mode 4, fired sideways (away from the ship) instead of forward. */
 static void update_side_beams(GameState *gs, const InputCommand *input, EventQueue *events) {
     Player *p = &gs->player;
     if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
@@ -777,6 +822,26 @@ static void update_side_beams(GameState *gs, const InputCommand *input, EventQue
     spawn_player_shot(gs, p->x - wing_x, p->y, -speed, 0.0f, PROJECTILE_KIND_NORMAL, true, BASE_PLAYER_DAMAGE);
     spawn_player_shot(gs, p->x + wing_x, p->y, speed, 0.0f, PROJECTILE_KIND_NORMAL, true, BASE_PLAYER_DAMAGE);
     p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* C-24's own mode 3 (SHOOT_MODE_OMNI, not reachable by any other ship - see
+ * ship_shoot_mode_for_slot): the same 8-direction, fire-all-at-once burst as
+ * ENEMY_SHOOT_OMNI (see kOmniDirX/kOmniDirY above), from the player's own
+ * position at the player's own baseline projectile speed/damage. Gated on a
+ * single cooldown like every mode but rapid fire - "1 shot per second"
+ * means the whole 8-pellet volley retriggers once a second, not that each
+ * pellet fires individually. */
+static void update_omni_burst(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float speed = scaled(gs, PLAYER_PROJECTILE_SPEED);
+    for (int k = 0; k < ENEMY_OMNI_SHOT_COUNT; k++) {
+        spawn_player_shot(gs, p->x, p->y, kOmniDirX[k] * speed, kOmniDirY[k] * speed,
+                           PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE);
+    }
+    p->fire_cooldown = SHIP_C24_OMNI_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
@@ -798,6 +863,7 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_POWER: update_power_cannon(gs, input, events); break;
         case SHOOT_MODE_DOUBLE: update_double_barrel(gs, input, events); break;
         case SHOOT_MODE_SIDE: update_side_beams(gs, input, events); break;
+        case SHOOT_MODE_OMNI: update_omni_burst(gs, input, events); break;
         case SHOOT_MODE_NORMAL:
         case SHOOT_MODE_COUNT:
         default: update_normal_fire(gs, input, events); break;
@@ -889,17 +955,6 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
         }
     }
 }
-
-/* The 8 unit direction vectors ENEMY_SHOOT_OMNI fires along, evenly spaced
- * like the points of an octagon (N/NE/E/SE/S/SW/W/NW in screen space,
- * where +y is down) - written out rather than computed with sinf/cosf
- * since all 8 land on exact multiples of 45 degrees. */
-static const float kOmniDirX[ENEMY_OMNI_SHOT_COUNT] = {
-    0.0f, 0.70710678f, 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f,
-};
-static const float kOmniDirY[ENEMY_OMNI_SHOT_COUNT] = {
-    1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f, 0.70710678f,
-};
 
 /* True if at least `count` slots in gs->enemy_shots are currently free -
  * checked before firing a same-frame multi-shot pattern (ENEMY_SHOOT_TRISHOT,

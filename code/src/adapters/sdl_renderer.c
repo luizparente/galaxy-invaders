@@ -355,8 +355,48 @@ static void draw_enemy_orb(SdlRendererCtx *ctx, const Projectile *pr, float fade
     gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
 }
 
-static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_player, float scale) {
+/* C-24's own signature look - the same layered glow/core/hot/glint sphere
+ * construction as draw_enemy_orb above (the octagonal enemy shot style's
+ * own look, whose size and glow read well), but continuously cycling hue
+ * the way the power orb's own color does (draw_orb/update_orb) rather than
+ * a fixed hue - "that's the effect I'm going for." Not a copy-paste of the
+ * orb's own mechanism though: the orb mutates one shared, stored Orb.hue a
+ * little every frame (update_orb); here the hue is instead computed fresh
+ * every frame straight from (time, phase_seed) with no stored-and-mutated
+ * state of its own, offset per shot by phase_seed (see spawn_player_shot)
+ * so simultaneous shots - a double-barrel pair, all 8 of an omni burst -
+ * don't cycle in lockstep. Mode 2 (still PROJECTILE_KIND_POWER - see
+ * player_shot_half_extents) renders 8x bigger than modes 1/3, matching its
+ * own bigger hitbox. */
+static void draw_c24_sphere_shot(SdlRendererCtx *ctx, const Projectile *pr, float scale, float time) {
+    float radius_design = pr->kind == PROJECTILE_KIND_POWER ? SHIP_C24_POWER_MODE_RADIUS : SHIP_C24_PROJECTILE_RADIUS;
+    float r = radius_design * scale;
+    float cx = pr->x, cy = pr->y;
+
+    float phase_seed_deg = pr->phase_seed * (180.0f / (float)M_PI);
+    float hue = fmodf(time * SHIP_C24_PROJECTILE_HUE_CYCLE_SPEED + phase_seed_deg, 360.0f);
+    if (hue < 0.0f) hue += 360.0f;
+    Color base = color_from_hsv(hue, 0.85f, 1.0f);
+
+    Color glow = base;
+    glow.a = 70;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 2.2f, glow);
+    glow.a = 130;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 1.4f, glow);
+
+    gp_fill_circle(ctx->renderer, cx, cy, r, base);
+
+    Color hot = lerp_color(base, kWhite, 0.55f);
+    gp_fill_circle(ctx->renderer, cx, cy, r * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
+}
+
+static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Projectile *pr, bool is_player) {
     if (!pr->alive) return;
+    float scale = gs->scale;
 
     float fade = 1.0f;
     if (!is_player && pr->inert) {
@@ -367,6 +407,10 @@ static void draw_projectile(SdlRendererCtx *ctx, const Projectile *pr, bool is_p
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
 
     if (is_player) {
+        if (gs->selected_ship == SHIP_C24) {
+            draw_c24_sphere_shot(ctx, pr, scale, gs->time_elapsed);
+            return;
+        }
         switch (pr->kind) {
             case PROJECTILE_KIND_RAPID:
                 draw_rapid_shot(ctx, pr, scale);
@@ -577,8 +621,8 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     draw_orb(ctx, &gs->orb);
     for (int i = 0; i < MAX_EXPLOSIONS; i++) draw_explosion(ctx, &gs->explosions[i]);
     for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) draw_projectile_trail_particle(ctx, &gs->projectile_trails[i]);
-    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) draw_projectile(ctx, &gs->player_shots[i], true, gs->scale);
-    for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, &gs->enemy_shots[i], false, gs->scale);
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) draw_projectile(ctx, gs, &gs->player_shots[i], true);
+    for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, gs, &gs->enemy_shots[i], false);
     for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) draw_trail_particle(ctx, &gs->trail_particles[i]);
     draw_super_beam(ctx, gs);
     draw_player(ctx, gs);
@@ -673,17 +717,20 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 }
 
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
-    "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE",
+    "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
- * score don't already use): one numbered box per ShootMode (1-5 keys select
- * them, see input_port.h), the active one lit up in yellow - or red while
- * rapid fire's burst/lockout has switching disabled, echoing the life bar's
- * "red means can't act right now" language - with the mode's name above. */
+ * score don't already use): one numbered box per slot in the current ship's
+ * own moveset (see ship_shoot_mode_slot_count/ship_shoot_mode_for_slot in
+ * usecases/ship.h - B-20 draws 5, C-24 only 3), the active one lit up in
+ * yellow - or red while rapid fire's burst/lockout has switching disabled,
+ * echoing the life bar's "red means can't act right now" language - with
+ * the mode's name above. */
 static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) {
     const Player *p = &gs->player;
     bool locked = p->rapid_burst_timer > 0.0f || p->rapid_cooldown_timer > 0.0f;
+    int slot_count = ship_shoot_mode_slot_count(gs->selected_ship);
 
     float margin = 12.0f * gs->scale;
     float box = 18.0f * gs->scale;
@@ -693,9 +740,10 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
     float x0 = margin;
     float y0 = (float)gs->screen_h - margin - box;
 
-    for (int i = 0; i < SHOOT_MODE_COUNT; i++) {
+    for (int i = 0; i < slot_count; i++) {
         float x = x0 + (float)i * (box + gap);
-        bool active = (i == (int)p->shoot_mode);
+        ShootMode slot_mode = ship_shoot_mode_for_slot(gs->selected_ship, i);
+        bool active = (slot_mode == p->shoot_mode);
 
         Color outline = active ? (locked ? kRed : kYellow) : kDim;
         gp_fill_rect(ctx->renderer, x, y0, box, box, outline);

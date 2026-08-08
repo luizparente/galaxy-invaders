@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "domain/constants.h"
 #include "domain/events.h"
@@ -39,6 +40,21 @@ static void start_game(GameState *gs, EventQueue *events) {
     game_update(gs, &confirm, 0.016f, events);
     game_update(gs, &confirm, 0.016f, events);
     game_update(gs, &confirm, 0.016f, events);
+}
+
+/* Same as start_game, but navigates to C-24 on the ship-select screen
+ * before confirming, for the C-24-specific weapon tests below. */
+static void start_game_as_c24(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_C24);
 }
 
 static void test_collision(void) {
@@ -1093,6 +1109,170 @@ static void test_double_barrel_pair_together_cost_one_normal_hit(void) {
     printf("test_double_barrel_pair_together_cost_one_normal_hit OK\n");
 }
 
+/* C-24's own 3-slot moveset, pinned exactly: B-20's double barrel and power
+ * cannon reused under different keys, plus its own exclusive omni burst -
+ * see ship_shoot_mode_for_slot/ship_shoot_mode_slot_count in usecases/ship.h. */
+static void test_c24_shoot_mode_slots(void) {
+    assert(ship_shoot_mode_slot_count(SHIP_B20) == 5);
+    assert(ship_shoot_mode_for_slot(SHIP_B20, 0) == SHOOT_MODE_NORMAL);
+    assert(ship_shoot_mode_for_slot(SHIP_B20, 1) == SHOOT_MODE_RAPID);
+    assert(ship_shoot_mode_for_slot(SHIP_B20, 2) == SHOOT_MODE_POWER);
+    assert(ship_shoot_mode_for_slot(SHIP_B20, 3) == SHOOT_MODE_DOUBLE);
+    assert(ship_shoot_mode_for_slot(SHIP_B20, 4) == SHOOT_MODE_SIDE);
+
+    assert(ship_shoot_mode_slot_count(SHIP_C24) == 3);
+    assert(ship_shoot_mode_for_slot(SHIP_C24, 0) == SHOOT_MODE_DOUBLE);
+    assert(ship_shoot_mode_for_slot(SHIP_C24, 1) == SHOOT_MODE_POWER);
+    assert(ship_shoot_mode_for_slot(SHIP_C24, 2) == SHOOT_MODE_OMNI);
+
+    assert(ship_shoot_mode_slot_index(SHIP_C24, SHOOT_MODE_DOUBLE) == 0);
+    assert(ship_shoot_mode_slot_index(SHIP_C24, SHOOT_MODE_POWER) == 1);
+    assert(ship_shoot_mode_slot_index(SHIP_C24, SHOOT_MODE_OMNI) == 2);
+    assert(ship_shoot_mode_slot_index(SHIP_C24, SHOOT_MODE_NORMAL) == -1); /* not in C-24's table at all */
+    printf("test_c24_shoot_mode_slots OK\n");
+}
+
+/* reset_run must pick each ship's own slot-0 mode as the default, not a
+ * hardcoded SHOOT_MODE_NORMAL that C-24 doesn't even have. */
+static void test_default_shoot_mode_is_per_ship(void) {
+    GameState gs_b20, gs_c24;
+    EventQueue events;
+    start_game(&gs_b20, &events);
+    assert(gs_b20.player.shoot_mode == SHOOT_MODE_NORMAL);
+
+    start_game_as_c24(&gs_c24, &events);
+    assert(gs_c24.player.shoot_mode == SHOOT_MODE_DOUBLE);
+    printf("test_default_shoot_mode_is_per_ship OK\n");
+}
+
+/* C-24 only has 3 keys that do anything - pressing 4 or 5 must be a no-op,
+ * not silently fall back to some other mode. */
+static void test_c24_ignores_keys_beyond_its_own_mode_count(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_c24(&gs, &events);
+    ShootMode before = gs.player.shoot_mode;
+
+    InputCommand key4 = no_input();
+    key4.shoot_mode_4_pressed = true;
+    game_update(&gs, &key4, 0.016f, &events);
+    assert(gs.player.shoot_mode == before);
+
+    InputCommand key5 = no_input();
+    key5.shoot_mode_5_pressed = true;
+    game_update(&gs, &key5, 0.016f, &events);
+    assert(gs.player.shoot_mode == before);
+
+    /* Key 3 is C-24's own slot 2 (OMNI) and must still work. */
+    InputCommand key3 = no_input();
+    key3.shoot_mode_3_pressed = true;
+    game_update(&gs, &key3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_OMNI);
+    printf("test_c24_ignores_keys_beyond_its_own_mode_count OK\n");
+}
+
+/* C-24's own mode 3: fires all 8 pellets of the omni burst in one frame,
+ * each at BASE_PLAYER_DAMAGE, and locks out immediate refire behind
+ * SHIP_C24_OMNI_FIRE_COOLDOWN ("2 shots per second"). */
+static void test_c24_omni_burst_fires_eight_shots_at_once(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_c24(&gs, &events);
+    gs.player.shoot_mode = SHOOT_MODE_OMNI;
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.001f, &events);
+
+    int alive_count = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        alive_count++;
+        assert(fabsf(gs.player_shots[i].damage - BASE_PLAYER_DAMAGE) < 0.001f);
+    }
+    assert(alive_count == ENEMY_OMNI_SHOT_COUNT);
+    /* "1 shot per second": the whole 8-pellet volley retriggers once a
+     * second, not that each pellet fires individually. */
+    assert(fabsf(gs.player.fire_cooldown - SHIP_C24_OMNI_FIRE_COOLDOWN) < 0.01f);
+    assert(fabsf(SHIP_C24_OMNI_FIRE_COOLDOWN - 1.0f) < 0.001f);
+    printf("test_c24_omni_burst_fires_eight_shots_at_once OK\n");
+}
+
+/* Trail visibility is uniform now - every player shot (any ship, any mode)
+ * gets the same PROJECTILE_TRAIL_MAX_ALPHA trail enemy shots already get,
+ * with no per-ship or per-mode suppression/override. Checked through the
+ * real fire -> spawn -> emit path, not just by asserting a stored field. */
+static void test_player_shots_spawn_trail_particles_same_as_enemy_shots(void) {
+    GameState gs_b20, gs_c24;
+    EventQueue events;
+    start_game(&gs_b20, &events);
+    start_game_as_c24(&gs_c24, &events);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs_b20, &fire, 0.001f, &events);
+    game_update(&gs_c24, &fire, 0.001f, &events);
+
+    /* Advance past PROJECTILE_TRAIL_SPAWN_INTERVAL so each fresh shot's own
+     * trail_emit_timer expires and it puffs at least one particle. */
+    InputCommand idle = no_input();
+    for (int i = 0; i < 5; i++) {
+        game_update(&gs_b20, &idle, 0.02f, &events);
+        game_update(&gs_c24, &idle, 0.02f, &events);
+    }
+
+    bool b20_has_trail = false, c24_has_trail = false;
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        if (gs_b20.projectile_trails[i].alive) b20_has_trail = true;
+        if (gs_c24.projectile_trails[i].alive) c24_has_trail = true;
+    }
+    assert(b20_has_trail);
+    assert(c24_has_trail); /* no longer suppressed for any of C-24's modes */
+    printf("test_player_shots_spawn_trail_particles_same_as_enemy_shots OK\n");
+}
+
+/* C-24's mode 2 (the power-cannon reuse) hit-tests 8x bigger than its other
+ * two modes (SHIP_C24_POWER_MODE_RADIUS vs SHIP_C24_PROJECTILE_RADIUS - see
+ * player_shot_half_extents in usecases/game_logic.c). Verified by placing
+ * the boss just past the small radius's own reach but well within the
+ * bigger one's, so only a PROJECTILE_KIND_POWER shot can land here. */
+static void test_c24_mode2_projectile_hitbox_is_eight_times_bigger(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_c24(&gs, &events);
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    if (gs.boss.y < 0.0f) gs.boss.y = (float)gs.screen_h * 0.3f;
+
+    float boss_half = gs.boss.size / 2.0f;
+    /* Comfortably beyond boss_half + SHIP_C24_PROJECTILE_RADIUS (a miss for
+     * the small sphere), comfortably inside boss_half +
+     * SHIP_C24_POWER_MODE_RADIUS (a hit for the 8x-bigger one). */
+    float offset = boss_half + (SHIP_C24_PROJECTILE_RADIUS + SHIP_C24_POWER_MODE_RADIUS) / 2.0f;
+    InputCommand none = no_input();
+
+    gs.player_shots[0] = (Projectile){0};
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = gs.boss.x + offset;
+    gs.player_shots[0].y = gs.boss.y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+    gs.player_shots[0].damage = BASE_PLAYER_DAMAGE;
+    gs.player_shots[0].kind = PROJECTILE_KIND_NORMAL; /* C-24 modes 1/3 size */
+    game_update(&gs, &none, 0.001f, &events);
+    assert(gs.boss.hits_taken == 0.0f); /* too far for the small sphere */
+
+    gs.player_shots[0] = (Projectile){0};
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = gs.boss.x + offset;
+    gs.player_shots[0].y = gs.boss.y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+    gs.player_shots[0].damage = BASE_PLAYER_DAMAGE * POWER_CANNON_DAMAGE_MULTIPLIER;
+    gs.player_shots[0].kind = PROJECTILE_KIND_POWER; /* C-24 mode 2's own 8x size */
+    game_update(&gs, &none, 0.001f, &events);
+    assert(gs.boss.hits_taken > 0.0f); /* well within the bigger sphere */
+    printf("test_c24_mode2_projectile_hitbox_is_eight_times_bigger OK\n");
+}
+
 static void test_boss_hits_required_increases_each_appearance(void) {
     GameState gs;
     EventQueue events;
@@ -1564,6 +1744,12 @@ int main(void) {
     test_power_cannon_deals_triple_the_damage_of_normal_mode();
     test_boss_hit_pool_drops_by_the_exact_damage_landed();
     test_double_barrel_pair_together_cost_one_normal_hit();
+    test_c24_shoot_mode_slots();
+    test_default_shoot_mode_is_per_ship();
+    test_c24_ignores_keys_beyond_its_own_mode_count();
+    test_c24_omni_burst_fires_eight_shots_at_once();
+    test_player_shots_spawn_trail_particles_same_as_enemy_shots();
+    test_c24_mode2_projectile_hitbox_is_eight_times_bigger();
     test_boss_hits_required_increases_each_appearance();
     test_boss_reappearance_requires_fresh_points_since_defeat();
     test_large_defeat_bonus_never_chains_bosses();

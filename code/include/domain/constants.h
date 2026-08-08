@@ -106,7 +106,11 @@
 #define PROJECTILE_TRAIL_LIFETIME 0.35f
 #define PROJECTILE_TRAIL_BASE_SIZE 2.2f
 #define PROJECTILE_TRAIL_SIZE_GROWTH 2.2f
-#define PROJECTILE_TRAIL_MAX_ALPHA 40 /* ~16% of 255 - half of the previous 80, for a subtler wake */
+/* ~16% of 255 - half of the previous 80, for a subtler wake. Every shot's
+ * trail reads at this same visibility, player and enemy alike - deliberately
+ * a single flat constant, not something any one ship's weapon mode can
+ * override. */
+#define PROJECTILE_TRAIL_MAX_ALPHA 40
 
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f
@@ -267,6 +271,35 @@
  * total damage as mode 1 - the tradeoff is being able to split them across
  * two separate targets instead. */
 #define DOUBLE_BARREL_DAMAGE_MULTIPLIER 0.5f
+
+/* --- C-24's own weapon (see usecases/ship.c for its 3-slot moveset -
+ * B-20's double barrel and power cannon reused as-is at their own damage
+ * above, plus this ship-exclusive third mode) --- */
+
+/* Mode 3 (SHOOT_MODE_OMNI): the same 8-direction, fire-all-at-once pattern
+ * as ENEMY_SHOOT_OMNI (see ENEMY_OMNI_SHOT_COUNT above, reused directly -
+ * it's the same shape, just from the player's own position), gated on a
+ * single cooldown like every mode but rapid fire. "1 shot per second"
+ * means the whole 8-pellet volley retriggers once a second, not that each
+ * pellet fires individually. */
+#define SHIP_C24_OMNI_FIRE_COOLDOWN 1.0f
+/* Modes 1 and 3 render and hit-test as a sphere this size (see
+ * player_shot_half_extents and draw_c24_sphere_shot in
+ * adapters/sdl_renderer.c), deliberately matching ENEMY_OMNI_ORB_RADIUS
+ * rather than B-20's own per-mode sizing (PLAYER_PROJECTILE_W/H) - a
+ * kept-independent copy, not a shared constant, so retuning one ship's
+ * projectile size can never silently retune the other's. */
+#define SHIP_C24_PROJECTILE_RADIUS 4.0f
+/* Mode 2 (the power-cannon reuse) is a much bigger sphere than C-24's other
+ * two modes - "8x bigger" than SHIP_C24_PROJECTILE_RADIUS, matching how
+ * much heavier the shot itself is (POWER_CANNON_DAMAGE_MULTIPLIER). */
+#define SHIP_C24_POWER_MODE_RADIUS (SHIP_C24_PROJECTILE_RADIUS * 8.0f)
+/* Degrees/sec C-24's own sphere shots cycle hue at (see
+ * draw_c24_sphere_shot) - the same "continuously cycling color" effect the
+ * power orb's own hue does (ORB_HUE_CYCLE_SPEED, update_orb), just computed
+ * independently per shot from its own phase_seed rather than driven by one
+ * shared, stored, incrementally-updated Orb.hue. Purely cosmetic. */
+#define SHIP_C24_PROJECTILE_HUE_CYCLE_SPEED 180.0f
 
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50

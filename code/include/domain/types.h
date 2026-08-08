@@ -79,16 +79,29 @@ typedef enum Ship {
     SHIP_COUNT,
 } Ship;
 
-/* The player's selectable shooting ability - switched with the 1-5 number
- * keys (see InputCommand). SHOOT_MODE_COUNT is also the indicator's dot
- * count in the HUD (adapters/sdl_renderer.c), so a new mode only needs to be
- * inserted before it to show up there automatically. */
+/* Every shooting pattern any ship can fire, switched with the 1-5 number
+ * keys (see InputCommand). Which of these a given ship actually has, and
+ * which key selects which, is per-ship - not every ship offers every mode,
+ * and the same key can mean a different mode on a different ship (see
+ * ship_shoot_mode_for_slot/ship_shoot_mode_slot_count in usecases/ship.h,
+ * and update_shoot_mode_switch/reset_run in usecases/game_logic.c, which
+ * are the only places a ShootMode value gets assigned to Player.shoot_mode).
+ * The HUD's mode indicator (adapters/sdl_renderer.c) draws
+ * ship_shoot_mode_slot_count(selected_ship) dots, not SHOOT_MODE_COUNT - a
+ * new mode only needs a slot in some ship's own table (usecases/ship.c) to
+ * show up there. */
 typedef enum ShootMode {
     SHOOT_MODE_NORMAL = 0,
     SHOOT_MODE_RAPID,
     SHOOT_MODE_POWER,
     SHOOT_MODE_DOUBLE,
     SHOOT_MODE_SIDE,
+    /* 8 shots fired at once in every direction, evenly spaced like the
+     * points of an octagon - the same pattern ENEMY_SHOOT_OMNI uses (see
+     * EnemyShootStyle below), just from the player's own position. Not part
+     * of B-20's own moveset - only ships whose own slot table includes it
+     * (currently just C-24) can ever reach it. */
+    SHOOT_MODE_OMNI,
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -214,8 +227,18 @@ typedef struct Projectile {
      * spawn_projectile_trail_particle/update_projectile_trails in
      * usecases/game_logic.c, the projectile counterpart to
      * Player.trail_emit_timer/Enemy.trail_emit_timer. Shared by both
-     * player_shots and enemy_shots. Purely cosmetic. */
+     * player_shots and enemy_shots, at the same PROJECTILE_TRAIL_MAX_ALPHA
+     * visibility for every shot regardless of source - player and enemy
+     * projectiles read identically here by design. Purely cosmetic. */
     float trail_emit_timer;
+    /* Random per-shot phase seed, radians [0, 2*pi) - set at spawn (see
+     * spawn_player_shot) and read only by C-24's own sphere-shot rendering
+     * (draw_c24_sphere_shot in adapters/sdl_renderer.c, reached whenever
+     * GameState.selected_ship is SHIP_C24): offsets that shot's own hue-
+     * cycling phase so simultaneous shots - a double-barrel pair, all 8 of
+     * an omni burst - don't cycle color in lockstep. Unused by every other
+     * shot. */
+    float phase_seed;
 } Projectile;
 
 typedef struct Explosion {
