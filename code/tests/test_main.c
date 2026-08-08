@@ -57,6 +57,22 @@ static void start_game_as_c24(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_C24);
 }
 
+/* Same as start_game_as_c24, but navigates one slot further right to
+ * SHIP_MOTHERSHIP, for the Mothership/ChildShip tests below. */
+static void start_game_as_mothership(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_MOTHERSHIP);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -195,7 +211,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_C24); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_MOTHERSHIP); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -1673,6 +1689,291 @@ static void test_super_beam_damages_boss_periodically_while_sustained(void) {
     printf("test_super_beam_damages_boss_periodically_while_sustained OK\n");
 }
 
+static void test_mothership_ratings_and_moveset(void) {
+    assert(ship_speed_rating(SHIP_MOTHERSHIP) == 3);
+    assert(ship_strength_rating(SHIP_MOTHERSHIP) == 10);
+    assert(ship_attack_rating(SHIP_MOTHERSHIP) == 7);
+    assert(fabsf(ship_speed_multiplier(SHIP_MOTHERSHIP) - 3.0f / 7.0f) < 0.001f);
+    assert(fabsf(ship_damage_taken_multiplier(SHIP_MOTHERSHIP) - 0.5f) < 0.001f);
+
+    assert(fabsf(ship_size_multiplier(SHIP_B20) - 1.0f) < 0.001f);
+    assert(fabsf(ship_size_multiplier(SHIP_C24) - 1.0f) < 0.001f);
+    assert(fabsf(ship_size_multiplier(SHIP_MOTHERSHIP) - 1.25f) < 0.001f);
+
+    assert(ship_shoot_mode_slot_count(SHIP_MOTHERSHIP) == 2);
+    assert(ship_shoot_mode_for_slot(SHIP_MOTHERSHIP, 0) == SHOOT_MODE_SWARM_WANDER);
+    assert(ship_shoot_mode_for_slot(SHIP_MOTHERSHIP, 1) == SHOOT_MODE_SWARM_FORMATION);
+    printf("test_mothership_ratings_and_moveset OK\n");
+}
+
+static void test_mothership_dispatch_caps_and_resumes(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SWARM_WANDER);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+
+    int alive_count = 0;
+    for (int tick = 0; tick < 500 && alive_count < MOTHERSHIP_MAX_CHILDREN; tick++) {
+        game_update(&gs, &fire, 0.02f, &events);
+        alive_count = 0;
+        for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+            if (gs.children[i].alive) alive_count++;
+        }
+    }
+    assert(alive_count == MOTHERSHIP_MAX_CHILDREN);
+
+    /* At capacity: continuing to hold fire spawns nothing further. */
+    for (int tick = 0; tick < 100; tick++) game_update(&gs, &fire, 0.02f, &events);
+    int still_alive = 0;
+    for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+        if (gs.children[i].alive) still_alive++;
+    }
+    assert(still_alive == MOTHERSHIP_MAX_CHILDREN);
+
+    /* Free a slot and clear the cooldown directly, isolating "capacity
+     * gates dispatch" from "cooldown gates dispatch" - dispatch must
+     * resume on the very next held-fire frame once a slot is free. */
+    gs.children[0].alive = false;
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &fire, 0.02f, &events);
+    int after_death_alive = 0;
+    for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+        if (gs.children[i].alive) after_death_alive++;
+    }
+    assert(after_death_alive == MOTHERSHIP_MAX_CHILDREN);
+
+    printf("test_mothership_dispatch_caps_and_resumes OK\n");
+}
+
+static void test_mothership_child_launch_then_ai_handoff(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    ChildShip *c = NULL;
+    for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+        if (gs.children[i].alive) {
+            c = &gs.children[i];
+            break;
+        }
+    }
+    assert(c != NULL);
+    assert(c->launch_timer > 0.0f);
+    assert(c->vx != 0.0f); /* the random left/right launch kick */
+    assert(c->vy == 0.0f);
+    assert(c->y > gs.player.y); /* dispatched from underneath her, not in front/behind */
+
+    float x_after_spawn = c->x;
+    game_update(&gs, &fire, 0.05f, &events);
+    /* Still coasting on the launch kick alone - no AI steering yet. */
+    assert(fabsf(c->x - (x_after_spawn + c->vx * 0.05f)) < 0.01f);
+
+    float elapsed = 0.0f;
+    while (elapsed < MOTHERSHIP_CHILD_LAUNCH_DURATION + 0.2f && c->alive) {
+        game_update(&gs, &fire, 0.05f, &events);
+        elapsed += 0.05f;
+    }
+    assert(c->alive);
+    assert(c->launch_timer <= 0.0f); /* AI has taken over */
+    printf("test_mothership_child_launch_then_ai_handoff OK\n");
+}
+
+/* SHOOT_MODE_SWARM_FORMATION pulls an alive child toward its assigned
+ * triangle slot (see mothership_formation_slot in usecases/game_logic.c) -
+ * with only one child alive, that's always slot 0 (front, straight ahead
+ * of her). */
+static void test_mothership_formation_pulls_child_to_slot(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SWARM_FORMATION);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    ChildShip *c = NULL;
+    for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+        if (gs.children[i].alive) {
+            c = &gs.children[i];
+            break;
+        }
+    }
+    assert(c != NULL);
+
+    /* Stop holding fire so this stays the only child alive, keeping the
+     * slot assignment unambiguous throughout. */
+    InputCommand idle = no_input();
+    float elapsed = 0.0f;
+    while (elapsed < MOTHERSHIP_CHILD_LAUNCH_DURATION + 3.0f && c->alive) {
+        game_update(&gs, &idle, 0.05f, &events);
+        elapsed += 0.05f;
+    }
+    assert(c->alive);
+
+    float target_x = gs.player.x;
+    float target_y = gs.player.y - MOTHERSHIP_CHILD_FORMATION_FRONT_OFFSET;
+    float dist = sqrtf((c->x - target_x) * (c->x - target_x) + (c->y - target_y) * (c->y - target_y));
+    assert(dist < 5.0f);
+    printf("test_mothership_formation_pulls_child_to_slot OK\n");
+}
+
+static void test_mothership_child_takes_enemy_shot_damage_and_dies(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+
+    gs.children[0] = (ChildShip){0};
+    gs.children[0].alive = true;
+    gs.children[0].kind = SHIP_B20;
+    gs.children[0].x = gs.player.x;
+    gs.children[0].y = gs.player.y - 200.0f;
+    gs.children[0].life = MOTHERSHIP_CHILD_LIFE_MAX;
+
+    gs.enemy_shots[0] = (Projectile){0};
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.children[0].x;
+    gs.enemy_shots[0].y = gs.children[0].y;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    float expected_loss = PLAYER_LIFE_LOSS_PER_HIT * ship_damage_taken_multiplier(SHIP_B20);
+    assert(fabsf(gs.children[0].life - (MOTHERSHIP_CHILD_LIFE_MAX - expected_loss)) < 0.01f);
+    assert(gs.children[0].alive);
+    assert(!gs.enemy_shots[0].alive);
+
+    int hits_needed = (int)(MOTHERSHIP_CHILD_LIFE_MAX / expected_loss) + 2;
+    for (int i = 0; i < hits_needed && gs.children[0].alive; i++) {
+        gs.enemy_shots[0] = (Projectile){0};
+        gs.enemy_shots[0].alive = true;
+        gs.enemy_shots[0].x = gs.children[0].x;
+        gs.enemy_shots[0].y = gs.children[0].y;
+        game_update(&gs, &none, 0.001f, &events);
+    }
+    assert(!gs.children[0].alive);
+    assert(gs.children[0].life <= 0.0f);
+    printf("test_mothership_child_takes_enemy_shot_damage_and_dies OK\n");
+}
+
+static void test_mothership_child_dies_on_enemy_contact_and_enemy_dies_too(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+
+    gs.children[0] = (ChildShip){0};
+    gs.children[0].alive = true;
+    gs.children[0].kind = SHIP_C24;
+    gs.children[0].x = gs.player.x;
+    gs.children[0].y = gs.player.y - 200.0f;
+    gs.children[0].life = MOTHERSHIP_CHILD_LIFE_MAX;
+
+    gs.enemies[0] = (Enemy){0};
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.children[0].x;
+    gs.enemies[0].y = gs.children[0].y;
+    gs.enemies[0].size = 20.0f;
+
+    int score_before = gs.score;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.children[0].alive);
+    assert(!gs.enemies[0].alive);
+    assert(gs.score > score_before); /* destroy_enemy_for_score still awarded */
+    printf("test_mothership_child_dies_on_enemy_contact_and_enemy_dies_too OK\n");
+}
+
+/* Unlike the player's own ring touch (test_boss_ring_contact_destroys_both_boss_and_player),
+ * a ChildShip's death on the same ring must NOT end the boss encounter -
+ * an escort is cheap to re-dispatch, so it can't be a free boss kill. */
+static void test_mothership_child_dies_on_boss_ring_without_defeating_boss(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+
+    for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.boss.alive);
+
+    /* Keep the player well clear so only the child's own ring touch is
+     * exercised. */
+    gs.player.x = 10.0f;
+    gs.player.y = 10.0f;
+    gs.boss.x = 300.0f;
+    gs.boss.y = 300.0f;
+
+    gs.children[0] = (ChildShip){0};
+    gs.children[0].alive = true;
+    gs.children[0].kind = SHIP_B20;
+    gs.children[0].x = gs.boss.x;
+    gs.children[0].y = gs.boss.y;
+    gs.children[0].life = MOTHERSHIP_CHILD_LIFE_MAX;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.children[0].alive);
+    assert(gs.boss.alive);
+    printf("test_mothership_child_dies_on_boss_ring_without_defeating_boss OK\n");
+}
+
+/* Regression guard for the Projectile.style_ship refactor (see
+ * spawn_player_shot_styled/trigger_power_cannon_explosion in
+ * usecases/game_logic.c): a C-24-styled shot - as a C-24-kind ChildShip's
+ * own mode 2 would fire - must still get the 50% bigger damage radius even
+ * while gs->selected_ship is SHIP_MOTHERSHIP, and a B-20-styled shot must
+ * not. */
+static void test_mothership_c24_styled_shot_still_gets_bigger_explosion_radius(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+
+    float radius_b20 = POWER_CANNON_EXPLOSION_RADIUS_RATIO * fminf((float)gs.screen_w, (float)gs.screen_h);
+    float radius_c24 = radius_b20 * SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER;
+    float probe_dist = radius_b20 + (radius_c24 - radius_b20) / 2.0f; /* strictly between the two */
+
+    for (int trial = 0; trial < 2; trial++) {
+        Ship style = (trial == 0) ? SHIP_B20 : SHIP_C24;
+
+        memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+        memset(&gs.enemies, 0, sizeof(gs.enemies));
+
+        gs.player_shots[0].alive = true;
+        gs.player_shots[0].kind = PROJECTILE_KIND_POWER;
+        gs.player_shots[0].style_ship = style;
+        gs.player_shots[0].x = 0.0f;
+        gs.player_shots[0].y = 0.0f;
+
+        gs.enemies[0].alive = true; /* directly under the shot - guarantees the AABB hit */
+        gs.enemies[0].x = 0.0f;
+        gs.enemies[0].y = 0.0f;
+        gs.enemies[0].size = 20.0f;
+
+        gs.enemies[1].alive = true; /* strictly between the two ships' own radii */
+        gs.enemies[1].x = probe_dist;
+        gs.enemies[1].y = 0.0f;
+        gs.enemies[1].size = 20.0f;
+
+        InputCommand none = no_input();
+        game_update(&gs, &none, 0.0001f, &events);
+
+        bool probe_died = !gs.enemies[1].alive;
+        assert(probe_died == (style == SHIP_C24));
+    }
+    printf("test_mothership_c24_styled_shot_still_gets_bigger_explosion_radius OK\n");
+}
+
 static void test_spawner_eventually_spawns(void) {
     GameState gs;
     EventQueue events;
@@ -1755,6 +2056,14 @@ int main(void) {
     test_boss_always_advances_toward_stationary_player();
     test_boss_speed_matches_configured_multiplier();
     test_super_beam_damages_boss_periodically_while_sustained();
+    test_mothership_ratings_and_moveset();
+    test_mothership_dispatch_caps_and_resumes();
+    test_mothership_child_launch_then_ai_handoff();
+    test_mothership_formation_pulls_child_to_slot();
+    test_mothership_child_takes_enemy_shot_damage_and_dies();
+    test_mothership_child_dies_on_enemy_contact_and_enemy_dies_too();
+    test_mothership_child_dies_on_boss_ring_without_defeating_boss();
+    test_mothership_c24_styled_shot_still_gets_bigger_explosion_radius();
     test_spawner_eventually_spawns();
     printf("\nAll tests passed.\n");
     return 0;

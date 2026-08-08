@@ -191,10 +191,23 @@ static void draw_player(SdlRendererCtx *ctx, const GameState *gs) {
     const Player *p = &gs->player;
     if (!p->alive) return;
 
-    float w = PLAYER_WIDTH * gs->scale;
-    float h = PLAYER_HEIGHT * gs->scale;
+    float size_mult = ship_size_multiplier(gs->selected_ship);
+    float w = PLAYER_WIDTH * gs->scale * size_mult;
+    float h = PLAYER_HEIGHT * gs->scale * size_mult;
     draw_ship_sprite(ctx, &kShipSprites[gs->selected_ship], p->x, p->y, w, h,
                       p->god_mode ? &kGodModeTint : NULL);
+}
+
+/* Children always render at the stock size regardless of which ship
+ * dispatched them (see ship_size_multiplier's own doc comment) - same blit
+ * as draw_player, just never scaled up and never god-mode-tinted (that
+ * toggle is player-only). */
+static void draw_child(SdlRendererCtx *ctx, const GameState *gs, const ChildShip *c) {
+    if (!c->alive) return;
+
+    float w = PLAYER_WIDTH * gs->scale;
+    float h = PLAYER_HEIGHT * gs->scale;
+    draw_ship_sprite(ctx, &kShipSprites[c->kind], c->x, c->y, w, h, NULL);
 }
 
 /* Shared by draw_enemy and draw_boss: the boss presents as "a randomly
@@ -479,7 +492,10 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
 
     if (is_player) {
-        if (gs->selected_ship == SHIP_C24) {
+        /* Keyed off the shot's own style_ship, not gs->selected_ship
+         * directly, so a C-24-kind ChildShip's own shots still render as
+         * C-24's sphere while selected_ship is SHIP_MOTHERSHIP. */
+        if (pr->style_ship == SHIP_C24) {
             draw_c24_sphere_shot(ctx, pr, scale, gs->time_elapsed);
             return;
         }
@@ -697,6 +713,7 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, gs, &gs->enemy_shots[i], false);
     for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) draw_trail_particle(ctx, &gs->trail_particles[i]);
     draw_super_beam(ctx, gs);
+    for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) draw_child(ctx, gs, &gs->children[i]);
     draw_player(ctx, gs);
 }
 
@@ -789,7 +806,7 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 }
 
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
-    "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI",
+    "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -847,6 +864,22 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
     float label_size = 1.3f * gs->scale;
     float label_h = 7.0f * label_size;
     pf_draw_text(ctx->renderer, x0, y0 - label_h - gap, label_size, label_color, label);
+
+    /* The Mothership only: her cap on concurrent escorts (see
+     * MOTHERSHIP_MAX_CHILDREN) is otherwise invisible - "why isn't holding
+     * fire doing anything" - so surface it right above the mode label. */
+    if (gs->selected_ship == SHIP_MOTHERSHIP) {
+        int alive_children = 0;
+        for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+            if (gs->children[i].alive) alive_children++;
+        }
+        char escort_buf[24];
+        snprintf(escort_buf, sizeof(escort_buf), "ESCORTS: %d/%d", alive_children, MOTHERSHIP_MAX_CHILDREN);
+        float escort_size = 1.3f * gs->scale;
+        float escort_h = 7.0f * escort_size;
+        pf_draw_text(ctx->renderer, x0, y0 - label_h - gap - escort_h - gap, escort_size,
+                     alive_children >= MOTHERSHIP_MAX_CHILDREN ? kRed : kDim, escort_buf);
+    }
 }
 
 static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
@@ -1064,14 +1097,16 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
     return line_count;
 }
 
-static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24"};
+static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP"};
 
 /* Ad copy for the ship-select screen's description panel - written from
- * the same two capsule descriptions the ships were specced with ("versatile
+ * the same capsule descriptions each ship was specced with ("versatile
  * and fast... built for the most skilled pilots" / "resilient and strong,
- * piloted only by the bravest"), expanded to fill the panel. All caps: the
- * pixel font (adapters/pixel_font) only has uppercase glyphs, same
- * convention every other in-game string here already follows. */
+ * piloted only by the bravest" / "the matriarch who fights against evil,
+ * dispatching brave warriors to fight at her side"), expanded to fill the
+ * panel. All caps: the pixel font (adapters/pixel_font) only has uppercase
+ * glyphs, same convention every other in-game string here already
+ * follows. */
 static const char *const kShipDescriptions[SHIP_COUNT] = {
     "A VERSATILE, FAST SPACESHIP BUILT FOR THE MOST SKILLED PILOTS. "
     "QUICK ON THE STICK AND SHARP IN A DOGFIGHT, THE B-20 REWARDS "
@@ -1079,6 +1114,10 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "RESILIENT AND STRONG, PILOTED ONLY BY THE BRAVEST. THE C-24 "
     "TRADES RAW SPEED FOR HEAVY PLATING THAT SHRUGS OFF PUNISHMENT, "
     "LETTING ITS PILOT STAND AND FIGHT WHEN OTHERS WOULD FLEE.",
+    "THE MATRIARCH WHO FIGHTS AGAINST EVIL, AND THE STRONGEST "
+    "SPACESHIP IN THE FLEET. SHE DOES NOT FIGHT ALONE - SHE DISPATCHES "
+    "BRAVE, COURAGEOUS WARRIORS TO FIGHT AT HER SIDE, HER OWN "
+    "OVERWHELMING PLATING SHRUGGING OFF WHATEVER SLIPS PAST THEM.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};
@@ -1176,7 +1215,14 @@ static void draw_ship_select_screen(SdlRendererCtx *ctx, const GameState *gs) {
 
     Ship ship = gs->selected_ship;
     float name_y = (float)gs->screen_h * 0.16f;
-    draw_left(ctx, right_x0, name_y, kShipNames[ship], 4.0f * gs->scale, kYellow);
+    /* Shrunk to fit right_w when a name is too long to fit at the intended
+     * size (as-is for B-20/C-24's short 4-char codes, but "THE MOTHERSHIP"
+     * needs it) - kept on one line rather than wrapped, since this header
+     * reads as a single title everywhere else. */
+    float name_size = 4.0f * gs->scale;
+    float name_w = pf_text_width(kShipNames[ship], name_size);
+    if (name_w > right_w) name_size *= right_w / name_w;
+    draw_left(ctx, right_x0, name_y, kShipNames[ship], name_size, kYellow);
 
     float attr_y = name_y + 56.0f * gs->scale;
     float attr_step = 44.0f * gs->scale;

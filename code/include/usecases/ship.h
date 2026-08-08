@@ -73,6 +73,13 @@ float ship_damage_taken_multiplier(Ship ship);
 float ship_speed_percent(Ship ship);
 float ship_life_loss_percent_per_hit(Ship ship);
 
+/* Multiplies PLAYER_WIDTH/PLAYER_HEIGHT - a fixed, spec'd render/hitbox
+ * size bump (The Mothership only, so far), not derived from Speed/Strength
+ * like the two formulas above. 1.0 for every ship without one. Never
+ * applied to a ChildShip (see domain/types.h) regardless of which ship
+ * dispatched it. */
+float ship_size_multiplier(Ship ship);
+
 /* Each ship's own moveset: which ShootMode the 1-5 number keys reach, in
  * order, and how many of those 5 keys actually do anything. B-20 has all 5
  * of its own original modes in their original key order; C-24 has only 3

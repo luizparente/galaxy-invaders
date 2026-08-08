@@ -347,11 +347,12 @@
 /* C-24's mode 2 (the power-cannon reuse) blows up nearby enemies in a 50%
  * bigger damage radius than B-20's own mode 3 gets from
  * POWER_CANNON_EXPLOSION_RADIUS_RATIO alone - applied on top of that ratio
- * in trigger_power_cannon_explosion (usecases/game_logic.c), gated on
- * GameState.selected_ship so B-20's mode 3 is untouched. Purely the
- * enemies-caught-in-the-blast radius, not the shot's own rendered/hitbox
- * size (SHIP_C24_POWER_MODE_RADIUS, unchanged) or the blast's visual
- * explosion sprite. */
+ * in trigger_power_cannon_explosion (usecases/game_logic.c), gated on the
+ * triggering shot's own Projectile.style_ship so B-20's mode 3 (and a
+ * B-20-kind ChildShip's own mode 2) are untouched regardless of which ship
+ * is actually selected. Purely the enemies-caught-in-the-blast radius, not
+ * the shot's own rendered/hitbox size (SHIP_C24_POWER_MODE_RADIUS,
+ * unchanged) or the blast's visual explosion sprite. */
 #define SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER 1.5f
 /* Degrees/sec C-24's own sphere shots cycle hue at (see
  * draw_c24_sphere_shot) - the same "continuously cycling color" effect the
@@ -359,6 +360,68 @@
  * independently per shot from its own phase_seed rather than driven by one
  * shared, stored, incrementally-updated Orb.hue. Purely cosmetic. */
 #define SHIP_C24_PROJECTILE_HUE_CYCLE_SPEED 180.0f
+
+/* --- The Mothership + her CPU-flown ChildShip escorts (see
+ * usecases/ship.c for her own 2-slot moveset, GameState.children, and
+ * update_mothership_dispatch/update_children/update_child_firing in
+ * usecases/game_logic.c) --- */
+
+/* How many escorts can be alive at once - past this, holding fire is a
+ * no-op until one dies. Deliberately its own named constant (not inlined)
+ * so it's a one-line retune, per how it was specced. */
+#define MOTHERSHIP_MAX_CHILDREN 3
+/* Paces dispatch the same way every other single-shot mode paces its own
+ * fire_cooldown (see update_normal_fire/update_power_cannon) - slower than
+ * PLAYER_FIRE_COOLDOWN since each "shot" here is a whole extra ship, not a
+ * projectile. */
+#define MOTHERSHIP_DISPATCH_COOLDOWN 0.6f
+/* "The equivalent of 50% of the life the spaceships would have if they
+ * were controlled by the player" - PLAYER_LIFE_MAX itself, not a
+ * kind-specific value, since a ship's Strength rating already maps to
+ * *damage taken per hit* (ship_damage_taken_multiplier), not a bigger life
+ * pool - see usecases/ship.c. Applies the same regardless of a child's own
+ * SHIP_B20/SHIP_C24 kind. */
+#define MOTHERSHIP_CHILD_LIFE_MAX (PLAYER_LIFE_MAX * 0.5f)
+
+/* The brief post-dispatch launch kick (see update_mothership_dispatch):
+ * "their first movement being flying left or right at random, until the
+ * CPU takes over" - LAUNCH_SPEED reuses PLAYER_SPEED itself for a brisk
+ * shove clear of the Mothership before AI (wander/formation) takes over. */
+#define MOTHERSHIP_CHILD_LAUNCH_DURATION 0.35f
+#define MOTHERSHIP_CHILD_LAUNCH_SPEED PLAYER_SPEED
+
+/* SHOOT_MODE_SWARM_WANDER: each child cruises toward a randomly rolled
+ * point, re-rolling once it arrives or this many seconds pass, whichever
+ * comes first (see update_children) - kept slower than the launch kick so
+ * the hand-off from "flying off sideways" to "wandering" reads as a
+ * deliberate slow-down, not a jarring speed-up. Bounds are screen-relative
+ * ratios (not raw pixels) so wandering scales with whatever the real
+ * screen measures, same convention as every other spatial ratio here
+ * (e.g. POWER_CANNON_EXPLOSION_RADIUS_RATIO) - kept to the upper 65% of
+ * the screen and off the side edges so children never wander down into
+ * the Mothership's own lane at the bottom or clip off-screen. */
+#define MOTHERSHIP_CHILD_WANDER_SPEED (PLAYER_SPEED * 0.55f)
+#define MOTHERSHIP_CHILD_WANDER_RETARGET_MIN 1.5f
+#define MOTHERSHIP_CHILD_WANDER_RETARGET_MAX 3.5f
+#define MOTHERSHIP_CHILD_WANDER_ARRIVE_RADIUS 12.0f
+#define MOTHERSHIP_CHILD_WANDER_X_MARGIN_RATIO 0.12f
+#define MOTHERSHIP_CHILD_WANDER_Y_MIN_RATIO 0.08f
+#define MOTHERSHIP_CHILD_WANDER_Y_MAX_RATIO 0.65f
+
+/* SHOOT_MODE_SWARM_FORMATION: a 3-point wedge ahead of the Mothership -
+ * one child dead ahead of her (front), the other two at her flanks, both
+ * a little closer to her than the front point so the whole shape reads as
+ * a forward-pointing triangle rather than a straight line abreast. Offsets
+ * are design-scale distances (like every player/enemy size constant),
+ * scaled by GameState.scale same as everything else - "not too close"
+ * per spec, so comfortably bigger than a ship-width. Which alive child
+ * occupies which of the 3 slots is recomputed fresh every frame (see
+ * update_children), not a fixed per-child identity, so a slot vacated by
+ * a dead child is filled immediately rather than left empty. */
+#define MOTHERSHIP_CHILD_FORMATION_SPEED (PLAYER_SPEED * 0.95f)
+#define MOTHERSHIP_CHILD_FORMATION_FRONT_OFFSET 95.0f
+#define MOTHERSHIP_CHILD_FORMATION_SIDE_OFFSET_X 75.0f
+#define MOTHERSHIP_CHILD_FORMATION_SIDE_OFFSET_Y 45.0f
 
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50

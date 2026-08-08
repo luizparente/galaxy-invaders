@@ -48,8 +48,10 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
      * sphere size instead of B-20's POWER_CANNON_PROJECTILE_RADIUS - just
      * C-24's own *bigger* sphere (SHIP_C24_POWER_MODE_RADIUS, 8x its other
      * two modes' SHIP_C24_PROJECTILE_RADIUS), matching how much heavier
-     * this shot already is. */
-    if (gs->selected_ship == SHIP_C24) {
+     * this shot already is. Keyed off the shot's own style_ship, not
+     * gs->selected_ship directly, so a C-24-kind ChildShip's own shots
+     * still hit-test correctly while selected_ship is SHIP_MOTHERSHIP. */
+    if (pr->style_ship == SHIP_C24) {
         float r = scaled(gs, pr->kind == PROJECTILE_KIND_POWER ? SHIP_C24_POWER_MODE_RADIUS : SHIP_C24_PROJECTILE_RADIUS);
         *half_w = r;
         *half_h = r;
@@ -254,11 +256,17 @@ static void spawn_projectile_trail_particle(GameState *gs, float x, float y, flo
 }
 
 /* Shared by every shooting mode's fire logic (see update_player_firing and
- * its per-mode helpers): claims the first free slot in gs->player_shots and
- * fills it in. Silently does nothing once the pool (MAX_PLAYER_PROJECTILES)
- * is exhausted, same as the original inline spawn it replaces. */
-static void spawn_player_shot(GameState *gs, float x, float y, float vx, float vy,
-                               ProjectileKind kind, bool horizontal, float damage) {
+ * its per-mode helpers, and update_child_firing for a ChildShip's own
+ * fire): claims the first free slot in gs->player_shots and fills it in.
+ * Silently does nothing once the pool (MAX_PLAYER_PROJECTILES) is
+ * exhausted, same as the original inline spawn it replaces. style_ship
+ * tags which ship's rendering/behavior style this shot uses (see
+ * Projectile.style_ship in domain/types.h) - always SHIP_B20 or SHIP_C24,
+ * whether that's from the real player's own selected_ship or a child's own
+ * kind. */
+static void spawn_player_shot_styled(GameState *gs, float x, float y, float vx, float vy,
+                                      ProjectileKind kind, bool horizontal, float damage,
+                                      Ship style_ship) {
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
         if (pr->alive) continue;
@@ -281,8 +289,18 @@ static void spawn_player_shot(GameState *gs, float x, float y, float vx, float v
          * draw_c24_sphere_shot in adapters/sdl_renderer.c) - harmless to
          * set unconditionally for every ship. */
         pr->phase_seed = frand01() * 6.2831853f;
+        pr->style_ship = style_ship;
         return;
     }
+}
+
+/* The real player's own fire routines all still call this - a thin wrapper
+ * defaulting style_ship to gs->selected_ship, so none of their 9 call
+ * sites need to change. Only update_child_firing calls
+ * spawn_player_shot_styled directly, tagging a child's own kind instead. */
+static void spawn_player_shot(GameState *gs, float x, float y, float vx, float vy,
+                               ProjectileKind kind, bool horizontal, float damage) {
+    spawn_player_shot_styled(gs, x, y, vx, vy, kind, horizontal, damage, gs->selected_ship);
 }
 
 /* The enemy-shot counterpart to spawn_player_shot above: claims the first
@@ -488,17 +506,20 @@ static void destroy_enemy_for_score(GameState *gs, EventQueue *events, Enemy *e)
  * that sweep. destroy_enemy_for_score already spawns each enemy's own
  * explosion and awards score, so this only needs to add the single big
  * blast at the contact point on top of that. */
-static void trigger_power_cannon_explosion(GameState *gs, EventQueue *events, float x, float y) {
+static void trigger_power_cannon_explosion(GameState *gs, EventQueue *events, float x, float y,
+                                            Ship style_ship) {
     float radius = POWER_CANNON_EXPLOSION_RADIUS_RATIO * fminf((float)gs->screen_w, (float)gs->screen_h);
     spawn_explosion(gs, x, y, radius);
 
     /* The visual blast above stays B-20's own size for both ships - only
      * the enemies-caught-in-the-blast test below grows for C-24's mode 2
-     * (see SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER), gated on
-     * selected_ship (fixed for the whole run) so B-20's mode 3 is
-     * byte-for-byte unaffected. */
+     * (see SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER), gated on the
+     * triggering shot's own style_ship (not gs->selected_ship - a
+     * C-24-kind ChildShip's own power-cannon-reuse shot still needs this
+     * bonus while selected_ship is SHIP_MOTHERSHIP) so B-20's mode 3 (and a
+     * B-20-kind child's own mode 2) are byte-for-byte unaffected. */
     float damage_radius = radius;
-    if (gs->selected_ship == SHIP_C24) {
+    if (style_ship == SHIP_C24) {
         damage_radius *= SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER;
     }
 
@@ -563,6 +584,7 @@ static void update_boss(GameState *gs, float dt) {
 }
 
 static void reset_run(GameState *gs) {
+    memset(&gs->children, 0, sizeof(gs->children));
     memset(&gs->enemies, 0, sizeof(gs->enemies));
     memset(&gs->player_shots, 0, sizeof(gs->player_shots));
     memset(&gs->enemy_shots, 0, sizeof(gs->enemy_shots));
@@ -900,6 +922,261 @@ static void update_omni_burst(GameState *gs, const InputCommand *input, EventQue
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
+/* A ChildShip's own weapon, driven by update_children every frame
+ * regardless of its current movement AI/launch phase (firing and moving
+ * are independent concerns) - a condensed mirror of
+ * update_normal_fire/update_rapid_fire/update_power_cannon/
+ * update_double_barrel/update_side_beams/update_omni_burst above, sourced
+ * from the child's own x/y/kind/fixed shoot_mode and writing into its own
+ * fire_cooldown/rapid timers instead of the player's, always "firing held"
+ * since a CPU escort never releases the trigger. Kept as an independent
+ * copy rather than sharing code with the already-tested player routines -
+ * same "kept-independent copies, not shared" precedent as
+ * SHIP_C24_PROJECTILE_RADIUS elsewhere in this file. A SHOOT_MODE_RAPID
+ * child just loops burst->cooldown forever at the same RAPID_FIRE_*
+ * constants - there's nothing else for it to auto-switch away to. */
+static void update_child_firing(GameState *gs, ChildShip *c, float dt, EventQueue *events) {
+    if (c->fire_cooldown > 0.0f) c->fire_cooldown -= dt;
+    if (c->rapid_cooldown_timer > 0.0f) {
+        c->rapid_cooldown_timer -= dt;
+        if (c->rapid_cooldown_timer < 0.0f) c->rapid_cooldown_timer = 0.0f;
+    }
+
+    float nose_y = c->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float speed = scaled(gs, PLAYER_PROJECTILE_SPEED);
+
+    switch (c->shoot_mode) {
+        case SHOOT_MODE_RAPID:
+            if (c->rapid_burst_timer > 0.0f) {
+                c->rapid_burst_timer -= dt;
+                if (c->rapid_burst_timer <= 0.0f) {
+                    c->rapid_burst_timer = 0.0f;
+                    c->rapid_cooldown_timer = RAPID_FIRE_LOCKOUT_DURATION;
+                    break;
+                }
+                if (c->fire_cooldown <= 0.0f) {
+                    spawn_player_shot_styled(gs, c->x, nose_y, 0.0f, -speed, PROJECTILE_KIND_RAPID, false,
+                                              BASE_PLAYER_DAMAGE, c->kind);
+                    c->fire_cooldown = RAPID_FIRE_SHOT_INTERVAL;
+                    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+                }
+                break;
+            }
+            if (c->rapid_cooldown_timer <= 0.0f) {
+                c->rapid_burst_timer = RAPID_FIRE_BURST_DURATION;
+                c->fire_cooldown = 0.0f;
+            }
+            break;
+
+        case SHOOT_MODE_POWER:
+            if (c->fire_cooldown > 0.0f) break;
+            {
+                float pspeed = speed * POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER;
+                spawn_player_shot_styled(gs, c->x, nose_y, 0.0f, -pspeed, PROJECTILE_KIND_POWER, false,
+                                          BASE_PLAYER_DAMAGE * POWER_CANNON_DAMAGE_MULTIPLIER, c->kind);
+            }
+            c->fire_cooldown = POWER_CANNON_FIRE_COOLDOWN;
+            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+            break;
+
+        case SHOOT_MODE_DOUBLE:
+            if (c->fire_cooldown > 0.0f) break;
+            {
+                float wing_x = scaled(gs, PLAYER_WING_OFFSET_X);
+                float damage = BASE_PLAYER_DAMAGE * DOUBLE_BARREL_DAMAGE_MULTIPLIER;
+                spawn_player_shot_styled(gs, c->x - wing_x, nose_y, 0.0f, -speed, PROJECTILE_KIND_NORMAL, false,
+                                          damage, c->kind);
+                spawn_player_shot_styled(gs, c->x + wing_x, nose_y, 0.0f, -speed, PROJECTILE_KIND_NORMAL, false,
+                                          damage, c->kind);
+            }
+            c->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+            break;
+
+        case SHOOT_MODE_SIDE:
+            if (c->fire_cooldown > 0.0f) break;
+            {
+                float wing_x = scaled(gs, PLAYER_WING_OFFSET_X);
+                spawn_player_shot_styled(gs, c->x - wing_x, c->y, -speed, 0.0f, PROJECTILE_KIND_NORMAL, true,
+                                          BASE_PLAYER_DAMAGE, c->kind);
+                spawn_player_shot_styled(gs, c->x + wing_x, c->y, speed, 0.0f, PROJECTILE_KIND_NORMAL, true,
+                                          BASE_PLAYER_DAMAGE, c->kind);
+            }
+            c->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+            break;
+
+        case SHOOT_MODE_OMNI:
+            if (c->fire_cooldown > 0.0f) break;
+            for (int k = 0; k < ENEMY_OMNI_SHOT_COUNT; k++) {
+                spawn_player_shot_styled(gs, c->x, c->y, kOmniDirX[k] * speed, kOmniDirY[k] * speed,
+                                          PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE, c->kind);
+            }
+            c->fire_cooldown = SHIP_C24_OMNI_FIRE_COOLDOWN;
+            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+            break;
+
+        case SHOOT_MODE_NORMAL:
+        case SHOOT_MODE_SWARM_WANDER:
+        case SHOOT_MODE_SWARM_FORMATION:
+        case SHOOT_MODE_COUNT:
+        default:
+            /* A child's own kind is always SHIP_B20 or SHIP_C24 (see
+             * update_mothership_dispatch), so its rolled shoot_mode is
+             * always one of the cases above - this default is only ever
+             * B-20's own mode 1 (SHOOT_MODE_NORMAL) in practice; the
+             * SWARM_* cases can't happen here at all (no child's own kind
+             * ever has them in its moveset) and only appear so the switch
+             * is exhaustive. */
+            if (c->fire_cooldown > 0.0f) break;
+            spawn_player_shot_styled(gs, c->x, nose_y, 0.0f, -speed, PROJECTILE_KIND_NORMAL, false,
+                                      BASE_PLAYER_DAMAGE, c->kind);
+            c->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+            break;
+    }
+}
+
+/* Where in front of/beside the Mothership's *current* position the
+ * SHOOT_MODE_SWARM_FORMATION slot for the alive_index-th currently-alive
+ * child sits (see update_children) - a forward-pointing triangle: 0 is the
+ * lead point straight ahead of her, 1/2 are the left/right flanks, both
+ * closer to her than the lead point. Recomputed fresh every frame from
+ * alive_index (not a persistent per-child identity), and only ever called
+ * with alive_index in [0, MOTHERSHIP_MAX_CHILDREN) - the two are
+ * intentionally coupled (a triangle has exactly 3 points), so retuning the
+ * cap past 3 would need this reworked too. */
+static void mothership_formation_slot(const GameState *gs, int alive_index, float *tx, float *ty) {
+    const Player *p = &gs->player;
+    float front = scaled(gs, MOTHERSHIP_CHILD_FORMATION_FRONT_OFFSET);
+    float side_x = scaled(gs, MOTHERSHIP_CHILD_FORMATION_SIDE_OFFSET_X);
+    float side_y = scaled(gs, MOTHERSHIP_CHILD_FORMATION_SIDE_OFFSET_Y);
+    switch (alive_index) {
+        case 0:
+            *tx = p->x;
+            *ty = p->y - front;
+            break;
+        case 1:
+            *tx = p->x - side_x;
+            *ty = p->y - side_y;
+            break;
+        default:
+            *tx = p->x + side_x;
+            *ty = p->y - side_y;
+            break;
+    }
+}
+
+/* Every alive ChildShip's own per-frame update: launch kick, then AI
+ * movement (wander or formation, re-read fresh from
+ * GameState.player.shoot_mode every frame - see the ShootMode enum's own
+ * doc comment), clamped to the screen same as the real player, then its
+ * own weapon fire. Called from update_running right after update_player
+ * (which is what actually dispatches new children - see
+ * update_mothership_dispatch) and before check_collisions, so a child
+ * fired this frame is already in its final position before hit-testing. */
+static void update_children(GameState *gs, float dt, EventQueue *events) {
+    int alive_index = 0;
+    for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+        ChildShip *c = &gs->children[i];
+        if (!c->alive) continue;
+        int my_alive_index = alive_index++;
+
+        if (c->launch_timer > 0.0f) {
+            c->launch_timer -= dt;
+            c->x += c->vx * dt;
+            c->y += c->vy * dt;
+        } else if (gs->player.shoot_mode == SHOOT_MODE_SWARM_FORMATION) {
+            float tx, ty;
+            mothership_formation_slot(gs, my_alive_index, &tx, &ty);
+            float dx = tx - c->x, dy = ty - c->y;
+            float dist = sqrtf(dx * dx + dy * dy);
+            float step = scaled(gs, MOTHERSHIP_CHILD_FORMATION_SPEED) * dt;
+            if (dist > step) {
+                c->x += dx / dist * step;
+                c->y += dy / dist * step;
+            } else {
+                c->x = tx;
+                c->y = ty;
+            }
+        } else { /* SHOOT_MODE_SWARM_WANDER */
+            c->wander_retarget_timer -= dt;
+            float dx0 = c->wander_target_x - c->x, dy0 = c->wander_target_y - c->y;
+            float dist0 = sqrtf(dx0 * dx0 + dy0 * dy0);
+            if (c->wander_retarget_timer <= 0.0f || dist0 <= scaled(gs, MOTHERSHIP_CHILD_WANDER_ARRIVE_RADIUS)) {
+                float x_margin = (float)gs->screen_w * MOTHERSHIP_CHILD_WANDER_X_MARGIN_RATIO;
+                float y_min = (float)gs->screen_h * MOTHERSHIP_CHILD_WANDER_Y_MIN_RATIO;
+                float y_max = (float)gs->screen_h * MOTHERSHIP_CHILD_WANDER_Y_MAX_RATIO;
+                c->wander_target_x = x_margin + frand01() * ((float)gs->screen_w - 2.0f * x_margin);
+                c->wander_target_y = y_min + frand01() * (y_max - y_min);
+                c->wander_retarget_timer = MOTHERSHIP_CHILD_WANDER_RETARGET_MIN +
+                                            frand01() * (MOTHERSHIP_CHILD_WANDER_RETARGET_MAX -
+                                                          MOTHERSHIP_CHILD_WANDER_RETARGET_MIN);
+            }
+            float dx = c->wander_target_x - c->x, dy = c->wander_target_y - c->y;
+            float dist = sqrtf(dx * dx + dy * dy);
+            float step = scaled(gs, MOTHERSHIP_CHILD_WANDER_SPEED) * dt;
+            if (dist > step && dist > 0.0001f) {
+                c->x += dx / dist * step;
+                c->y += dy / dist * step;
+            }
+        }
+
+        float half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
+        float half_h = scaled(gs, PLAYER_HEIGHT) / 2.0f;
+        if (c->x < half_w) c->x = half_w;
+        if (c->x > (float)gs->screen_w - half_w) c->x = (float)gs->screen_w - half_w;
+        if (c->y < half_h) c->y = half_h;
+        if (c->y > (float)gs->screen_h - half_h) c->y = (float)gs->screen_h - half_h;
+
+        update_child_firing(gs, c, dt, events);
+    }
+}
+
+/* Both of The Mothership's own modes (SHOOT_MODE_SWARM_WANDER/
+ * SHOOT_MODE_SWARM_FORMATION) dispatch a new escort identically, paced by
+ * MOTHERSHIP_DISPATCH_COOLDOWN the same way every other single-shot mode
+ * paces its own fire_cooldown - which of the two is active only ever
+ * steers update_children's own AI for every already-alive child, never
+ * this spawn logic. She never fires a projectile of her own. */
+static void update_mothership_dispatch(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    int slot = -1;
+    for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+        if (!gs->children[i].alive) {
+            slot = i;
+            break;
+        }
+    }
+    /* At capacity - no cooldown spent, so dispatch resumes the instant a
+     * slot frees rather than making the player wait out an extra cooldown
+     * on top of that. */
+    if (slot < 0) return;
+
+    ChildShip *c = &gs->children[slot];
+    *c = (ChildShip){0};
+    c->alive = true;
+    c->kind = (frand01() < 0.5f) ? SHIP_B20 : SHIP_C24;
+    /* Underneath her, never in front or behind - see
+     * MOTHERSHIP_CHILD_LAUNCH_DURATION's own doc comment. */
+    c->x = p->x;
+    c->y = p->y + scaled(gs, PLAYER_HEIGHT) * ship_size_multiplier(SHIP_MOTHERSHIP) * 0.5f;
+    c->vx = (frand01() < 0.5f ? -1.0f : 1.0f) * scaled(gs, MOTHERSHIP_CHILD_LAUNCH_SPEED);
+    c->vy = 0.0f;
+    c->launch_timer = MOTHERSHIP_CHILD_LAUNCH_DURATION;
+    c->life = MOTHERSHIP_CHILD_LIFE_MAX;
+
+    int mode_count = ship_shoot_mode_slot_count(c->kind);
+    int mode_slot = (int)(frand01() * (float)mode_count);
+    if (mode_slot >= mode_count) mode_slot = mode_count - 1;
+    c->shoot_mode = ship_shoot_mode_for_slot(c->kind, mode_slot);
+
+    p->fire_cooldown = MOTHERSHIP_DISPATCH_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
 /* Dispatches to whichever mode is currently active. fire_cooldown is
  * decremented once here regardless of mode - every mode but rapid fire
  * (which drives its own pair of timers) gates its shot on it, the same
@@ -928,6 +1205,8 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_DOUBLE: update_double_barrel(gs, input, events); break;
         case SHOOT_MODE_SIDE: update_side_beams(gs, input, events); break;
         case SHOOT_MODE_OMNI: update_omni_burst(gs, input, events); break;
+        case SHOOT_MODE_SWARM_WANDER:
+        case SHOOT_MODE_SWARM_FORMATION: update_mothership_dispatch(gs, input, events); break;
         case SHOOT_MODE_NORMAL:
         case SHOOT_MODE_COUNT:
         default: update_normal_fire(gs, input, events); break;
@@ -954,8 +1233,9 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
     p->x += dx * speed * dt;
     p->y += dy * speed * dt;
 
-    float half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
-    float min_y = scaled(gs, PLAYER_HEIGHT) / 2.0f; /* free to roam the whole screen, not just the lower band */
+    float size_mult = ship_size_multiplier(gs->selected_ship);
+    float half_w = scaled(gs, PLAYER_WIDTH) * size_mult / 2.0f;
+    float min_y = scaled(gs, PLAYER_HEIGHT) * size_mult / 2.0f; /* free to roam the whole screen, not just the lower band */
     float max_y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
     if (p->x < half_w) p->x = half_w;
     if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
@@ -1343,8 +1623,13 @@ static void update_projectile_trails(GameState *gs, float dt) {
 }
 
 static void check_collisions(GameState *gs, EventQueue *events) {
-    float player_half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
-    float player_half_h = scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float player_size_mult = ship_size_multiplier(gs->selected_ship);
+    float player_half_w = scaled(gs, PLAYER_WIDTH) * player_size_mult / 2.0f;
+    float player_half_h = scaled(gs, PLAYER_HEIGHT) * player_size_mult / 2.0f;
+    /* Children always collide at the stock (unmultiplied) size - see
+     * ship_size_multiplier's own doc comment. */
+    float child_half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
+    float child_half_h = scaled(gs, PLAYER_HEIGHT) / 2.0f;
 
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
@@ -1361,7 +1646,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                 pr->alive = false;
                 if (pr->kind == PROJECTILE_KIND_POWER) {
-                    trigger_power_cannon_explosion(gs, events, pr->x, pr->y);
+                    trigger_power_cannon_explosion(gs, events, pr->x, pr->y, pr->style_ship);
                 } else {
                     destroy_enemy_for_score(gs, events, e);
                 }
@@ -1384,6 +1669,28 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         }
     }
 
+    /* A ChildShip touching an ordinary enemy is mutual destruction - same
+     * symmetric "both die" rule as player-enemy contact above, just never
+     * fatal to the run since it's an escort, not the player (see
+     * destroy_enemy_for_score for the enemy's own explosion/score/sfx). */
+    for (int k = 0; k < MOTHERSHIP_MAX_CHILDREN; k++) {
+        ChildShip *c = &gs->children[k];
+        if (!c->alive) continue;
+        for (int j = 0; j < MAX_ENEMIES; j++) {
+            Enemy *e = &gs->enemies[j];
+            if (!e->alive) continue;
+            if (collision_aabb_overlap(c->x, c->y, child_half_w, child_half_h,
+                                        e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
+                c->alive = false;
+                c->life = 0.0f;
+                spawn_explosion(gs, c->x, c->y, scaled(gs, PLAYER_WIDTH));
+                event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
+                destroy_enemy_for_score(gs, events, e);
+                break;
+            }
+        }
+    }
+
     if (gs->player.alive) {
         for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
             Projectile *pr = &gs->enemy_shots[i];
@@ -1396,6 +1703,38 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                 damage_player(gs, events, PLAYER_LIFE_LOSS_PER_HIT);
                 break;
             }
+        }
+    }
+
+    /* Same enemy-shot life-loss rule as damage_player above, just against
+     * each ChildShip's own (much smaller) MOTHERSHIP_CHILD_LIFE_MAX pool
+     * and its own kind's ship_damage_taken_multiplier - a B-20-kind child
+     * takes a full hit, a C-24-kind child takes less, same as those ships'
+     * own Strength ratings already promise the real player. A separate
+     * loop over gs->enemy_shots from the player's own above (rather than
+     * one combined pass) so a shot that already hit the player this frame
+     * (pr->alive now false) is simply skipped here, never double-applied. */
+    for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+        Projectile *pr = &gs->enemy_shots[i];
+        if (!pr->alive || pr->inert) continue;
+        float enemy_shot_half_w, enemy_shot_half_h;
+        enemy_shot_half_extents(pr, &enemy_shot_half_w, &enemy_shot_half_h);
+        for (int k = 0; k < MOTHERSHIP_MAX_CHILDREN; k++) {
+            ChildShip *c = &gs->children[k];
+            if (!c->alive) continue;
+            if (!collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
+                                         c->x, c->y, child_half_w, child_half_h)) {
+                continue;
+            }
+            pr->alive = false;
+            c->life -= PLAYER_LIFE_LOSS_PER_HIT * ship_damage_taken_multiplier(c->kind);
+            if (c->life <= 0.0f) {
+                c->life = 0.0f;
+                c->alive = false;
+                spawn_explosion(gs, c->x, c->y, scaled(gs, PLAYER_WIDTH));
+                event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
+            }
+            break;
         }
     }
 
@@ -1421,7 +1760,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
              * anything else caught in the blast radius, on top of the
              * boss's own damage_boss hit above. */
             if (pr->kind == PROJECTILE_KIND_POWER) {
-                trigger_power_cannon_explosion(gs, events, pr->x, pr->y);
+                trigger_power_cannon_explosion(gs, events, pr->x, pr->y, pr->style_ship);
             }
             break;
         }
@@ -1450,6 +1789,29 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                 end_boss_encounter(gs);
                 event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
                 kill_player(gs, events);
+            }
+        }
+
+        /* A ChildShip touching the same danger ring dies instantly too -
+         * same hazard, so it can't just sit inside the boss unharmed - but
+         * deliberately does NOT end the boss encounter the way the
+         * player's own ring touch does just above: an escort is cheap to
+         * re-dispatch, so letting one defeat the boss for free would be a
+         * do-nothing-but-spam-children exploit. Re-check gs->boss.alive
+         * (the ring-vs-player touch just above may have just ended the
+         * encounter this same frame) - no break, since more than one child
+         * can be caught in the ring at once and all of them die. */
+        if (gs->boss.alive) {
+            float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
+            float child_radius = fmaxf(child_half_w, child_half_h);
+            for (int k = 0; k < MOTHERSHIP_MAX_CHILDREN; k++) {
+                ChildShip *c = &gs->children[k];
+                if (!c->alive) continue;
+                if (!within_radius(c->x, c->y, gs->boss.x, gs->boss.y, ring_radius + child_radius)) continue;
+                c->alive = false;
+                c->life = 0.0f;
+                spawn_explosion(gs, c->x, c->y, scaled(gs, PLAYER_WIDTH));
+                event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
             }
         }
     }
@@ -1514,6 +1876,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     }
 
     update_player(gs, input, dt, events);
+    update_children(gs, dt, events);
     update_player_trail(gs, dt);
     if (!gs->boss.alive) spawner_update(gs, dt); /* no ordinary spawns during a boss fight */
     update_enemies(gs, dt);

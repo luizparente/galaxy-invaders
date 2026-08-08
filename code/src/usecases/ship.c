@@ -2,12 +2,25 @@
 #include "domain/constants.h"
 
 /* One Speed/Strength/Attack rating per Ship (domain/types.h), ordered to
- * match: B-20, C-24. B-20 is the versatile, fast baseline every skilled
- * pilot starts on; C-24 trades some of that speed for heavier plating,
- * per its own description on the ship-select screen. */
-static const int kShipSpeedRating[SHIP_COUNT] = {7, 5};
-static const int kShipStrengthRating[SHIP_COUNT] = {5, 7};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 8};
+ * match: B-20, C-24, SHIP_MOTHERSHIP. B-20 is the versatile, fast baseline
+ * every skilled pilot starts on; C-24 trades some of that speed for
+ * heavier plating; The Mothership trades the most speed of all for the
+ * heaviest plating in the fleet, per each one's own description on the
+ * ship-select screen. */
+static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 3};
+static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 8, 7};
+
+/* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
+ * this isn't derived from a rating formula, it's spec'd directly (The
+ * Mothership is "25% bigger than the other player spaceships"). Applied
+ * everywhere PLAYER_WIDTH/PLAYER_HEIGHT drive the real player's own
+ * size - draw_player, update_player's movement clamp, and
+ * check_collisions' player half-extents (all in usecases/game_logic.c and
+ * adapters/sdl_renderer.c). Never applied to a ChildShip, which always
+ * renders/collides at the stock size regardless of which ship dispatched
+ * it. */
+static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 1.25f};
 
 int ship_speed_rating(Ship ship) {
     return kShipSpeedRating[ship];
@@ -37,6 +50,10 @@ float ship_life_loss_percent_per_hit(Ship ship) {
     return PLAYER_LIFE_LOSS_PER_HIT * ship_damage_taken_multiplier(ship);
 }
 
+float ship_size_multiplier(Ship ship) {
+    return kShipSizeMultiplier[ship];
+}
+
 /* B-20 keeps its original 5-mode lineup in its original key order. */
 static const ShootMode kB20ShootModeSlots[] = {
     SHOOT_MODE_NORMAL, SHOOT_MODE_RAPID, SHOOT_MODE_POWER, SHOOT_MODE_DOUBLE, SHOOT_MODE_SIDE,
@@ -47,11 +64,19 @@ static const ShootMode kB20ShootModeSlots[] = {
  * just under different keys, plus a ship-exclusive third mode. Every one of
  * these renders/hit-tests differently for C-24 than for B-20 despite
  * sharing a ShootMode value - see player_shot_half_extents and
- * draw_c24_sphere_shot, both of which branch on GameState.selected_ship
- * directly rather than on ShootMode, since the same mode looks and hits
- * different depending on which ship fired it. */
+ * draw_c24_sphere_shot, both of which branch on the shot's own
+ * Projectile.style_ship rather than on ShootMode, since the same mode
+ * looks and hits different depending on which ship fired it. */
 static const ShootMode kC24ShootModeSlots[] = {
     SHOOT_MODE_DOUBLE, SHOOT_MODE_POWER, SHOOT_MODE_OMNI,
+};
+
+/* The Mothership's own moveset: she never fires a projectile of her own
+ * under either mode - both dispatch a new ChildShip escort identically
+ * (see update_mothership_dispatch in usecases/game_logic.c), key 1/slot 0
+ * ordered first per how the two modes were specced. */
+static const ShootMode kMothershipShootModeSlots[] = {
+    SHOOT_MODE_SWARM_WANDER, SHOOT_MODE_SWARM_FORMATION,
 };
 
 typedef struct ShipShootModeSlots {
@@ -62,6 +87,7 @@ typedef struct ShipShootModeSlots {
 static const ShipShootModeSlots kShipShootModeSlots[SHIP_COUNT] = {
     [SHIP_B20] = {kB20ShootModeSlots, 5},
     [SHIP_C24] = {kC24ShootModeSlots, 3},
+    [SHIP_MOTHERSHIP] = {kMothershipShootModeSlots, 2},
 };
 
 int ship_shoot_mode_slot_count(Ship ship) {

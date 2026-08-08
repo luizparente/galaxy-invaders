@@ -70,12 +70,19 @@ typedef enum Difficulty {
  * usecases/game_logic.c) reached right after confirming a difficulty, and
  * kept for the whole run - see GameState.selected_ship and usecases/ship.c
  * for how each ship's Speed/Strength ratings translate into real gameplay
- * multipliers. Only SHIP_B20 and SHIP_C24 are implemented; the ship-select
- * grid has room for more (adapters/sdl_renderer.c) but every slot past
- * SHIP_COUNT renders as a locked placeholder, not a real Ship value. */
+ * multipliers. SHIP_B20, SHIP_C24 and SHIP_MOTHERSHIP are implemented; the
+ * ship-select grid has room for more (adapters/sdl_renderer.c) but every
+ * slot past SHIP_COUNT renders as a locked placeholder, not a real Ship
+ * value. SHIP_MOTHERSHIP doesn't fire projectiles of its own at all - its
+ * two ShootModes (SHOOT_MODE_SWARM_WANDER/SHOOT_MODE_SWARM_FORMATION below)
+ * dispatch CPU-flown ChildShip escorts instead (see GameState.children and
+ * update_mothership_dispatch/update_children in usecases/game_logic.c). A
+ * ChildShip's own `kind` is always SHIP_B20 or SHIP_C24 - SHIP_MOTHERSHIP
+ * itself never appears there. */
 typedef enum Ship {
     SHIP_B20 = 0,
     SHIP_C24,
+    SHIP_MOTHERSHIP,
     SHIP_COUNT,
 } Ship;
 
@@ -102,6 +109,16 @@ typedef enum ShootMode {
      * of B-20's own moveset - only ships whose own slot table includes it
      * (currently just C-24) can ever reach it. */
     SHOOT_MODE_OMNI,
+    /* The Mothership's own two modes (see ship_shoot_mode_for_slot(SHIP_MOTHERSHIP, ...)
+     * in usecases/ship.c) - she never fires a projectile of her own under
+     * either one. Both dispatch a new ChildShip escort exactly the same way
+     * on fire (see update_mothership_dispatch in usecases/game_logic.c);
+     * the only difference is which movement AI every currently-alive child
+     * follows, read fresh every frame from GameState.player.shoot_mode (see
+     * update_children) - not fixed at the child's own spawn time, so
+     * switching mid-flight redirects the whole squad immediately. */
+    SHOOT_MODE_SWARM_WANDER,   /* children roam independently */
+    SHOOT_MODE_SWARM_FORMATION, /* children hold a triangular escort formation */
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -131,6 +148,52 @@ typedef struct Player {
      * update_player_trail) - purely cosmetic, unrelated to fire_cooldown. */
     float trail_emit_timer;
 } Player;
+
+/* A CPU-flown escort dispatched by The Mothership (see
+ * update_mothership_dispatch/update_children in usecases/game_logic.c) -
+ * up to MOTHERSHIP_MAX_CHILDREN of these live in GameState.children.
+ * Always a B-20 or C-24 "lookalike" (kind), rendered/sized/collided at the
+ * stock PLAYER_WIDTH/PLAYER_HEIGHT (never SHIP_MOTHERSHIP's own +25%) and
+ * firing its own kind's real moveset, at MOTHERSHIP_CHILD_LIFE_MAX life
+ * (50% of what PLAYER_LIFE_MAX would be if it were the player). Movement
+ * and weapons are both fully CPU-controlled - there's no InputCommand
+ * involved anywhere in a child's own update. */
+typedef struct ChildShip {
+    bool alive;
+    float x, y;
+    float vx, vy;
+    Ship kind; /* always SHIP_B20 or SHIP_C24, rolled 50/50 at dispatch */
+    float life; /* [0, MOTHERSHIP_CHILD_LIFE_MAX]; hitting 0 kills this child */
+
+    /* Rolled once at dispatch from kind's own ship_shoot_mode_for_slot
+     * table and fixed for the child's whole lifetime - a CPU escort never
+     * switches modes (see update_mothership_dispatch), so none of the
+     * player-facing mode-switch/lockout machinery (update_shoot_mode_switch)
+     * applies here. fire_cooldown/rapid_burst_timer/rapid_cooldown_timer
+     * mirror Player's own same-named fields, just driving this child's own
+     * fire routine (update_child_firing) instead - a SHOOT_MODE_RAPID
+     * child simply loops burst->cooldown forever at the same RAPID_FIRE_*
+     * constants, with nothing to auto-switch away to. */
+    ShootMode shoot_mode;
+    float fire_cooldown;
+    float rapid_burst_timer;
+    float rapid_cooldown_timer;
+
+    /* Counts down the brief post-dispatch launch kick (see
+     * update_mothership_dispatch/update_children): while positive, this
+     * child just coasts on its spawn-time vx/vy (a random left/right shove
+     * out from underneath the Mothership) and ignores shoot_mode's AI
+     * entirely. Once it hits 0, AI movement (wander or formation, per
+     * GameState.player.shoot_mode) takes over. */
+    float launch_timer;
+
+    /* SHOOT_MODE_SWARM_WANDER's own state: the point this child is
+     * currently steering toward, and how much longer until it rolls a new
+     * one (see update_children) - both unused/stale while formation mode
+     * is active, harmless since formation mode never reads them. */
+    float wander_target_x, wander_target_y;
+    float wander_retarget_timer;
+} ChildShip;
 
 /* Which of the 5 shooting patterns an enemy design fires - see
  * kEnemyKindShootStyle in usecases/spawner.c for which of the 16 designs
@@ -238,11 +301,22 @@ typedef struct Projectile {
     /* Random per-shot phase seed, radians [0, 2*pi) - set at spawn (see
      * spawn_player_shot) and read only by C-24's own sphere-shot rendering
      * (draw_c24_sphere_shot in adapters/sdl_renderer.c, reached whenever
-     * GameState.selected_ship is SHIP_C24): offsets that shot's own hue-
-     * cycling phase so simultaneous shots - a double-barrel pair, all 8 of
-     * an omni burst - don't cycle color in lockstep. Unused by every other
-     * shot. */
+     * style_ship below is SHIP_C24): offsets that shot's own hue-cycling
+     * phase so simultaneous shots - a double-barrel pair, all 8 of an omni
+     * burst - don't cycle color in lockstep. Unused by every other shot. */
     float phase_seed;
+    /* Player shots only: which ship's rendering/behavior style this shot
+     * uses (SHIP_B20 or SHIP_C24 - never SHIP_MOTHERSHIP, she never fires a
+     * shot of her own). Set at spawn (see spawn_player_shot_styled) to
+     * whichever ship actually produced the shot - GameState.selected_ship
+     * for the real player's own fire, or a ChildShip's own `kind` for an
+     * escort's fire. Needed because a C-24-style ChildShip can exist while
+     * selected_ship is SHIP_MOTHERSHIP, so C-24's own special rendering/
+     * hit-sizing/explosion-radius bonus (player_shot_half_extents,
+     * draw_projectile, trigger_power_cannon_explosion) can't just read
+     * GameState.selected_ship directly anymore - it has to ask the shot
+     * itself. Unused (left 0/SHIP_B20, harmless) by enemy shots. */
+    Ship style_ship;
 } Projectile;
 
 typedef struct Explosion {
@@ -415,6 +489,10 @@ typedef struct GameState {
     float scale;
 
     Player player;
+    /* Only ever populated while selected_ship is SHIP_MOTHERSHIP - every
+     * other ship has no way to spawn one (see
+     * update_mothership_dispatch/update_children in usecases/game_logic.c). */
+    ChildShip children[MOTHERSHIP_MAX_CHILDREN];
     Enemy enemies[MAX_ENEMIES];
     Projectile player_shots[MAX_PLAYER_PROJECTILES];
     Projectile enemy_shots[MAX_ENEMY_PROJECTILES];
