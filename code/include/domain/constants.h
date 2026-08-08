@@ -106,11 +106,11 @@
 #define PROJECTILE_TRAIL_LIFETIME 0.35f
 #define PROJECTILE_TRAIL_BASE_SIZE 2.2f
 #define PROJECTILE_TRAIL_SIZE_GROWTH 2.2f
-/* ~16% of 255 - half of the previous 80, for a subtler wake. Every shot's
+/* ~8% of 255 - half of the previous 40, for a subtler wake. Every shot's
  * trail reads at this same visibility, player and enemy alike - deliberately
  * a single flat constant, not something any one ship's weapon mode can
  * override. */
-#define PROJECTILE_TRAIL_MAX_ALPHA 40
+#define PROJECTILE_TRAIL_MAX_ALPHA 20
 
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f
