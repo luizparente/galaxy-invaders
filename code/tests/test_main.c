@@ -504,45 +504,36 @@ static bool colors_equal(Color a, Color b) {
     return a.r == b.r && a.g == b.g && a.b == b.b;
 }
 
-static void test_laser_color_changes_every_laser_color_score_step(void) {
+/* Regression coverage for a real bug: the laser color used to reroll to a
+ * random hue every 200 points (see the old LASER_COLOR_SCORE_STEP), which
+ * read as "the projectile suddenly changed" mid-game with no obvious
+ * trigger - especially disorienting right as a Super Beam's kill spree
+ * often crossed that threshold. The player's laser must now stay exactly
+ * the same color for the whole run, no matter how much score is earned. */
+static void test_laser_color_never_changes_regardless_of_score(void) {
     GameState gs;
     EventQueue events;
     start_game(&gs, &events);
 
     Color initial = gs.player.laser_color;
 
-    /* Each kill is worth exactly SCORE_PER_KILL below the first score
-     * multiplier step (500), so this many kills lands score on exactly
-     * LASER_COLOR_SCORE_STEP and should be the one that rerolls the
-     * laser color - not sooner. */
-    int kills_to_threshold = LASER_COLOR_SCORE_STEP / SCORE_PER_KILL;
-    for (int kill = 1; kill <= kills_to_threshold; kill++) {
-        Color before = gs.player.laser_color;
+    /* Rack up several thousand points - comfortably past where the old
+     * reroll-every-200 behavior would have changed color more than a
+     * dozen times - and confirm the color never once moves. */
+    for (int kill = 1; kill <= 40; kill++) {
         kill_one_enemy(&gs, &events);
-        assert(gs.score == kill * SCORE_PER_KILL);
-
-        if (kill < kills_to_threshold) {
-            assert(colors_equal(gs.player.laser_color, before));
-        } else {
-            assert(!colors_equal(gs.player.laser_color, before));
-        }
+        assert(colors_equal(gs.player.laser_color, initial));
     }
+    assert(gs.score >= 400);
 
-    assert(!colors_equal(gs.player.laser_color, initial));
-
-    /* The new color actually gets used by the next shot fired. */
     InputCommand fire = no_input();
     fire.fire_held = true;
     game_update(&gs, &fire, 0.016f, &events);
-    bool found_new_color_shot = false;
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
-        if (gs.player_shots[i].alive && colors_equal(gs.player_shots[i].color, gs.player.laser_color)) {
-            found_new_color_shot = true;
-        }
+        if (gs.player_shots[i].alive) assert(colors_equal(gs.player_shots[i].color, initial));
     }
-    assert(found_new_color_shot);
 
-    printf("test_laser_color_changes_every_laser_color_score_step OK\n");
+    printf("test_laser_color_never_changes_regardless_of_score OK\n");
 }
 
 static void test_orb_capture_grants_super_beam(void) {
@@ -1723,7 +1714,7 @@ int main(void) {
     test_pause_menu_exit_to_menu();
     test_enemy_kill_scores();
     test_player_enemy_collision_ends_game();
-    test_laser_color_changes_every_laser_color_score_step();
+    test_laser_color_never_changes_regardless_of_score();
     test_orb_capture_grants_super_beam();
     test_player_invincible_during_super_beam();
     test_god_mode_toggles_on_and_off();

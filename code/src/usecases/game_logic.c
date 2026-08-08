@@ -18,16 +18,12 @@ static bool within_radius(float ax, float ay, float bx, float by, float r) {
     return dx * dx + dy * dy <= r * r;
 }
 
+/* The player's laser is always this exact color for the whole run, never
+ * rerolled or varied by score, mode, or anything else - every one of
+ * B-20's 5 modes reads pr->color from gs->player.laser_color (see
+ * spawn_player_shot), so a single fixed value here is what keeps every
+ * mode's shots visually identical and predictable across an entire run. */
 static const Color kDefaultLaserColor = {255, 240, 120, 255};
-
-/* A random fully-saturated hue, so each reroll is clearly a different
- * color rather than a subtle tint of the last one. */
-static Color random_vivid_color(void) {
-    float h = frand01() * 360.0f;
-    float s = 0.75f + frand01() * 0.25f;
-    float v = 0.9f + frand01() * 0.1f;
-    return color_from_hsv(h, s, v);
-}
 
 /* Every spatial constant in domain/constants.h is tuned at DESIGN_W x
  * DESIGN_H. Multiplying by gs->scale (uniform in x and y) carries that
@@ -382,9 +378,6 @@ static void apply_score_delta(GameState *gs, EventQueue *events, int delta) {
      * worth full score but must never shorten the gap to the next boss. */
     if (!gs->boss.alive) gs->score_since_last_boss += delta;
 
-    if (gs->score / LASER_COLOR_SCORE_STEP > old_score / LASER_COLOR_SCORE_STEP) {
-        gs->player.laser_color = random_vivid_color();
-    }
     maybe_trigger_orb_spawn(gs, old_score, gs->score);
     maybe_trigger_boss_spawn(gs, events);
 }
