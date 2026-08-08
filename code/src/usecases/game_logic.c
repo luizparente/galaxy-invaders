@@ -99,8 +99,11 @@ static void init_stars(GameState *gs) {
         Star *s = &gs->stars[i];
         s->x = frand01() * (float)gs->screen_w;
         s->y = frand01() * (float)gs->screen_h;
-        s->speed = scaled(gs, 20.0f + frand01() * 70.0f);
-        s->brightness = (unsigned char)(90 + rand() % 165);
+        s->speed = scaled(gs, STAR_MIN_SPEED + frand01() * STAR_SPEED_RANGE);
+        /* Wide spread, completely at random, so some stars read as barely-
+         * there and others as sharply bright rather than a narrow band of
+         * similar shine. */
+        s->brightness = (unsigned char)(25 + rand() % 231);
     }
 }
 
@@ -111,6 +114,48 @@ static void update_stars(GameState *gs, float dt) {
         if (s->y > (float)gs->screen_h) {
             s->y = 0.0f;
             s->x = frand01() * (float)gs->screen_w;
+            s->brightness = (unsigned char)(25 + rand() % 231);
+        }
+    }
+}
+
+static void randomize_background_cloud(GameState *gs, BackgroundCloud *c) {
+    c->x = frand01() * (float)gs->screen_w;
+    c->radius = scaled(gs, BACKGROUND_CLOUD_MIN_RADIUS + frand01() * (BACKGROUND_CLOUD_MAX_RADIUS - BACKGROUND_CLOUD_MIN_RADIUS));
+    c->speed = scaled(gs, BACKGROUND_CLOUD_MIN_SPEED + frand01() * (BACKGROUND_CLOUD_MAX_SPEED - BACKGROUND_CLOUD_MIN_SPEED));
+    c->wobble_seed = frand01() * 6.2831853f;
+    c->wobble_speed = BACKGROUND_CLOUD_WOBBLE_MIN_SPEED + frand01() * (BACKGROUND_CLOUD_WOBBLE_MAX_SPEED - BACKGROUND_CLOUD_WOBBLE_MIN_SPEED);
+    c->wobble_amplitude = scaled(gs, BACKGROUND_CLOUD_WOBBLE_MIN_AMPLITUDE +
+                                          frand01() * (BACKGROUND_CLOUD_WOBBLE_MAX_AMPLITUDE - BACKGROUND_CLOUD_WOBBLE_MIN_AMPLITUDE));
+}
+
+/* The background smoke's own drift counterpart to init_stars - scattered
+ * across the whole screen height at startup (rather than all starting
+ * above it) so the effect is already in view on the very first frame,
+ * same reasoning as init_stars' own y placement. */
+static void init_background_clouds(GameState *gs) {
+    for (int i = 0; i < MAX_BACKGROUND_CLOUDS; i++) {
+        BackgroundCloud *c = &gs->background_clouds[i];
+        randomize_background_cloud(gs, c);
+        c->y = frand01() * (float)gs->screen_h;
+    }
+}
+
+/* Drifts every cloud straight down at its own slow, fixed speed - "flowing
+ * top to bottom" - and once one has fully cleared the bottom edge (its own
+ * radius included, so it doesn't visibly pop out of existence mid-fade),
+ * wraps it back above the screen with every field freshly rolled, the same
+ * wrap-and-reroll convention update_stars uses for its own y. The side-to-
+ * side wobble isn't integrated here at all - see BackgroundCloud's own doc
+ * comment for why it's instead derived purely from time_elapsed in the
+ * renderer. */
+static void update_background_clouds(GameState *gs, float dt) {
+    for (int i = 0; i < MAX_BACKGROUND_CLOUDS; i++) {
+        BackgroundCloud *c = &gs->background_clouds[i];
+        c->y += c->speed * dt;
+        if (c->y - c->radius > (float)gs->screen_h) {
+            randomize_background_cloud(gs, c);
+            c->y = -c->radius;
         }
     }
 }
@@ -554,6 +599,7 @@ void game_init(GameState *gs, int screen_w, int screen_h) {
     gs->selected_difficulty = DIFFICULTY_NORMAL;
     gs->selected_ship = SHIP_B20;
     init_stars(gs);
+    init_background_clouds(gs);
 }
 
 static void handle_global_back(GameState *gs, const InputCommand *input, EventQueue *events) {
@@ -1460,6 +1506,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
 void game_update(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
     event_queue_clear(events);
     update_stars(gs, dt);
+    update_background_clouds(gs, dt);
     handle_global_back(gs, input, events);
 
     switch (gs->state) {

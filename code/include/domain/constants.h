@@ -27,7 +27,58 @@
 #define MAX_EXPLOSIONS 32
 #define MAX_TRAIL_PARTICLES 64
 #define MAX_STARS 80
+/* Star speed (see init_stars in usecases/game_logic.c) is
+ * STAR_MIN_SPEED + rand * STAR_SPEED_RANGE. Named (rather than left as
+ * inline literals) so BACKGROUND_CLOUD_MIN/MAX_SPEED below can be defined
+ * as an exact fraction of the star field's own speed, instead of
+ * independently-tuned numbers that only coincidentally match. */
+#define STAR_MIN_SPEED 20.0f
+#define STAR_SPEED_RANGE 70.0f
+/* Kept small - each one is a huge source of influence over the pixelated
+ * background smoke grid (see BackgroundCloud in domain/types.h), not a
+ * cheap dot like a star, so a handful already gives every cell on screen
+ * something drifting past it. */
+#define MAX_BACKGROUND_CLOUDS 6
 #define MAX_EVENTS 16
+
+/* --- Background smoke (see BackgroundCloud in domain/types.h and
+ * draw_background_smoke in adapters/sdl_renderer.c) --- */
+#define BACKGROUND_CLOUD_MIN_RADIUS 50.0f
+#define BACKGROUND_CLOUD_MAX_RADIUS 500.0f
+/* Exactly half the star field's own speed range (see STAR_MIN_SPEED/
+ * STAR_SPEED_RANGE above) - big clouds drift, they don't rush, and should
+ * always read as further away / slower than the stars in front of them. */
+#define BACKGROUND_CLOUD_SPEED_RATIO 0.9f
+#define BACKGROUND_CLOUD_MIN_SPEED                                             \
+  (STAR_MIN_SPEED * BACKGROUND_CLOUD_SPEED_RATIO)
+#define BACKGROUND_CLOUD_MAX_SPEED                                             \
+  ((STAR_MIN_SPEED + STAR_SPEED_RANGE) * BACKGROUND_CLOUD_SPEED_RATIO)
+/* Side-to-side wobble (see BackgroundCloud.wobble_seed/speed/amplitude) -
+ * what keeps the whole field visibly reshaping over time as clouds drift
+ * past and through each other, rather than just uniformly sliding down. */
+#define BACKGROUND_CLOUD_WOBBLE_MIN_AMPLITUDE 10.0f
+#define BACKGROUND_CLOUD_WOBBLE_MAX_AMPLITUDE 25.0f
+#define BACKGROUND_CLOUD_WOBBLE_MIN_SPEED 0.15f
+#define BACKGROUND_CLOUD_WOBBLE_MAX_SPEED 0.9f
+/* Design-space edge length of one blocky smoke cell (see
+ * draw_background_smoke) - deliberately chunky, matching the game's own
+ * pixel-art scale, rather than a smooth gradient. */
+#define BACKGROUND_SMOKE_CELL_SIZE 5.0f
+/* How much combined cloud influence a cell needs before it's shaded at
+ * all (LIGHT) or shaded at the denser tier (DARK) - both tiers land
+ * darker than the flat background, never lighter (see kSmokeLight/
+ * kSmokeDark in adapters/sdl_renderer.c); the gap between the two
+ * thresholds is what keeps a single cloud passing through from reading as
+ * a hard-edged disc. */
+#define BACKGROUND_SMOKE_LIGHT_THRESHOLD 0.35f
+#define BACKGROUND_SMOKE_DARK_THRESHOLD 0.75f
+/* [0, 1] - the single contrast knob: how far a shaded cell's color departs
+ * from the flat background color, toward black (see kSmokeLight/kSmokeDark
+ * in adapters/sdl_renderer.c, both lerp_color'd toward black - kSmokeDark
+ * just goes further - so raising this can only ever make the smoke darker,
+ * never introduce a lighter shade). Deliberately tiny - under 5% - so the
+ * effect stays barely-there. */
+#define BACKGROUND_SMOKE_CONTRAST 0.15f
 
 #define PLAYER_WIDTH 32.0f
 #define PLAYER_HEIGHT 32.0f
@@ -102,7 +153,8 @@
  * read as some projectiles randomly missing their trail entirely during
  * busy scenes rather than merely a shorter trail. */
 #define MAX_PROJECTILE_TRAIL_PARTICLES 768
-#define PROJECTILE_TRAIL_SPAWN_INTERVAL 0.035f /* ~29 particles/sec per projectile */
+#define PROJECTILE_TRAIL_SPAWN_INTERVAL                                        \
+  0.035f /* ~29 particles/sec per projectile */
 #define PROJECTILE_TRAIL_LIFETIME 0.35f
 #define PROJECTILE_TRAIL_BASE_SIZE 2.2f
 #define PROJECTILE_TRAIL_SIZE_GROWTH 2.2f

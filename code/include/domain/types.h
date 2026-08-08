@@ -311,6 +311,35 @@ typedef struct Star {
     unsigned char brightness;
 } Star;
 
+/* One drifting source of influence behind the game's pixelated background
+ * smoke effect - see draw_background_smoke in adapters/sdl_renderer.c,
+ * which shades a coarse grid of blocky cells light or dark depending on
+ * how much combined influence from every cloud reaches each cell, plus a
+ * static dithered noise pattern per cell, for a chunky retro look rather
+ * than a smooth gradient. Never rendered as a shape of its own - it's
+ * purely an input to that grid, so several clouds overlapping never reads
+ * as "circles," only as denser (darker) smoke where they do.
+ *
+ * Drifts straight down at its own speed, plus a side-to-side wobble
+ * (sinf(time_elapsed * wobble_speed + wobble_seed) * wobble_amplitude,
+ * computed in the renderer from time_elapsed rather than an incrementally
+ * updated phase stored here - the same "derive the animation from a fixed
+ * per-instance seed plus the global clock" convention Projectile.phase_seed
+ * uses for C-24's own hue cycling) so the whole cloud field keeps visibly
+ * reshaping over time as clouds drift past and through each other, never
+ * settling into one static silhouette. Wraps back above the screen once
+ * fully past the bottom, same convention as Star's own y wrap in
+ * update_stars, re-rolling every field at that point for variety over a
+ * long run. */
+typedef struct BackgroundCloud {
+    float x, y;
+    float radius;
+    float speed; /* downward drift */
+    float wobble_seed; /* radians; random per-cloud phase offset */
+    float wobble_speed;
+    float wobble_amplitude;
+} BackgroundCloud;
+
 /* A rare falling power-up. Captured by the player's ship it grants the
  * super beam; shot by the player's laser it just detonates. */
 typedef struct Orb {
@@ -390,6 +419,7 @@ typedef struct GameState {
     EnemyTrailParticle enemy_trail_particles[MAX_ENEMY_TRAIL_PARTICLES];
     ProjectileTrailParticle projectile_trails[MAX_PROJECTILE_TRAIL_PARTICLES];
     Star stars[MAX_STARS];
+    BackgroundCloud background_clouds[MAX_BACKGROUND_CLOUDS];
     Orb orb;
     Boss boss;
     int boss_count; /* how many bosses have appeared so far this run */

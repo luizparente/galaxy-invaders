@@ -57,12 +57,83 @@ static Color lerp_color(Color a, Color b, float t) {
     };
 }
 
+/* A stable (never animated - see below) pseudo-random value in [0, 1) for
+ * grid cell (cx, cy), used only to jitter draw_background_smoke's density
+ * threshold so a cloud's edge comes out as scattered, dithered pixels
+ * instead of a smooth curve - the classic retro/8-bit trick for shading a
+ * gradient with a flat, hard-edged color palette (the same reason old
+ * console skies and fog are stippled, not smoothly blended). A cheap
+ * integer hash rather than a stored table: no per-cell state to own, and
+ * it's the same handful of arithmetic ops either way. */
+static float background_cell_dither(int cx, int cy) {
+    unsigned int h = (unsigned int)(cx * 374761393 + cy * 668265263) ^ 2654435761u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return (float)(h & 0xFFFFu) / 65536.0f;
+}
+
+/* The game's pixelated background smoke - a coarse grid of blocky,
+ * flat-colored cells (BACKGROUND_SMOKE_CELL_SIZE, matching the game's own
+ * pixel-art scale) shaded light or dark, both always darker than the flat
+ * kBackground and never lighter, depending on how much combined influence
+ * from the drifting BackgroundCloud sources reaches each cell, plus
+ * background_cell_dither's static noise jittering the threshold so the
+ * edges scatter into stippled pixels instead of a smooth curve -
+ * deliberately chunky and retro rather than a soft gradient. Every cloud's
+ * own wobble (see BackgroundCloud's own doc comment) is what keeps the
+ * combined shape visibly reshaping over time instead of settling into one
+ * static silhouette, "large clouds... moving around, changing shapes."
+ * BACKGROUND_SMOKE_CONTRAST is the single contrast knob: how far
+ * kSmokeLight/kSmokeDark depart from kBackground. */
+static void draw_background_smoke(SdlRendererCtx *ctx, const GameState *gs) {
+    static const Color kBlack = {0, 0, 0, 255};
+    /* Both tiers lerp toward black, never toward anything lighter -
+     * kSmokeDark just goes twice as far as kSmokeLight, so the denser tier
+     * reads as noticeably deeper shadow rather than a different hue. */
+    Color light = lerp_color(kBackground, kBlack, BACKGROUND_SMOKE_CONTRAST * 0.5f);
+    Color dark = lerp_color(kBackground, kBlack, BACKGROUND_SMOKE_CONTRAST);
+
+    float cell = BACKGROUND_SMOKE_CELL_SIZE * gs->scale;
+    if (cell < 2.0f) cell = 2.0f;
+    int cols = (int)ceilf((float)gs->screen_w / cell);
+    int rows = (int)ceilf((float)gs->screen_h / cell);
+
+    for (int gy = 0; gy < rows; gy++) {
+        float py = ((float)gy + 0.5f) * cell;
+        for (int gx = 0; gx < cols; gx++) {
+            float px = ((float)gx + 0.5f) * cell;
+
+            float density = 0.0f;
+            for (int i = 0; i < MAX_BACKGROUND_CLOUDS; i++) {
+                const BackgroundCloud *c = &gs->background_clouds[i];
+                float wobble = sinf(gs->time_elapsed * c->wobble_speed + c->wobble_seed) * c->wobble_amplitude;
+                float dx = px - (c->x + wobble);
+                float dy = py - c->y;
+                float t = 1.0f - sqrtf(dx * dx + dy * dy) / c->radius;
+                if (t > 0.0f) density += t;
+            }
+            density += (background_cell_dither(gx, gy) - 0.5f) * 0.5f;
+
+            if (density > BACKGROUND_SMOKE_DARK_THRESHOLD) {
+                gp_fill_rect(ctx->renderer, (float)gx * cell, (float)gy * cell, cell, cell, dark);
+            } else if (density > BACKGROUND_SMOKE_LIGHT_THRESHOLD) {
+                gp_fill_rect(ctx->renderer, (float)gx * cell, (float)gy * cell, cell, cell, light);
+            }
+        }
+    }
+}
+
 static void draw_stars(SdlRendererCtx *ctx, const GameState *gs) {
-    float dot = 2.0f * gs->scale;
     bool danger = gs->boss.alive;
     for (int i = 0; i < MAX_STARS; i++) {
         const Star *s = &gs->stars[i];
         unsigned char b = s->brightness;
+        /* Size scales with brightness too, not just color - at a plain
+         * 2x2px dot the color-only difference between a dim and a bright
+         * star is too subtle to read at a glance; a dim star being
+         * visibly smaller, not just a bit darker, is what actually sells
+         * "some are faded, some are bright" from normal viewing distance. */
+        float dot = (1.2f + (float)b / 255.0f * 2.6f) * gs->scale;
         /* Same brightness-driven twinkle either way - only the primary
          * color channel changes, from white to a dark red, while a boss
          * is on screen. */
@@ -1157,6 +1228,7 @@ static void sdl_render_frame(void *self, const GameState *gs) {
     SDL_SetRenderDrawColor(ctx->renderer, kBackground.r, kBackground.g, kBackground.b, 255);
     SDL_RenderClear(ctx->renderer);
 
+    draw_background_smoke(ctx, gs);
     draw_stars(ctx, gs);
 
     switch (gs->state) {
