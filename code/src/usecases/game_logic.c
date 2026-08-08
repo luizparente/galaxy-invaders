@@ -492,10 +492,20 @@ static void trigger_power_cannon_explosion(GameState *gs, EventQueue *events, fl
     float radius = POWER_CANNON_EXPLOSION_RADIUS_RATIO * fminf((float)gs->screen_w, (float)gs->screen_h);
     spawn_explosion(gs, x, y, radius);
 
+    /* The visual blast above stays B-20's own size for both ships - only
+     * the enemies-caught-in-the-blast test below grows for C-24's mode 2
+     * (see SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER), gated on
+     * selected_ship (fixed for the whole run) so B-20's mode 3 is
+     * byte-for-byte unaffected. */
+    float damage_radius = radius;
+    if (gs->selected_ship == SHIP_C24) {
+        damage_radius *= SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER;
+    }
+
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
         if (!e->alive) continue;
-        if (!within_radius(x, y, e->x, e->y, radius)) continue;
+        if (!within_radius(x, y, e->x, e->y, damage_radius)) continue;
         destroy_enemy_for_score(gs, events, e);
     }
 }

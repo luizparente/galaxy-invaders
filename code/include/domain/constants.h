@@ -344,6 +344,15 @@
  * two modes - "8x bigger" than SHIP_C24_PROJECTILE_RADIUS, matching how
  * much heavier the shot itself is (POWER_CANNON_DAMAGE_MULTIPLIER). */
 #define SHIP_C24_POWER_MODE_RADIUS (SHIP_C24_PROJECTILE_RADIUS * 8.0f)
+/* C-24's mode 2 (the power-cannon reuse) blows up nearby enemies in a 50%
+ * bigger damage radius than B-20's own mode 3 gets from
+ * POWER_CANNON_EXPLOSION_RADIUS_RATIO alone - applied on top of that ratio
+ * in trigger_power_cannon_explosion (usecases/game_logic.c), gated on
+ * GameState.selected_ship so B-20's mode 3 is untouched. Purely the
+ * enemies-caught-in-the-blast radius, not the shot's own rendered/hitbox
+ * size (SHIP_C24_POWER_MODE_RADIUS, unchanged) or the blast's visual
+ * explosion sprite. */
+#define SHIP_C24_POWER_MODE_EXPLOSION_RADIUS_MULTIPLIER 1.5f
 /* Degrees/sec C-24's own sphere shots cycle hue at (see
  * draw_c24_sphere_shot) - the same "continuously cycling color" effect the
  * power orb's own hue does (ORB_HUE_CYCLE_SPEED, update_orb), just computed
