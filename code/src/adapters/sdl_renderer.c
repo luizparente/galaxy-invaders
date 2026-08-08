@@ -44,6 +44,7 @@ static const Color kYellow = {235, 220, 70, 255};
 static const Color kWhite = {235, 235, 235, 255};
 static const Color kDim = {120, 120, 140, 255};
 static const Color kRed = {230, 60, 60, 255};
+static const Color kGreen = {80, 220, 110, 255};
 static const Color kGodModeTint = {255, 215, 40, 255};
 
 static Color lerp_color(Color a, Color b, float t) {
@@ -794,13 +795,17 @@ static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
  * score don't already use): one numbered box per slot in the current ship's
  * own moveset (see ship_shoot_mode_slot_count/ship_shoot_mode_for_slot in
- * usecases/ship.h - B-20 draws 5, C-24 only 3), the active one lit up in
- * yellow - or red while rapid fire's burst/lockout has switching disabled,
- * echoing the life bar's "red means can't act right now" language - with
- * the mode's name above. */
+ * usecases/ship.h - B-20 draws 5, C-24 only 3), with the mode's name above.
+ * Three states per box, same language as the life bar's "red means can't
+ * act right now": green for whichever mode is currently selected (every
+ * ship, every mode); red for B-20's mode 2 specifically while its
+ * rapid_cooldown_timer has it locked out (see update_shoot_mode_switch) -
+ * the only mode that can ever be red, and never while it's also the
+ * selected/green one, since selecting it is exactly what's disallowed
+ * during that cooldown; yellow for every other unselected, available
+ * mode. */
 static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) {
     const Player *p = &gs->player;
-    bool locked = p->rapid_burst_timer > 0.0f || p->rapid_cooldown_timer > 0.0f;
     int slot_count = ship_shoot_mode_slot_count(gs->selected_ship);
 
     float margin = 12.0f * gs->scale;
@@ -815,8 +820,9 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
         float x = x0 + (float)i * (box + gap);
         ShootMode slot_mode = ship_shoot_mode_for_slot(gs->selected_ship, i);
         bool active = (slot_mode == p->shoot_mode);
+        bool cooling_down = slot_mode == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f;
 
-        Color outline = active ? (locked ? kRed : kYellow) : kDim;
+        Color outline = active ? kGreen : (cooling_down ? kRed : kYellow);
         gp_fill_rect(ctx->renderer, x, y0, box, box, outline);
 
         float inner_x = x + outline_t;
@@ -834,7 +840,10 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
     }
 
     const char *label = kShootModeNames[p->shoot_mode];
-    Color label_color = locked ? kRed : kYellow;
+    /* Always describes the currently selected mode, which - per the loop
+     * above - is always green: mode 2 can never be both selected and
+     * cooling down at once. */
+    Color label_color = kGreen;
     float label_size = 1.3f * gs->scale;
     float label_h = 7.0f * label_size;
     pf_draw_text(ctx->renderer, x0, y0 - label_h - gap, label_size, label_color, label);

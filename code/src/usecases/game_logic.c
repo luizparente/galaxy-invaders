@@ -748,15 +748,19 @@ static void damage_player(GameState *gs, EventQueue *events, float amount) {
 }
 
 /* Mode switching (1-5 number keys) is locked out for the whole duration of
- * a rapid-fire burst and its following cooldown (see update_rapid_fire) -
- * everywhere else, switching is free even mid-flight of other shots. */
+ * a rapid-fire burst - the player is committed to that automatic volley
+ * (see update_rapid_fire). Once the burst ends, update_rapid_fire itself
+ * auto-switches away to slot 0 and starts the cooldown; from then on
+ * switching is free again except back into mode 2 itself (SHOOT_MODE_RAPID),
+ * which stays unselectable for the rest of the cooldown - everywhere else,
+ * switching is free even mid-flight of other shots. */
 /* Which key (1-5) selects which ShootMode is entirely per-ship (see
  * ship_shoot_mode_for_slot in usecases/ship.h) - a key past that ship's own
  * ship_shoot_mode_slot_count (e.g. 4 or 5 for C-24, which only has 3) does
  * nothing, same as pressing an already-active key does nothing. */
 static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, EventQueue *events) {
     Player *p = &gs->player;
-    if (p->rapid_burst_timer > 0.0f || p->rapid_cooldown_timer > 0.0f) return;
+    if (p->rapid_burst_timer > 0.0f) return;
 
     int slot = -1;
     if (input->shoot_mode_1_pressed) slot = 0;
@@ -767,6 +771,7 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
     if (slot < 0 || slot >= ship_shoot_mode_slot_count(gs->selected_ship)) return;
 
     ShootMode requested = ship_shoot_mode_for_slot(gs->selected_ship, slot);
+    if (requested == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) return;
     if (requested == p->shoot_mode) return;
     p->shoot_mode = requested;
     event_queue_push_sfx(events, SFX_MENU_SELECT);
@@ -787,11 +792,12 @@ static void update_normal_fire(GameState *gs, const InputCommand *input, EventQu
 
 /* B-20's mode 2 (not part of C-24's own moveset): one press (or hold) commits to a full RAPID_FIRE_BURST_DURATION
  * seconds of automatic fire at RAPID_FIRE_SHOTS_PER_SEC, regardless of
- * whether the key is still held, followed by a RAPID_FIRE_LOCKOUT_DURATION
- * cooldown during which this mode (see its early return below) fires
- * nothing at all - update_shoot_mode_switch enforces the matching "can't
- * switch mode either" half of that lockout. rapid_burst_timer and
- * rapid_cooldown_timer are mutually exclusive: exactly one is nonzero
+ * whether the key is still held. The instant the burst ends, shoot_mode is
+ * kicked back to slot 0 (B-20's normal shot) and a RAPID_FIRE_LOCKOUT_DURATION
+ * cooldown starts - the player is free to fire and switch among every other
+ * mode during that cooldown, just not back into mode 2 itself
+ * (update_shoot_mode_switch enforces that one restriction). rapid_burst_timer
+ * and rapid_cooldown_timer are mutually exclusive: exactly one is nonzero
  * while a burst is in flight or recovering, both are zero while idle. */
 static void update_rapid_fire(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
     Player *p = &gs->player;
@@ -801,6 +807,7 @@ static void update_rapid_fire(GameState *gs, const InputCommand *input, float dt
         if (p->rapid_burst_timer <= 0.0f) {
             p->rapid_burst_timer = 0.0f;
             p->rapid_cooldown_timer = RAPID_FIRE_LOCKOUT_DURATION;
+            p->shoot_mode = ship_shoot_mode_for_slot(gs->selected_ship, 0);
             return;
         }
         if (p->fire_cooldown <= 0.0f) {
@@ -813,12 +820,11 @@ static void update_rapid_fire(GameState *gs, const InputCommand *input, float dt
         return;
     }
 
-    if (p->rapid_cooldown_timer > 0.0f) {
-        p->rapid_cooldown_timer -= dt;
-        if (p->rapid_cooldown_timer < 0.0f) p->rapid_cooldown_timer = 0.0f;
-        return;
-    }
-
+    /* rapid_cooldown_timer itself ticks down in update_player_firing,
+     * unconditionally on dt regardless of shoot_mode - this function is
+     * only ever reached while shoot_mode is still SHOOT_MODE_RAPID, which
+     * the auto-switch above guarantees is never true while the cooldown
+     * is running. */
     if (input->fire_held) {
         p->rapid_burst_timer = RAPID_FIRE_BURST_DURATION;
         p->fire_cooldown = 0.0f; /* fire the first shot of the burst immediately */
@@ -897,10 +903,19 @@ static void update_omni_burst(GameState *gs, const InputCommand *input, EventQue
 /* Dispatches to whichever mode is currently active. fire_cooldown is
  * decremented once here regardless of mode - every mode but rapid fire
  * (which drives its own pair of timers) gates its shot on it, the same
- * single-timer pattern the original normal-only fire logic used. */
+ * single-timer pattern the original normal-only fire logic used.
+ * rapid_cooldown_timer is decremented here too, unconditionally on dt
+ * and regardless of shoot_mode - it has to run independently of
+ * update_rapid_fire now that shoot_mode is auto-switched away to slot 0
+ * the instant the burst ends (see update_rapid_fire), so update_rapid_fire
+ * itself is never reached again while the cooldown is actually running. */
 static void update_player_firing(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
     Player *p = &gs->player;
     if (p->fire_cooldown > 0.0f) p->fire_cooldown -= dt;
+    if (p->rapid_cooldown_timer > 0.0f) {
+        p->rapid_cooldown_timer -= dt;
+        if (p->rapid_cooldown_timer < 0.0f) p->rapid_cooldown_timer = 0.0f;
+    }
 
     /* While the super beam is active it replaces every shooting mode
      * entirely - see update_super_beam, which fires automatically every

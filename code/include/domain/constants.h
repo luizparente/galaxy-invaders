@@ -298,7 +298,7 @@
 #define RAPID_FIRE_SHOTS_PER_SEC 10.0f
 #define RAPID_FIRE_SHOT_INTERVAL (1.0f / RAPID_FIRE_SHOTS_PER_SEC)
 #define RAPID_FIRE_BURST_DURATION 3.0f
-#define RAPID_FIRE_LOCKOUT_DURATION 4.0f
+#define RAPID_FIRE_LOCKOUT_DURATION 20.0f
 #define RAPID_FIRE_PROJECTILE_RADIUS 5.0f
 
 /* Mode 3: power cannon. 3x a normal shot's damage, to go with its much

@@ -118,8 +118,12 @@ typedef struct Player {
     /* Rapid fire's own two-phase timer (see update_rapid_fire in
      * usecases/game_logic.c): rapid_burst_timer counts down the 3s of
      * automatic fire once triggered, then rapid_cooldown_timer counts down
-     * the following 4s lockout. Both 0 means idle - free to fire normally
-     * or switch modes. Only one of the two is ever nonzero at a time. */
+     * the following 20s lockout, during which shoot_mode is auto-switched
+     * away to slot 0 and mode 2 (SHOOT_MODE_RAPID) alone is unselectable
+     * (see update_shoot_mode_switch) - every other mode is free to switch
+     * into during the lockout. Both 0 means idle - free to fire normally
+     * or switch modes, mode 2 included. Only one of the two is ever
+     * nonzero at a time. */
     float rapid_burst_timer;
     float rapid_cooldown_timer;
 
