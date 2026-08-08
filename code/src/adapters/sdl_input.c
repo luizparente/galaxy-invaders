@@ -7,6 +7,8 @@ typedef struct SdlInputCtx {
     bool prev_back;
     bool prev_up;
     bool prev_down;
+    bool prev_left;
+    bool prev_right;
     bool prev_god_mode_combo;
     bool prev_shoot_mode_1;
     bool prev_shoot_mode_2;
@@ -51,6 +53,8 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     out->back_pressed = back && !ctx->prev_back;
     out->nav_up_pressed = up && !ctx->prev_up;
     out->nav_down_pressed = down && !ctx->prev_down;
+    out->nav_left_pressed = left && !ctx->prev_left;
+    out->nav_right_pressed = right && !ctx->prev_right;
     out->god_mode_toggle_pressed = god_mode_combo && !ctx->prev_god_mode_combo;
     out->shoot_mode_1_pressed = shoot_mode_1 && !ctx->prev_shoot_mode_1;
     out->shoot_mode_2_pressed = shoot_mode_2 && !ctx->prev_shoot_mode_2;
@@ -63,6 +67,8 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     ctx->prev_back = back;
     ctx->prev_up = up;
     ctx->prev_down = down;
+    ctx->prev_left = left;
+    ctx->prev_right = right;
     ctx->prev_god_mode_combo = god_mode_combo;
     ctx->prev_shoot_mode_1 = shoot_mode_1;
     ctx->prev_shoot_mode_2 = shoot_mode_2;

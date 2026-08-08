@@ -30,7 +30,7 @@ run: $(BIN)
 # Unit tests exercise only the SDL-free usecases layer (pure game rules),
 # so they build without linking SDL at all.
 TEST_LOGIC_SOURCES := src/usecases/game_logic.c src/usecases/collision.c \
-                       src/usecases/difficulty.c src/usecases/spawner.c
+                       src/usecases/difficulty.c src/usecases/ship.c src/usecases/spawner.c
 TEST_RUNNER := tests/test_runner
 
 test: $(TEST_RUNNER)

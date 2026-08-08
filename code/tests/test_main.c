@@ -9,6 +9,7 @@
 #include "ports/input_port.h"
 #include "usecases/collision.h"
 #include "usecases/difficulty.h"
+#include "usecases/ship.h"
 #include "usecases/game_logic.h"
 
 /* These tests exercise only the usecases layer (pure game rules) directly
@@ -22,17 +23,20 @@ static InputCommand no_input(void) {
 
 /* Tests run at exactly the DESIGN_W x DESIGN_H baseline so gs->scale
  * comes out to 1.0 and every design-baseline constant (PLAYER_WIDTH, etc.)
- * can be asserted against directly without carrying a scale factor. Two
- * confirms: the main menu now leads to the difficulty-select screen
- * (STATE_DIFFICULTY_SELECT) instead of starting the run directly - the
- * second confirm accepts whatever difficulty game_init defaults to
- * (DIFFICULTY_NORMAL), matching this suite's pre-existing behavior/tuning
- * assumptions since normal was also the game's original single-tier
- * default before difficulty levels existed. */
+ * can be asserted against directly without carrying a scale factor. Three
+ * confirms: the main menu leads to the difficulty-select screen
+ * (STATE_DIFFICULTY_SELECT), which leads to the ship-select screen
+ * (STATE_SHIP_SELECT), before the run actually starts - the second and
+ * third confirms accept whatever difficulty/ship game_init defaults to
+ * (DIFFICULTY_NORMAL/SHIP_B20), matching this suite's pre-existing
+ * behavior/tuning assumptions since normal was also the game's original
+ * single-tier default before difficulty levels existed, and every ship
+ * multiplier is 1.0 at the B-20 baseline. */
 static void start_game(GameState *gs, EventQueue *events) {
     game_init(gs, DESIGN_W, DESIGN_H);
     InputCommand confirm = no_input();
     confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events);
     game_update(gs, &confirm, 0.016f, events);
     game_update(gs, &confirm, 0.016f, events);
 }
@@ -136,7 +140,7 @@ static void test_difficulty_select_back_returns_to_menu_without_starting(void) {
     printf("test_difficulty_select_back_returns_to_menu_without_starting OK\n");
 }
 
-static void test_difficulty_select_confirm_starts_game_with_chosen_difficulty(void) {
+static void test_difficulty_select_confirm_leads_to_ship_select(void) {
     GameState gs;
     EventQueue events;
     game_init(&gs, DESIGN_W, DESIGN_H);
@@ -151,9 +155,153 @@ static void test_difficulty_select_confirm_starts_game_with_chosen_difficulty(vo
     assert(gs.selected_difficulty == DIFFICULTY_HARD);
 
     game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_SHIP_SELECT); /* not started yet - ship still needs picking */
+    assert(gs.selected_difficulty == DIFFICULTY_HARD); /* carried over, untouched */
+    assert(gs.selected_ship == SHIP_B20); /* untouched until navigated */
+    printf("test_difficulty_select_confirm_leads_to_ship_select OK\n");
+}
+
+static void test_ship_select_navigation_clamps_at_ends(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(&gs, &confirm, 0.016f, &events); /* -> STATE_SHIP_SELECT */
+    assert(gs.state == STATE_SHIP_SELECT);
+
+    InputCommand left = no_input();
+    left.nav_left_pressed = true;
+    for (int i = 0; i < 10; i++) game_update(&gs, &left, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_B20); /* clamped, doesn't go negative */
+
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_C24); /* clamped at the last implemented ship */
+    printf("test_ship_select_navigation_clamps_at_ends OK\n");
+}
+
+static void test_ship_select_back_returns_to_difficulty_select(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events);
+    game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_SHIP_SELECT);
+
+    InputCommand esc = no_input();
+    esc.back_pressed = true;
+    game_update(&gs, &esc, 0.016f, &events);
+    assert(gs.state == STATE_DIFFICULTY_SELECT);
+    printf("test_ship_select_back_returns_to_difficulty_select OK\n");
+}
+
+static void test_ship_select_confirm_starts_game_with_chosen_ship(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events);
+    game_update(&gs, &confirm, 0.016f, &events);
+    assert(gs.state == STATE_SHIP_SELECT);
+
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(&gs, &right, 0.016f, &events); /* B-20 -> C-24 */
+    assert(gs.selected_ship == SHIP_C24);
+
+    game_update(&gs, &confirm, 0.016f, &events);
     assert(gs.state == STATE_GAME);
-    assert(gs.selected_difficulty == DIFFICULTY_HARD); /* the run keeps the chosen difficulty */
-    printf("test_difficulty_select_confirm_starts_game_with_chosen_difficulty OK\n");
+    assert(gs.selected_ship == SHIP_C24); /* the run keeps the chosen ship */
+    printf("test_ship_select_confirm_starts_game_with_chosen_ship OK\n");
+}
+
+static void test_ship_ratings_and_multipliers(void) {
+    assert(ship_speed_rating(SHIP_B20) == 7);
+    assert(ship_strength_rating(SHIP_B20) == 5);
+    assert(ship_attack_rating(SHIP_B20) == 8);
+    assert(ship_speed_rating(SHIP_C24) == 5);
+    assert(ship_strength_rating(SHIP_C24) == 7);
+    assert(ship_attack_rating(SHIP_C24) == 8);
+
+    /* B-20 is the tuning baseline: both its multipliers are always 1.0. */
+    assert(fabsf(ship_speed_multiplier(SHIP_B20) - 1.0f) < 0.001f);
+    assert(fabsf(ship_damage_taken_multiplier(SHIP_B20) - 1.0f) < 0.001f);
+
+    /* C-24 is slower (lower Speed rating than B-20) but tougher (higher
+     * Strength rating - takes proportionally less life loss per hit, so
+     * it can absorb more hits before life reaches 0). */
+    assert(ship_speed_multiplier(SHIP_C24) < 1.0f);
+    assert(ship_damage_taken_multiplier(SHIP_C24) < 1.0f);
+    assert(fabsf(ship_speed_multiplier(SHIP_C24) - 5.0f / 7.0f) < 0.001f);
+    assert(fabsf(ship_damage_taken_multiplier(SHIP_C24) - 5.0f / 7.0f) < 0.001f);
+
+    /* Pinned to the exact figures from the generalized formulas documented
+     * in usecases/ship.h - Speed is a direct proportion of B-20's rating
+     * (100% at Speed 7), Strength an inverse proportion of B-20's own
+     * life-loss-per-hit (10% at Strength 5). Locking these exact numbers
+     * down (not just "less than B-20") is what guarantees a tougher-rated
+     * ship can never end up taking *more* damage per hit than a
+     * weaker-rated one - the bug this test suite exists to catch. */
+    assert(fabsf(ship_speed_percent(SHIP_B20) - 100.0f) < 0.001f);
+    assert(fabsf(ship_life_loss_percent_per_hit(SHIP_B20) - 10.0f) < 0.001f);
+    assert(fabsf(ship_speed_percent(SHIP_C24) - 500.0f / 7.0f) < 0.001f);
+    assert(fabsf(ship_life_loss_percent_per_hit(SHIP_C24) - 50.0f / 7.0f) < 0.001f);
+    assert(ship_life_loss_percent_per_hit(SHIP_C24) < ship_life_loss_percent_per_hit(SHIP_B20));
+    printf("test_ship_ratings_and_multipliers OK\n");
+}
+
+/* Integration-level counterpart to test_ship_ratings_and_multipliers: picking
+ * C-24 instead of the default B-20 must actually move update_player and
+ * damage_player, not just change what usecases/ship.c reports in isolation. */
+static void test_selected_ship_affects_speed_and_damage_taken(void) {
+    GameState gs_b20, gs_c24;
+    EventQueue events;
+    start_game(&gs_b20, &events); /* defaults to SHIP_B20 */
+
+    game_init(&gs_c24, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs_c24, &confirm, 0.016f, &events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(&gs_c24, &confirm, 0.016f, &events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(&gs_c24, &right, 0.016f, &events); /* B-20 -> C-24 */
+    game_update(&gs_c24, &confirm, 0.016f, &events); /* -> STATE_GAME */
+    assert(gs_c24.selected_ship == SHIP_C24);
+
+    float start_x_b20 = gs_b20.player.x, start_x_c24 = gs_c24.player.x;
+    InputCommand move_right = no_input();
+    move_right.move_right = true;
+    game_update(&gs_b20, &move_right, 0.1f, &events);
+    game_update(&gs_c24, &move_right, 0.1f, &events);
+    float moved_b20 = gs_b20.player.x - start_x_b20;
+    float moved_c24 = gs_c24.player.x - start_x_c24;
+    assert(moved_b20 > 0.0f && moved_c24 > 0.0f);
+    assert(moved_c24 < moved_b20); /* C-24's lower Speed rating flies slower */
+
+    float life_b20 = gs_b20.player.life, life_c24 = gs_c24.player.life;
+    gs_b20.enemy_shots[0] = (Projectile){.alive = true, .x = gs_b20.player.x, .y = gs_b20.player.y};
+    gs_c24.enemy_shots[0] = (Projectile){.alive = true, .x = gs_c24.player.x, .y = gs_c24.player.y};
+    InputCommand idle = no_input();
+    game_update(&gs_b20, &idle, 0.001f, &events);
+    game_update(&gs_c24, &idle, 0.001f, &events);
+    float lost_b20 = life_b20 - gs_b20.player.life;
+    float lost_c24 = life_c24 - gs_c24.player.life;
+    assert(lost_b20 > 0.0f && lost_c24 > 0.0f);
+    assert(lost_c24 < lost_b20); /* C-24's higher Strength rating absorbs more hits */
+    /* Pinned to the exact formula in usecases/ship.h, through the real
+     * damage_player code path (not just the pure ship_* functions in
+     * isolation) - B-20 loses exactly PLAYER_LIFE_LOSS_PER_HIT, C-24 loses
+     * exactly 5/7 of it. */
+    assert(fabsf(lost_b20 - PLAYER_LIFE_LOSS_PER_HIT) < 0.01f);
+    assert(fabsf(lost_c24 - PLAYER_LIFE_LOSS_PER_HIT * 5.0f / 7.0f) < 0.01f);
+    printf("test_selected_ship_affects_speed_and_damage_taken OK\n");
 }
 
 static void test_player_movement_clamped(void) {
@@ -1381,7 +1529,12 @@ int main(void) {
     test_menu_confirm_leads_to_difficulty_select();
     test_difficulty_select_navigation_clamps_at_ends();
     test_difficulty_select_back_returns_to_menu_without_starting();
-    test_difficulty_select_confirm_starts_game_with_chosen_difficulty();
+    test_difficulty_select_confirm_leads_to_ship_select();
+    test_ship_select_navigation_clamps_at_ends();
+    test_ship_select_back_returns_to_difficulty_select();
+    test_ship_select_confirm_starts_game_with_chosen_ship();
+    test_ship_ratings_and_multipliers();
+    test_selected_ship_affects_speed_and_damage_taken();
     test_player_movement_clamped();
     test_player_can_reach_top_of_screen();
     test_super_beam_increases_player_speed();

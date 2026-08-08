@@ -40,6 +40,7 @@ static inline Color color_from_hsv(float h, float s, float v) {
 typedef enum GameStateId {
     STATE_MENU,
     STATE_DIFFICULTY_SELECT,
+    STATE_SHIP_SELECT,
     STATE_GAME,
     STATE_PAUSE,
     STATE_GAME_OVER,
@@ -64,6 +65,19 @@ typedef enum Difficulty {
     DIFFICULTY_INSANE,
     DIFFICULTY_COUNT,
 } Difficulty;
+
+/* Chosen on the ship-select screen (see update_ship_select in
+ * usecases/game_logic.c) reached right after confirming a difficulty, and
+ * kept for the whole run - see GameState.selected_ship and usecases/ship.c
+ * for how each ship's Speed/Strength ratings translate into real gameplay
+ * multipliers. Only SHIP_B20 and SHIP_C24 are implemented; the ship-select
+ * grid has room for more (adapters/sdl_renderer.c) but every slot past
+ * SHIP_COUNT renders as a locked placeholder, not a real Ship value. */
+typedef enum Ship {
+    SHIP_B20 = 0,
+    SHIP_C24,
+    SHIP_COUNT,
+} Ship;
 
 /* The player's selectable shooting ability - switched with the 1-5 number
  * keys (see InputCommand). SHOOT_MODE_COUNT is also the indicator's dot
@@ -327,6 +341,15 @@ typedef struct GameState {
      * instead of resetting every time. Defaults to DIFFICULTY_NORMAL at
      * startup (see game_init). */
     Difficulty selected_difficulty;
+
+    /* The cursor on the ship-select screen (see update_ship_select in
+     * usecases/game_logic.c), reached right after confirming a difficulty,
+     * and once confirmed, the ship the run in progress was started with -
+     * kept across STATE_MENU/STATE_DIFFICULTY_SELECT/STATE_SHIP_SELECT
+     * round trips (reset_run deliberately never touches it), same
+     * "selection is the state" pattern as selected_difficulty above.
+     * Defaults to SHIP_B20 at startup (see game_init). */
+    Ship selected_ship;
 
     /* Real playfield size in pixels (matches the physical screen exactly -
      * see domain/constants.h) and the uniform factor every design-baseline

@@ -2,14 +2,17 @@
 #include <stdlib.h>
 #include <math.h>
 
+#include <string.h>
+
 #include "adapters/sdl_renderer.h"
 #include "adapters/graphics_primitives.h"
 #include "adapters/pixel_font.h"
-#include "adapters/player_sprite.h"
+#include "adapters/ship_sprites.h"
 #include "adapters/enemy_sprites.h"
 #include "adapters/menu_ship_sprite.h"
 #include "adapters/menu_planet_sprites.h"
 #include "domain/constants.h"
+#include "usecases/ship.h"
 
 typedef struct SdlRendererCtx {
     SDL_Window *window;
@@ -78,22 +81,23 @@ static void draw_scanlines(SdlRendererCtx *ctx, const GameState *gs) {
     }
 }
 
-static void draw_player(SdlRendererCtx *ctx, const Player *p, float scale) {
-    if (!p->alive) return;
+/* Blits an embedded square RGBA pixel grid (adapters/ship_sprites) cell by
+ * cell, centered at (cx, cy) and scaled to (w, h) - the only bitmap sprites
+ * in an otherwise procedural renderer, same technique for every ship the
+ * player can fly (draw_player) and for that ship's icon/preview on the
+ * ship-select screen (draw_ship_select_screen). god_tint, when non-NULL,
+ * blends toward it (see kGodModeTint) - only the live in-game ship ever
+ * passes one. */
+static void draw_ship_sprite(SdlRendererCtx *ctx, const ShipSpriteSheet *sheet, float cx, float cy,
+                              float w, float h, const Color *god_tint) {
+    float cell_w = w / (float)sheet->size;
+    float cell_h = h / (float)sheet->size;
+    float left = cx - w / 2.0f;
+    float top = cy - h / 2.0f;
 
-    float w = PLAYER_WIDTH * scale;
-    float h = PLAYER_HEIGHT * scale;
-    float cell_w = w / (float)PLAYER_SPRITE_SIZE;
-    float cell_h = h / (float)PLAYER_SPRITE_SIZE;
-    float left = p->x - w / 2.0f;
-    float top = p->y - h / 2.0f;
-
-    /* Pixel-perfect reproduction of the reference ship art, embedded as a
-     * 64x64 RGBA grid (see adapters/player_sprite) and blitted cell by
-     * cell - the only bitmap sprite in an otherwise procedural renderer. */
-    for (int gy = 0; gy < PLAYER_SPRITE_SIZE; gy++) {
-        for (int gx = 0; gx < PLAYER_SPRITE_SIZE; gx++) {
-            uint32_t packed = kPlayerSpritePixels[gy * PLAYER_SPRITE_SIZE + gx];
+    for (int gy = 0; gy < sheet->size; gy++) {
+        for (int gx = 0; gx < sheet->size; gx++) {
+            uint32_t packed = sheet->pixels[gy * sheet->size + gx];
             unsigned char a = (unsigned char)(packed & 0xFFu);
             if (a == 0) continue;
 
@@ -103,12 +107,22 @@ static void draw_player(SdlRendererCtx *ctx, const Player *p, float scale) {
                 (unsigned char)((packed >> 8) & 0xFFu),
                 a,
             };
-            if (p->god_mode) c = lerp_color(c, kGodModeTint, 0.6f);
+            if (god_tint) c = lerp_color(c, *god_tint, 0.6f);
 
             gp_fill_rect(ctx->renderer, left + (float)gx * cell_w, top + (float)gy * cell_h,
                          cell_w + 0.5f, cell_h + 0.5f, c);
         }
     }
+}
+
+static void draw_player(SdlRendererCtx *ctx, const GameState *gs) {
+    const Player *p = &gs->player;
+    if (!p->alive) return;
+
+    float w = PLAYER_WIDTH * gs->scale;
+    float h = PLAYER_HEIGHT * gs->scale;
+    draw_ship_sprite(ctx, &kShipSprites[gs->selected_ship], p->x, p->y, w, h,
+                      p->god_mode ? &kGodModeTint : NULL);
 }
 
 /* Shared by draw_enemy and draw_boss: the boss presents as "a randomly
@@ -567,7 +581,7 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, &gs->enemy_shots[i], false, gs->scale);
     for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) draw_trail_particle(ctx, &gs->trail_particles[i]);
     draw_super_beam(ctx, gs);
-    draw_player(ctx, &gs->player, gs->scale);
+    draw_player(ctx, gs);
 }
 
 /* Fixed top-left life bar: a grey outline always shows the full-bar
@@ -876,9 +890,190 @@ static void draw_difficulty_select_screen(SdlRendererCtx *ctx, const GameState *
         draw_centered(ctx, gs, kDifficultyLabels[i], first_y + step_y * (float)i, 3.5f * gs->scale, c);
     }
 
-    const char *instructions = "ARROWS CHOOSE  ENTER/SPACE START  ESC BACK";
+    const char *instructions = "ARROWS CHOOSE  ENTER/SPACE NEXT  ESC BACK";
     float instr_size = 1.6f * gs->scale;
     draw_centered(ctx, gs, instructions, (float)gs->screen_h * 0.88f, instr_size, kDim);
+}
+
+/* Left-aligned counterpart to draw_centered, for the ship-select screen's
+ * right-hand panel (name, attribute labels, description) where every line
+ * shares a left edge instead of being individually centered. */
+static void draw_left(SdlRendererCtx *ctx, float x, float y, const char *text, float size, Color c) {
+    pf_draw_text(ctx->renderer, x, y, size, c, text);
+}
+
+/* Greedily wraps `text` (plain spaces between words) into lines no wider
+ * than max_w at the given font size, writing up to max_lines results into
+ * `out` (each up to out_line_cap - 1 chars) and returning how many lines it
+ * used. Used only for each ship's description on the ship-select screen -
+ * pf_draw_text itself has no wrapping of its own, it just draws whatever
+ * single line it's given. */
+static int wrap_text_lines(const char *text, float size, float max_w, char out[][96], int max_lines,
+                            int out_line_cap) {
+    char buf[512];
+    size_t len = strlen(text);
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    memcpy(buf, text, len);
+    buf[len] = '\0';
+
+    int line_count = 0;
+    char current[128] = "";
+    char *save = NULL;
+    for (char *word = strtok_r(buf, " ", &save); word; word = strtok_r(NULL, " ", &save)) {
+        char trial[128];
+        if (current[0]) snprintf(trial, sizeof(trial), "%s %s", current, word);
+        else snprintf(trial, sizeof(trial), "%s", word);
+
+        if (current[0] && pf_text_width(trial, size) > max_w) {
+            if (line_count >= max_lines) break;
+            snprintf(out[line_count++], (size_t)out_line_cap, "%s", current);
+            snprintf(current, sizeof(current), "%s", word);
+        } else {
+            snprintf(current, sizeof(current), "%s", trial);
+        }
+    }
+    if (current[0] && line_count < max_lines) snprintf(out[line_count++], (size_t)out_line_cap, "%s", current);
+    return line_count;
+}
+
+static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24"};
+
+/* Ad copy for the ship-select screen's description panel - written from
+ * the same two capsule descriptions the ships were specced with ("versatile
+ * and fast... built for the most skilled pilots" / "resilient and strong,
+ * piloted only by the bravest"), expanded to fill the panel. All caps: the
+ * pixel font (adapters/pixel_font) only has uppercase glyphs, same
+ * convention every other in-game string here already follows. */
+static const char *const kShipDescriptions[SHIP_COUNT] = {
+    "A VERSATILE, FAST SPACESHIP BUILT FOR THE MOST SKILLED PILOTS. "
+    "QUICK ON THE STICK AND SHARP IN A DOGFIGHT, THE B-20 REWARDS "
+    "PRECISION AND REFLEX OVER BRUTE FORCE.",
+    "RESILIENT AND STRONG, PILOTED ONLY BY THE BRAVEST. THE C-24 "
+    "TRADES RAW SPEED FOR HEAVY PLATING THAT SHRUGS OFF PUNISHMENT, "
+    "LETTING ITS PILOT STAND AND FIGHT WHEN OTHERS WOULD FLEE.",
+};
+
+static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};
+
+#define SHIP_SELECT_GRID_COLS 4
+#define SHIP_SELECT_GRID_ROWS 4
+#define SHIP_SELECT_GRID_SLOTS (SHIP_SELECT_GRID_COLS * SHIP_SELECT_GRID_ROWS)
+
+/* A 0-10 rating drawn as 10 small blocks, filled left to right - shared by
+ * every attribute row on the ship-select screen's right-hand panel. */
+static void draw_rating_bar(SdlRendererCtx *ctx, float x, float y, float w, float h, int rating, Color fill_c) {
+    static const int kSegments = 10;
+    float seg_gap = w * 0.015f;
+    float seg_w = (w - seg_gap * (float)(kSegments - 1)) / (float)kSegments;
+    for (int i = 0; i < kSegments; i++) {
+        Color c = (i < rating) ? fill_c : kDim;
+        gp_fill_rect(ctx->renderer, x + (float)i * (seg_w + seg_gap), y, seg_w, h, c);
+    }
+}
+
+/* The dark-grey "not yet implemented" placeholder shown in every ship-select
+ * grid slot past SHIP_COUNT - three layered, progressively larger and more
+ * transparent squares faking a soft blur, the same "enlarged copies at
+ * decreasing alpha" trick pf_draw_text_neon already uses for its glow
+ * (adapters/pixel_font.c), rather than an actual box-blur render pass. */
+static void draw_locked_ship_slot(SdlRendererCtx *ctx, float cx, float cy, float size) {
+    static const float kBlurScales[] = {1.3f, 1.12f, 1.0f};
+    static const unsigned char kBlurAlphas[] = {35, 70, 120};
+    for (int layer = 0; layer < 3; layer++) {
+        float s = size * kBlurScales[layer];
+        Color c = {60, 60, 68, kBlurAlphas[layer]};
+        gp_fill_rect(ctx->renderer, cx - s / 2.0f, cy - s / 2.0f, s, s, c);
+    }
+}
+
+/* Reached right after confirming a difficulty (see update_ship_select in
+ * usecases/game_logic.c) - same decorative, dimmed backdrop as
+ * draw_difficulty_select_screen. The screen splits in half: a 4x4 grid of
+ * ship slots on the left (only SHIP_COUNT of the 16 are unlocked - B-20 and
+ * C-24, top-left in reading order - every other slot is an inert locked
+ * placeholder, see draw_locked_ship_slot), and the hovered ship's
+ * Speed/Strength/Attack ratings plus its description on the right - both
+ * driven by gs->selected_ship, which doubles as the grid cursor exactly the
+ * way gs->selected_difficulty drives the difficulty list. */
+static void draw_ship_select_screen(SdlRendererCtx *ctx, const GameState *gs) {
+    draw_menu_decorations(ctx, gs);
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    gp_fill_rect(ctx->renderer, 0, 0, (float)gs->screen_w, (float)gs->screen_h, (Color){5, 5, 15, 150});
+
+    draw_centered(ctx, gs, "SELECT YOUR SHIP", (float)gs->screen_h * 0.08f, 3.6f * gs->scale, kWhite);
+
+    float margin = 20.0f * gs->scale;
+    float half_x = (float)gs->screen_w / 2.0f;
+
+    /* --- Left half: the 4x4 grid --- */
+    float grid_x0 = margin, grid_x1 = half_x - margin * 0.5f;
+    float grid_y0 = (float)gs->screen_h * 0.16f, grid_y1 = (float)gs->screen_h * 0.84f;
+    float cell_gap = 10.0f * gs->scale;
+    float avail_w = grid_x1 - grid_x0, avail_h = grid_y1 - grid_y0;
+    float cell_w = (avail_w - cell_gap * (float)(SHIP_SELECT_GRID_COLS - 1)) / (float)SHIP_SELECT_GRID_COLS;
+    float cell_h = (avail_h - cell_gap * (float)(SHIP_SELECT_GRID_ROWS - 1)) / (float)SHIP_SELECT_GRID_ROWS;
+    float cell_size = fminf(cell_w, cell_h);
+    float grid_w = cell_size * (float)SHIP_SELECT_GRID_COLS + cell_gap * (float)(SHIP_SELECT_GRID_COLS - 1);
+    float grid_h = cell_size * (float)SHIP_SELECT_GRID_ROWS + cell_gap * (float)(SHIP_SELECT_GRID_ROWS - 1);
+    float grid_ox = grid_x0 + (avail_w - grid_w) / 2.0f;
+    float grid_oy = grid_y0 + (avail_h - grid_h) / 2.0f;
+
+    static const Color kPanelBg = {20, 20, 45, 255};
+    float border_t = 3.0f * gs->scale;
+
+    for (int idx = 0; idx < SHIP_SELECT_GRID_SLOTS; idx++) {
+        int row = idx / SHIP_SELECT_GRID_COLS, col = idx % SHIP_SELECT_GRID_COLS;
+        float cx0 = grid_ox + (float)col * (cell_size + cell_gap);
+        float cy0 = grid_oy + (float)row * (cell_size + cell_gap);
+        float ccx = cx0 + cell_size / 2.0f, ccy = cy0 + cell_size / 2.0f;
+
+        if (idx >= SHIP_COUNT) {
+            draw_locked_ship_slot(ctx, ccx, ccy, cell_size * 0.85f);
+            continue;
+        }
+
+        bool hovered = (int)gs->selected_ship == idx;
+        Color border_c = hovered ? kYellow : kDim;
+        gp_fill_rect(ctx->renderer, cx0, cy0, cell_size, cell_size, border_c);
+        gp_fill_rect(ctx->renderer, cx0 + border_t, cy0 + border_t, cell_size - border_t * 2.0f,
+                     cell_size - border_t * 2.0f, kPanelBg);
+
+        draw_ship_sprite(ctx, &kShipSprites[idx], ccx, ccy, cell_size * 0.72f, cell_size * 0.72f, NULL);
+    }
+
+    /* --- Right half: attributes + description for the hovered ship --- */
+    float right_x0 = half_x + margin * 0.5f;
+    float right_w = (float)gs->screen_w - margin - right_x0;
+
+    Ship ship = gs->selected_ship;
+    float name_y = (float)gs->screen_h * 0.16f;
+    draw_left(ctx, right_x0, name_y, kShipNames[ship], 4.0f * gs->scale, kYellow);
+
+    float attr_y = name_y + 56.0f * gs->scale;
+    float attr_step = 44.0f * gs->scale;
+    float label_size = 2.0f * gs->scale;
+    float bar_h = 10.0f * gs->scale;
+    int ratings[3] = {ship_speed_rating(ship), ship_strength_rating(ship), ship_attack_rating(ship)};
+    for (int i = 0; i < 3; i++) {
+        float y = attr_y + attr_step * (float)i;
+        draw_left(ctx, right_x0, y, kShipAttackAttributeLabels[i], label_size, kWhite);
+        draw_rating_bar(ctx, right_x0, y + 7.0f * label_size + 4.0f * gs->scale, right_w, bar_h, ratings[i],
+                         kYellow);
+    }
+
+    float desc_y = attr_y + attr_step * 3.0f + 20.0f * gs->scale;
+    float desc_size = 1.7f * gs->scale;
+    float desc_line_h = 9.0f * desc_size;
+    char lines[12][96];
+    int line_count = wrap_text_lines(kShipDescriptions[ship], desc_size, right_w, lines, 12, 96);
+    for (int i = 0; i < line_count; i++) {
+        draw_left(ctx, right_x0, desc_y + desc_line_h * (float)i, lines[i], desc_size, kDim);
+    }
+
+    const char *instructions = "ARROWS CHOOSE  ENTER/SPACE CONFIRM  ESC BACK";
+    float instr_size = 1.6f * gs->scale;
+    draw_centered(ctx, gs, instructions, (float)gs->screen_h * 0.92f, instr_size, kDim);
 }
 
 static void draw_pause_overlay(SdlRendererCtx *ctx, const GameState *gs) {
@@ -922,6 +1117,9 @@ static void sdl_render_frame(void *self, const GameState *gs) {
             break;
         case STATE_DIFFICULTY_SELECT:
             draw_difficulty_select_screen(ctx, gs);
+            break;
+        case STATE_SHIP_SELECT:
+            draw_ship_select_screen(ctx, gs);
             break;
         case STATE_GAME:
             draw_gameplay(ctx, gs);

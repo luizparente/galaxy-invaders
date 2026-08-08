@@ -19,6 +19,12 @@ typedef struct InputCommand {
     bool back_pressed;
     bool nav_up_pressed;
     bool nav_down_pressed;
+    /* Left/right counterpart to nav_up_pressed/nav_down_pressed, edge-
+     * triggered off the same raw left/right state move_left/move_right
+     * read - used by the ship-select screen (adapters/sdl_renderer.c) to
+     * move across its row of unlocked ships. */
+    bool nav_left_pressed;
+    bool nav_right_pressed;
     bool god_mode_toggle_pressed;
 
     /* Number keys 1-5 select a shooting mode (ShootMode in domain/types.h)

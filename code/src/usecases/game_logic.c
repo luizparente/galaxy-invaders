@@ -5,6 +5,7 @@
 #include "usecases/game_logic.h"
 #include "usecases/collision.h"
 #include "usecases/difficulty.h"
+#include "usecases/ship.h"
 #include "usecases/spawner.h"
 #include "domain/constants.h"
 
@@ -524,6 +525,7 @@ void game_init(GameState *gs, int screen_w, int screen_h) {
 
     gs->state = STATE_MENU;
     gs->selected_difficulty = DIFFICULTY_NORMAL;
+    gs->selected_ship = SHIP_B20;
     init_stars(gs);
 }
 
@@ -547,6 +549,10 @@ static void handle_global_back(GameState *gs, const InputCommand *input, EventQu
             gs->state = STATE_MENU;
             event_queue_push_sfx(events, SFX_MENU_SELECT);
             break;
+        case STATE_SHIP_SELECT:
+            gs->state = STATE_DIFFICULTY_SELECT;
+            event_queue_push_sfx(events, SFX_MENU_SELECT);
+            break;
         case STATE_GAME_OVER:
             break;
     }
@@ -565,8 +571,9 @@ static void update_menu(GameState *gs, const InputCommand *input, float dt, Even
  * cursor position and, once confirmed, the run's actual difficulty - same
  * "selection is the state" pattern as PauseSelection), clamped rather than
  * wrapping at the ends of the DIFFICULTY_BABY..DIFFICULTY_INSANE range.
- * Confirming starts the run via reset_run, same as the old direct
- * STATE_MENU -> reset_run path this screen was inserted in front of. */
+ * Confirming moves on to the ship-select screen (update_ship_select below)
+ * rather than starting the run directly - reset_run only fires once a ship
+ * is confirmed too. */
 static void update_difficulty_select(GameState *gs, const InputCommand *input, EventQueue *events) {
     if (input->nav_up_pressed && gs->selected_difficulty > 0) {
         gs->selected_difficulty--;
@@ -574,6 +581,32 @@ static void update_difficulty_select(GameState *gs, const InputCommand *input, E
     }
     if (input->nav_down_pressed && gs->selected_difficulty < DIFFICULTY_COUNT - 1) {
         gs->selected_difficulty++;
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+    }
+    if (input->confirm_pressed) {
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+        gs->state = STATE_SHIP_SELECT;
+    }
+}
+
+/* The ship-select screen reached right after confirming a difficulty -
+ * left/right moves the cursor across the row of unlocked ships
+ * (gs->selected_ship doubles as both the cursor position and, once
+ * confirmed, the run's actual ship, same "selection is the state" pattern
+ * as gs->selected_difficulty above), clamped at SHIP_B20/the last
+ * implemented ship rather than wrapping. Everything past SHIP_COUNT in the
+ * ship-select grid is a locked placeholder the renderer draws directly
+ * (adapters/sdl_renderer.c) - there's no cursor state for those slots to
+ * land on. Confirming starts the run via reset_run, same as the old direct
+ * STATE_DIFFICULTY_SELECT -> reset_run path this screen was inserted in
+ * front of. */
+static void update_ship_select(GameState *gs, const InputCommand *input, EventQueue *events) {
+    if (input->nav_left_pressed && gs->selected_ship > 0) {
+        gs->selected_ship--;
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+    }
+    if (input->nav_right_pressed && gs->selected_ship < SHIP_COUNT - 1) {
+        gs->selected_ship++;
         event_queue_push_sfx(events, SFX_MENU_SELECT);
     }
     if (input->confirm_pressed) {
@@ -624,7 +657,7 @@ static void damage_player(GameState *gs, EventQueue *events, float amount) {
     if (p->super_beam_timer > 0.0f) return;
     if (p->god_mode) return;
 
-    p->life -= amount;
+    p->life -= amount * ship_damage_taken_multiplier(gs->selected_ship);
     if (p->life <= 0.0f) {
         p->life = 0.0f;
         kill_player(gs, events);
@@ -786,7 +819,7 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
         dy *= inv_sqrt2;
     }
 
-    float speed = scaled(gs, PLAYER_SPEED);
+    float speed = scaled(gs, PLAYER_SPEED) * ship_speed_multiplier(gs->selected_ship);
     if (p->super_beam_timer > 0.0f) speed *= SUPER_BEAM_SPEED_MULTIPLIER;
     p->x += dx * speed * dt;
     p->y += dy * speed * dt;
@@ -1387,6 +1420,9 @@ void game_update(GameState *gs, const InputCommand *input, float dt, EventQueue 
             break;
         case STATE_DIFFICULTY_SELECT:
             update_difficulty_select(gs, input, events);
+            break;
+        case STATE_SHIP_SELECT:
+            update_ship_select(gs, input, events);
             break;
         case STATE_GAME:
             update_running(gs, input, dt, events);
