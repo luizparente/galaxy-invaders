@@ -1178,7 +1178,7 @@ static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSH
  * and fast... built for the most skilled pilots" / "resilient and strong,
  * piloted only by the bravest" / "the matriarch who fights against evil,
  * dispatching brave warriors to fight by her side" / "leverages the cosmic
- * powers of the galaxy to materialize crystals for offense and defense"),
+ * powers of the universe to materialize crystals for offense and defense"),
  * expanded to fill the panel. All caps: the pixel font
  * (adapters/pixel_font) only has uppercase glyphs, same convention every
  * other in-game string here already follows. */
@@ -1192,7 +1192,7 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "THE MATRIARCH WHO FIGHTS AGAINST EVIL, AND THE STRONGEST "
     "SPACESHIP IN THE FLEET. SHE DOES NOT FIGHT ALONE - SHE DISPATCHES "
     "BRAVE, COURAGEOUS WARRIORS TO FIGHT BY HER SIDE.",
-    "SHINE LEVERAGES THE COSMIC POWERS OF THE GALAXY TO MATERIALIZE "
+    "SHINE LEVERAGES THE COSMIC POWERS OF THE UNIVERSE TO MATERIALIZE "
     "POWERFUL CRYSTALS, USED FOR BOTH OFFENSE AND DEFENSE AGAINST THE "
     "MOST NEFARIOUS ELEMENTS OF THE GALAXY.",
 };
