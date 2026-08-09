@@ -57,6 +57,30 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
         *half_h = r;
         return;
     }
+    /* Every one of Shine's own shots is an elongated shard oriented along
+     * its own travel direction (see draw_shine_shard) - modes 1/3 always
+     * fly straight up, but mode 2's 12-way omni burst fires in every
+     * direction, so (unlike B-20's own SIDE mode, which only ever needs to
+     * pick between "vertical" and "horizontal") this can't just swap
+     * width/height on a bool. Instead it's the exact axis-aligned bounding
+     * box of the shard's own length x width rectangle rotated to match its
+     * unit travel direction (dx, dy) - fabsf(dx)/fabsf(dy) are exactly the
+     * projection of that rotation onto each axis, so this collapses to the
+     * same "swap on vertical vs horizontal" result for straight shots and
+     * stays exact for every diagonal in between. PROJECTILE_KIND_SHINE_SPIRAL
+     * (mode 3) is the longer of the two shard lengths. */
+    if (pr->style_ship == SHIP_SHINE) {
+        float length = scaled(gs, pr->kind == PROJECTILE_KIND_SHINE_SPIRAL ? SHINE_SPIRAL_SHARD_LENGTH
+                                                                            : SHINE_SHARD_LENGTH);
+        float width = scaled(gs, pr->kind == PROJECTILE_KIND_SHINE_SPIRAL ? SHINE_SPIRAL_SHARD_WIDTH
+                                                                           : SHINE_SHARD_WIDTH);
+        float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+        float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+        float dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+        *half_w = fabsf(dx) * length / 2.0f + fabsf(dy) * width / 2.0f;
+        *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -346,6 +370,22 @@ static const float kOmniDirY[ENEMY_OMNI_SHOT_COUNT] = {
     1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f, 0.70710678f,
 };
 
+/* Shine's own mode 2 (SHOOT_MODE_SHINE_OMNI): the same idea as kOmniDirX/Y
+ * above, just SHINE_OMNI_SHOT_COUNT (12, not 8) directions evenly spaced
+ * every 30 degrees - still written out rather than computed with sinf/cosf,
+ * since multiples of 30 degrees land on the same small set of exact values
+ * (0, 0.5, sqrt(3)/2, 1) that 45-degree multiples do. Kept independent of
+ * kOmniDirX/Y (not a generalized N-direction generator) so retuning one
+ * ship's burst can never accidentally retune another's or an enemy's. */
+static const float kShineOmniDirX[SHINE_OMNI_SHOT_COUNT] = {
+    0.0f, 0.5f, 0.86602540f, 1.0f, 0.86602540f, 0.5f,
+    0.0f, -0.5f, -0.86602540f, -1.0f, -0.86602540f, -0.5f,
+};
+static const float kShineOmniDirY[SHINE_OMNI_SHOT_COUNT] = {
+    1.0f, 0.86602540f, 0.5f, 0.0f, -0.5f, -0.86602540f,
+    -1.0f, -0.86602540f, -0.5f, 0.0f, 0.5f, 0.86602540f,
+};
+
 static void spawn_orb(GameState *gs) {
     Orb *o = &gs->orb;
     o->alive = true;
@@ -608,6 +648,7 @@ static void reset_run(GameState *gs) {
     gs->player.shoot_mode = ship_shoot_mode_for_slot(gs->selected_ship, 0);
     gs->player.rapid_burst_timer = 0.0f;
     gs->player.rapid_cooldown_timer = 0.0f;
+    gs->player.shine_omni_cooldown_timer = 0.0f;
     gs->player.trail_emit_timer = 0.0f;
 
     gs->score = 0;
@@ -769,6 +810,30 @@ static void damage_player(GameState *gs, EventQueue *events, float amount) {
     }
 }
 
+/* Shine's own mode 2 (SHOOT_MODE_SHINE_OMNI): fires SHINE_OMNI_SHOT_COUNT
+ * shards in every direction at once, gated on Player.shine_omni_cooldown_timer
+ * (decremented unconditionally in update_player_firing, the same pattern
+ * B-20's own rapid_cooldown_timer already uses). Unlike every other mode,
+ * this never assigns SHOOT_MODE_SHINE_OMNI to p->shoot_mode at all - it's
+ * triggered directly from update_shoot_mode_switch below and immediately
+ * leaves shoot_mode at mode 1 (SHOOT_MODE_SHINE_SHARDS), regardless of
+ * whatever mode was active before the key was pressed. On cooldown, pressing
+ * key 2 is simply a no-op - no sfx, no state change - same as every other
+ * mode's own switch already does nothing when it's not actually available. */
+static void trigger_shine_omni_burst(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->shine_omni_cooldown_timer > 0.0f) return;
+
+    float speed = scaled(gs, SHINE_SHARD_SPEED);
+    for (int k = 0; k < SHINE_OMNI_SHOT_COUNT; k++) {
+        spawn_player_shot(gs, p->x, p->y, kShineOmniDirX[k] * speed, kShineOmniDirY[k] * speed,
+                           PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE);
+    }
+    p->shine_omni_cooldown_timer = SHINE_OMNI_COOLDOWN;
+    p->shoot_mode = ship_shoot_mode_for_slot(SHIP_SHINE, 0);
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
 /* Mode switching (1-5 number keys) is locked out for the whole duration of
  * a rapid-fire burst - the player is committed to that automatic volley
  * (see update_rapid_fire). Once the burst ends, update_rapid_fire itself
@@ -793,6 +858,10 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
     if (slot < 0 || slot >= ship_shoot_mode_slot_count(gs->selected_ship)) return;
 
     ShootMode requested = ship_shoot_mode_for_slot(gs->selected_ship, slot);
+    if (requested == SHOOT_MODE_SHINE_OMNI) {
+        trigger_shine_omni_burst(gs, events);
+        return;
+    }
     if (requested == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) return;
     if (requested == p->shoot_mode) return;
     p->shoot_mode = requested;
@@ -919,6 +988,45 @@ static void update_omni_burst(GameState *gs, const InputCommand *input, EventQue
                            PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE);
     }
     p->fire_cooldown = SHIP_C24_OMNI_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Shine's own mode 1 (default): twin crystal shards fired straight from
+ * the nose, deliberately close together rather than wingtip-spaced like
+ * B-20's own DOUBLE mode - see SHINE_TWIN_SHARD_OFFSET_X's own doc comment
+ * for the exact "one shard-width of gap" spacing. Each shard's damage is
+ * halved (SHINE_TWIN_SHARD_DAMAGE_MULTIPLIER), the same "two shots cost
+ * the same total as one" precedent DOUBLE_BARREL_DAMAGE_MULTIPLIER already
+ * sets for a twin-shot mode. */
+static void update_shine_shards(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float offset = scaled(gs, SHINE_TWIN_SHARD_OFFSET_X);
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float vy = -scaled(gs, SHINE_SHARD_SPEED);
+    float damage = BASE_PLAYER_DAMAGE * SHINE_TWIN_SHARD_DAMAGE_MULTIPLIER;
+    spawn_player_shot(gs, p->x - offset, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
+    spawn_player_shot(gs, p->x + offset, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
+    p->fire_cooldown = SHINE_SHARDS_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Shine's own mode 3: a single longer shard (PROJECTILE_KIND_SHINE_SPIRAL)
+ * fired straight from the nose at "2 shots per second"
+ * (SHINE_SPIRAL_FIRE_COOLDOWN) - the same single-shot cadence pattern as
+ * update_normal_fire, just this ship's own projectile kind/speed/cooldown,
+ * at triple damage (SHINE_SPIRAL_DAMAGE_MULTIPLIER). The visual spin
+ * (draw_shine_shard in adapters/sdl_renderer.c) is purely cosmetic - travel
+ * is still straight up, only the drawn orientation rotates. */
+static void update_shine_spiral(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    spawn_player_shot(gs, p->x, p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f,
+                       0.0f, -scaled(gs, SHINE_SHARD_SPEED), PROJECTILE_KIND_SHINE_SPIRAL, false,
+                       BASE_PLAYER_DAMAGE * SHINE_SPIRAL_DAMAGE_MULTIPLIER);
+    p->fire_cooldown = SHINE_SPIRAL_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
@@ -1194,17 +1302,24 @@ static void update_mothership_dispatch(GameState *gs, const InputCommand *input,
  * decremented once here regardless of mode - every mode but rapid fire
  * (which drives its own pair of timers) gates its shot on it, the same
  * single-timer pattern the original normal-only fire logic used.
- * rapid_cooldown_timer is decremented here too, unconditionally on dt
- * and regardless of shoot_mode - it has to run independently of
- * update_rapid_fire now that shoot_mode is auto-switched away to slot 0
- * the instant the burst ends (see update_rapid_fire), so update_rapid_fire
- * itself is never reached again while the cooldown is actually running. */
+ * rapid_cooldown_timer and shine_omni_cooldown_timer are decremented here
+ * too, unconditionally on dt and regardless of shoot_mode - the former has
+ * to run independently of update_rapid_fire now that shoot_mode is
+ * auto-switched away to slot 0 the instant the burst ends (see
+ * update_rapid_fire), so update_rapid_fire itself is never reached again
+ * while the cooldown is actually running; the latter never had a mode of
+ * its own to run inside in the first place (see SHOOT_MODE_SHINE_OMNI's
+ * own doc comment) - this is the only place it ever ticks down at all. */
 static void update_player_firing(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
     Player *p = &gs->player;
     if (p->fire_cooldown > 0.0f) p->fire_cooldown -= dt;
     if (p->rapid_cooldown_timer > 0.0f) {
         p->rapid_cooldown_timer -= dt;
         if (p->rapid_cooldown_timer < 0.0f) p->rapid_cooldown_timer = 0.0f;
+    }
+    if (p->shine_omni_cooldown_timer > 0.0f) {
+        p->shine_omni_cooldown_timer -= dt;
+        if (p->shine_omni_cooldown_timer < 0.0f) p->shine_omni_cooldown_timer = 0.0f;
     }
 
     /* While the super beam is active it replaces every shooting mode
@@ -1220,6 +1335,9 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_OMNI: update_omni_burst(gs, input, events); break;
         case SHOOT_MODE_SWARM_WANDER:
         case SHOOT_MODE_SWARM_FORMATION: update_mothership_dispatch(gs, input, events); break;
+        case SHOOT_MODE_SHINE_SHARDS: update_shine_shards(gs, input, events); break;
+        case SHOOT_MODE_SHINE_SPIRAL: update_shine_spiral(gs, input, events); break;
+        case SHOOT_MODE_SHINE_OMNI: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_NORMAL:
         case SHOOT_MODE_COUNT:
         default: update_normal_fire(gs, input, events); break;

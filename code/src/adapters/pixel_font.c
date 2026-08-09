@@ -74,45 +74,31 @@ static float glyph_advance(float pixel_size) {
 }
 
 /* Every caller of pf_draw_text (score, life/HUD readouts, menu items, ship
- * names/descriptions, instructions - effectively all regular UI text in the
- * game, pf_draw_text_neon's big title logo being the one exception with its
- * own fancier shadow+outline treatment already) gets a dark drop shadow for
- * free here. Drawn as a full 8-direction outline one whole dot thick
- * (offset in exact multiples of pixel_size, not a fraction of it) rather
- * than a single diagonal offset copy - a fractional offset all but
- * disappeared on the smallest text in the game (the ship-select
- * description, the original complaint), since a fraction of an
- * already-small dot rounds down to nearly nothing. A full-dot offset stays
- * proportional at every size (it's the same glyph grid unit every caller
- * already draws in) and reads as a solid, unmissable outline instead of a
- * faint lift. Nearly opaque so it holds up against the busiest starfield/
+ * names, instructions - effectively all regular UI text in the game,
+ * pf_draw_text_neon's big title logo being the one exception with its own
+ * fancier shadow+outline treatment already) gets a light dark drop shadow
+ * for free here: a single copy offset a full dot down-right (not a
+ * fraction of one, so it stays proportional at every size instead of
+ * rounding away to nothing on small text) at moderate alpha - just enough
+ * lift off the background to stay readable without reading as a bold
+ * outline. draw_ship_select_screen's description panel wants a much
+ * stronger version of this (see pf_draw_text_strong_shadow below) since
+ * it's small, dense text sitting directly over the busiest starfield/
  * background art in the game. */
-static const int kShadowOffsets[8][2] = {
+static const int kLightShadowOffset[2] = {1, 1};
+
+/* draw_ship_select_screen's own description panel only - the one spot in
+ * the game dense small text sits directly over the busiest background art,
+ * so pf_draw_text's own light shadow above isn't enough to keep it
+ * comfortably readable. A full 8-direction outline one whole dot thick
+ * (again a whole pixel_size, not a fraction, for the same
+ * stays-proportional-at-small-sizes reason), nearly opaque. */
+static const int kStrongShadowOffsets[8][2] = {
     {-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1},
 };
 
-void pf_draw_text(SDL_Renderer *r, float x, float y, float pixel_size, Color c, const char *text) {
-    static const Color kShadow = {0, 0, 0, 235};
-
+static void draw_glyphs(SDL_Renderer *r, float x, float y, float pixel_size, Color c, const char *text) {
     float cursor_x = x;
-    for (const char *p = text; *p; p++) {
-        const Glyph *g = find_glyph(*p);
-        if (g) {
-            for (int row = 0; row < GLYPH_ROWS; row++) {
-                for (int col = 0; col < GLYPH_COLS; col++) {
-                    if (g->rows[row][col] != 'X') continue;
-                    for (int d = 0; d < 8; d++) {
-                        gp_fill_rect(r, cursor_x + (float)col * pixel_size + (float)kShadowOffsets[d][0] * pixel_size,
-                                     y + (float)row * pixel_size + (float)kShadowOffsets[d][1] * pixel_size,
-                                     pixel_size, pixel_size, kShadow);
-                    }
-                }
-            }
-        }
-        cursor_x += glyph_advance(pixel_size);
-    }
-
-    cursor_x = x;
     for (const char *p = text; *p; p++) {
         const Glyph *g = find_glyph(*p);
         if (g) {
@@ -128,6 +114,26 @@ void pf_draw_text(SDL_Renderer *r, float x, float y, float pixel_size, Color c, 
         }
         cursor_x += glyph_advance(pixel_size);
     }
+}
+
+void pf_draw_text(SDL_Renderer *r, float x, float y, float pixel_size, Color c, const char *text) {
+    static const Color kShadow = {0, 0, 0, 140};
+    draw_glyphs(r, x + (float)kLightShadowOffset[0] * pixel_size, y + (float)kLightShadowOffset[1] * pixel_size,
+                pixel_size, kShadow, text);
+    draw_glyphs(r, x, y, pixel_size, c, text);
+}
+
+void pf_draw_text_plain(SDL_Renderer *r, float x, float y, float pixel_size, Color c, const char *text) {
+    draw_glyphs(r, x, y, pixel_size, c, text);
+}
+
+void pf_draw_text_strong_shadow(SDL_Renderer *r, float x, float y, float pixel_size, Color c, const char *text) {
+    static const Color kShadow = {0, 0, 0, 235};
+    for (int d = 0; d < 8; d++) {
+        draw_glyphs(r, x + (float)kStrongShadowOffsets[d][0] * pixel_size,
+                    y + (float)kStrongShadowOffsets[d][1] * pixel_size, pixel_size, kShadow, text);
+    }
+    draw_glyphs(r, x, y, pixel_size, c, text);
 }
 
 void pf_draw_text_neon(SDL_Renderer *r, float x, float y, float pixel_size,

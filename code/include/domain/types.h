@@ -70,12 +70,13 @@ typedef enum Difficulty {
  * usecases/game_logic.c) reached right after confirming a difficulty, and
  * kept for the whole run - see GameState.selected_ship and usecases/ship.c
  * for how each ship's Speed/Strength ratings translate into real gameplay
- * multipliers. SHIP_B20, SHIP_C24 and SHIP_MOTHERSHIP are implemented; the
- * ship-select grid has room for more (adapters/sdl_renderer.c) but every
- * slot past SHIP_COUNT renders as a locked placeholder, not a real Ship
- * value. SHIP_MOTHERSHIP doesn't fire projectiles of its own at all - its
- * two ShootModes (SHOOT_MODE_SWARM_WANDER/SHOOT_MODE_SWARM_FORMATION below)
- * dispatch CPU-flown ChildShip escorts instead (see GameState.children and
+ * multipliers. SHIP_B20, SHIP_C24, SHIP_MOTHERSHIP and SHIP_SHINE are
+ * implemented; the ship-select grid has room for more
+ * (adapters/sdl_renderer.c) but every slot past SHIP_COUNT renders as a
+ * locked placeholder, not a real Ship value. SHIP_MOTHERSHIP doesn't fire
+ * projectiles of its own at all - its two ShootModes
+ * (SHOOT_MODE_SWARM_WANDER/SHOOT_MODE_SWARM_FORMATION below) dispatch
+ * CPU-flown ChildShip escorts instead (see GameState.children and
  * update_mothership_dispatch/update_children in usecases/game_logic.c). A
  * ChildShip's own `kind` is always SHIP_B20 or SHIP_C24 - SHIP_MOTHERSHIP
  * itself never appears there. */
@@ -83,6 +84,7 @@ typedef enum Ship {
     SHIP_B20 = 0,
     SHIP_C24,
     SHIP_MOTHERSHIP,
+    SHIP_SHINE,
     SHIP_COUNT,
 } Ship;
 
@@ -119,6 +121,18 @@ typedef enum ShootMode {
      * switching mid-flight redirects the whole squad immediately. */
     SHOOT_MODE_SWARM_WANDER,   /* children roam independently */
     SHOOT_MODE_SWARM_FORMATION, /* children hold a triangular escort formation */
+    /* Shine's own 3-mode kit (see usecases/ship.c) - none of these are
+     * reachable by any other ship. */
+    SHOOT_MODE_SHINE_SHARDS,  /* mode 1 (default): twin close-set crystal shards, straight ahead */
+    /* Mode 2: not a persistent mode at all, despite having its own slot -
+     * pressing key 2 directly fires a 12-way burst of the same shards (see
+     * trigger_shine_omni_burst in usecases/game_logic.c) and immediately
+     * puts shoot_mode back to SHOOT_MODE_SHINE_SHARDS, gated on
+     * Player.shine_omni_cooldown_timer. Player.shoot_mode itself is never
+     * actually set to this value - update_shoot_mode_switch intercepts slot
+     * 1 on SHIP_SHINE before the normal switch-and-stay assignment runs. */
+    SHOOT_MODE_SHINE_OMNI,
+    SHOOT_MODE_SHINE_SPIRAL, /* mode 3: one longer shard, visually spinning as it flies */
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -143,6 +157,16 @@ typedef struct Player {
      * nonzero at a time. */
     float rapid_burst_timer;
     float rapid_cooldown_timer;
+
+    /* Shine's own mode 2 (SHOOT_MODE_SHINE_OMNI) cooldown - counts down
+     * SHINE_OMNI_COOLDOWN after each burst (see trigger_shine_omni_burst in
+     * usecases/game_logic.c). Unlike rapid_burst_timer/rapid_cooldown_timer
+     * above, there's no "locked out of switching" phase to pair with it -
+     * mode 2 is never actually a persistent shoot_mode value to switch into
+     * or out of in the first place (see SHOOT_MODE_SHINE_OMNI's own doc
+     * comment) - this timer purely gates whether pressing key 2 again does
+     * anything. Unused by every other ship. */
+    float shine_omni_cooldown_timer;
 
     /* Counts down to the next engine trail particle emission (see
      * update_player_trail) - purely cosmetic, unrelated to fire_cooldown. */
@@ -245,6 +269,11 @@ typedef enum ProjectileKind {
     PROJECTILE_KIND_NORMAL = 0,
     PROJECTILE_KIND_RAPID,
     PROJECTILE_KIND_POWER,
+    /* Shine's own mode 3 shot only (SHOOT_MODE_SHINE_SPIRAL) - a single
+     * longer crystal shard than her own modes 1/2 (still PROJECTILE_KIND_NORMAL)
+     * use, and the only kind that spins in place (see draw_shine_shard in
+     * adapters/sdl_renderer.c) while flying straight ahead. */
+    PROJECTILE_KIND_SHINE_SPIRAL,
 } ProjectileKind;
 
 /* Drives an enemy shot's rendering (adapters/sdl_renderer.c) and hitbox
@@ -300,11 +329,14 @@ typedef struct Projectile {
      * projectiles read identically here by design. Purely cosmetic. */
     float trail_emit_timer;
     /* Random per-shot phase seed, radians [0, 2*pi) - set at spawn (see
-     * spawn_player_shot) and read only by C-24's own sphere-shot rendering
+     * spawn_player_shot). Read by C-24's own sphere-shot rendering
      * (draw_c24_sphere_shot in adapters/sdl_renderer.c, reached whenever
      * style_ship below is SHIP_C24): offsets that shot's own hue-cycling
      * phase so simultaneous shots - a double-barrel pair, all 8 of an omni
-     * burst - don't cycle color in lockstep. Unused by every other shot. */
+     * burst - don't cycle color in lockstep. Also read by Shine's own
+     * PROJECTILE_KIND_SHINE_SPIRAL shot (draw_shine_shard) for the same
+     * reason, offsetting its spin phase instead of a hue. Unused by every
+     * other shot. */
     float phase_seed;
     /* Player shots only: which ship's rendering/behavior style this shot
      * uses (SHIP_B20 or SHIP_C24 - never SHIP_MOTHERSHIP, she never fires a

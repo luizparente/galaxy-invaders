@@ -73,6 +73,23 @@ static void start_game_as_mothership(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_MOTHERSHIP);
 }
 
+/* Same as start_game_as_mothership, but navigates one slot further right
+ * to SHIP_SHINE, for Shine's own weapon tests below. */
+static void start_game_as_shine(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &right, 0.016f, events); /* SHIP_MOTHERSHIP -> SHIP_SHINE */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_SHINE);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -211,7 +228,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_MOTHERSHIP); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_SHINE); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -2049,6 +2066,141 @@ static void test_mothership_c24_styled_shot_still_gets_bigger_explosion_radius(v
     printf("test_mothership_c24_styled_shot_still_gets_bigger_explosion_radius OK\n");
 }
 
+static void test_shine_ratings_and_moveset(void) {
+    assert(ship_speed_rating(SHIP_SHINE) == 8);
+    assert(ship_strength_rating(SHIP_SHINE) == 4);
+    assert(ship_attack_rating(SHIP_SHINE) == 6);
+    /* Faster than B-20 itself (8 > 7) - the fastest ship in the fleet. */
+    assert(ship_speed_multiplier(SHIP_SHINE) > 1.0f);
+    assert(fabsf(ship_speed_multiplier(SHIP_SHINE) - 8.0f / 7.0f) < 0.001f);
+    /* Weaker than B-20 (4 < 5) - takes more damage per hit. */
+    assert(ship_damage_taken_multiplier(SHIP_SHINE) > 1.0f);
+    assert(fabsf(ship_damage_taken_multiplier(SHIP_SHINE) - 5.0f / 4.0f) < 0.001f);
+    assert(fabsf(ship_size_multiplier(SHIP_SHINE) - 1.0f) < 0.001f); /* same size as B-20 */
+
+    assert(ship_shoot_mode_slot_count(SHIP_SHINE) == 3);
+    assert(ship_shoot_mode_for_slot(SHIP_SHINE, 0) == SHOOT_MODE_SHINE_SHARDS);
+    assert(ship_shoot_mode_for_slot(SHIP_SHINE, 1) == SHOOT_MODE_SHINE_OMNI);
+    assert(ship_shoot_mode_for_slot(SHIP_SHINE, 2) == SHOOT_MODE_SHINE_SPIRAL);
+    printf("test_shine_ratings_and_moveset OK\n");
+}
+
+/* Mode 1 (default): twin shards close together - "separated by a distance
+ * equal to the shard's width" - and each shard's damage halved so the pair
+ * costs the same total as one full shot. */
+static void test_shine_twin_shards_close_together_and_halved_damage(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_shine(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SHINE_SHARDS);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    int found = 0;
+    float xs[2];
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        assert(fabsf(gs.player_shots[i].damage - BASE_PLAYER_DAMAGE * SHINE_TWIN_SHARD_DAMAGE_MULTIPLIER) < 0.001f);
+        xs[found++] = gs.player_shots[i].x;
+    }
+    assert(found == 2);
+
+    float gap_between_centers = fabsf(xs[0] - xs[1]);
+    /* Centers are 2x the per-side offset apart; the edge-to-edge gap
+     * between the two shards is that minus one full shard width, which by
+     * construction (SHINE_TWIN_SHARD_OFFSET_X == SHINE_SHARD_WIDTH) equals
+     * exactly one shard-width. */
+    float edge_gap = gap_between_centers - SHINE_SHARD_WIDTH;
+    assert(fabsf(edge_gap - SHINE_SHARD_WIDTH) < 0.01f);
+    printf("test_shine_twin_shards_close_together_and_halved_damage OK\n");
+}
+
+/* Mode 2: not a mode the player stays in - pressing key 2 fires a 12-way
+ * burst at full damage and immediately puts shoot_mode back to mode 1,
+ * regardless of which mode was active beforehand, then locks out further
+ * presses until SHINE_OMNI_COOLDOWN passes. */
+static void test_shine_omni_burst_fires_twelve_and_reverts_to_mode1(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_shine(&gs, &events);
+
+    /* Start from mode 3, not the default mode 1, to prove the revert isn't
+     * just "shoot_mode never changed in the first place". */
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SHINE_SPIRAL);
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+
+    assert(gs.player.shoot_mode == SHOOT_MODE_SHINE_SHARDS);
+    assert(gs.player.shine_omni_cooldown_timer > 0.0f);
+
+    int alive_count = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        assert(fabsf(gs.player_shots[i].damage - BASE_PLAYER_DAMAGE) < 0.001f);
+        alive_count++;
+    }
+    assert(alive_count == SHINE_OMNI_SHOT_COUNT);
+
+    /* Pressing it again mid-cooldown does nothing further. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    game_update(&gs, &mode2, 0.016f, &events);
+    int after_retry = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) after_retry++;
+    }
+    assert(after_retry == 0);
+
+    /* Once the cooldown fully elapses, it fires again. */
+    gs.player.shine_omni_cooldown_timer = 0.0f;
+    game_update(&gs, &mode2, 0.016f, &events);
+    int after_cooldown = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) after_cooldown++;
+    }
+    assert(after_cooldown == SHINE_OMNI_SHOT_COUNT);
+    printf("test_shine_omni_burst_fires_twelve_and_reverts_to_mode1 OK\n");
+}
+
+/* Mode 3: a single longer shard, "2 shots per second". */
+static void test_shine_spiral_shot_is_longer_shard_at_two_per_second(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_shine(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SHINE_SPIRAL);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    int found = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) {
+            found = i;
+            break;
+        }
+    }
+    assert(found >= 0);
+    assert(gs.player_shots[found].kind == PROJECTILE_KIND_SHINE_SPIRAL);
+    assert(fabsf(gs.player_shots[found].damage - BASE_PLAYER_DAMAGE * SHINE_SPIRAL_DAMAGE_MULTIPLIER) < 0.001f);
+    assert(fabsf(SHINE_SPIRAL_DAMAGE_MULTIPLIER - 3.0f) < 0.001f); /* triple damage */
+    assert(fabsf(gs.player.fire_cooldown - SHINE_SPIRAL_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(SHINE_SPIRAL_FIRE_COOLDOWN - 0.5f) < 0.001f); /* exactly 2 shots/sec */
+    assert(SHINE_SPIRAL_SHARD_LENGTH > SHINE_SHARD_LENGTH); /* longer... */
+    assert(fabsf(SHINE_SPIRAL_SHARD_WIDTH - SHINE_SHARD_WIDTH) < 0.001f); /* ...not thicker */
+    printf("test_shine_spiral_shot_is_longer_shard_at_two_per_second OK\n");
+}
+
 static void test_spawner_eventually_spawns(void) {
     GameState gs;
     EventQueue events;
@@ -2141,6 +2293,10 @@ int main(void) {
     test_mothership_child_dies_on_enemy_contact_and_enemy_dies_too();
     test_mothership_child_dies_on_boss_ring_without_defeating_boss();
     test_mothership_c24_styled_shot_still_gets_bigger_explosion_radius();
+    test_shine_ratings_and_moveset();
+    test_shine_twin_shards_close_together_and_halved_damage();
+    test_shine_omni_burst_fires_twelve_and_reverts_to_mode1();
+    test_shine_spiral_shot_is_longer_shard_at_two_per_second();
     test_spawner_eventually_spawns();
     printf("\nAll tests passed.\n");
     return 0;

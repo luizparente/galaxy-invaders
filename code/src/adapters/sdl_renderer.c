@@ -479,6 +479,73 @@ static void draw_c24_sphere_shot(SdlRendererCtx *ctx, const Projectile *pr, floa
     gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
 }
 
+/* One layer of a Shine shard's icicle silhouette: a pointed front tip and
+ * a blunter, shorter tapered tail, oriented along (dx, dy) with (px, py)
+ * its perpendicular - the same direction-vector construction capsule_bolt
+ * above uses for enemy beams, just built from a single 4-point kite
+ * (gp_fill_quad) tapered to points instead of a rounded-cap capsule, for
+ * the crystalline look. Called several times at different sizes/colors by
+ * draw_shine_shard for the layered glow/body/core look every other
+ * player bolt already uses. */
+static void shine_shard_layer(SDL_Renderer *r, float cx, float cy, float dx, float dy, float px, float py,
+                               float front_len, float back_len, float half_wid, Color c) {
+    float fx = cx + dx * front_len, fy = cy + dy * front_len;
+    float bx = cx - dx * back_len, by = cy - dy * back_len;
+    float lx = cx + px * half_wid, ly = cy + py * half_wid;
+    float rx = cx - px * half_wid, ry = cy - py * half_wid;
+    gp_fill_quad(r, fx, fy, lx, ly, bx, by, rx, ry, c);
+}
+
+/* Every one of Shine's own shots (modes 1/2/3 alike - see
+ * Projectile.style_ship) - "crystal shards... white with light-grey-ish
+ * accents": a wide translucent accent-colored glow, a solid accent body,
+ * and a bright white core, same layered construction as every other
+ * player bolt just built from shine_shard_layer's pointed kite instead of
+ * an ellipse/capsule. Modes 1/2 (PROJECTILE_KIND_NORMAL) orient along the
+ * shot's own actual travel direction - straight up for mode 1, radiating
+ * outward per-shard for mode 2's omni burst. Mode 3's longer
+ * PROJECTILE_KIND_SHINE_SPIRAL shot spins in place instead: its drawn
+ * orientation comes from GameState.time_elapsed and the shot's own
+ * phase_seed (the same "per-instance seed plus the global clock"
+ * convention C-24's hue-cycling already uses), completely independent of
+ * its (still straight-up) travel direction. */
+static void draw_shine_shard(SdlRendererCtx *ctx, const Projectile *pr, float scale, float time) {
+    static const Color kShineWhite = {250, 251, 255, 255};
+    static const Color kShineAccent = {195, 205, 225, 255};
+
+    bool spiral = pr->kind == PROJECTILE_KIND_SHINE_SPIRAL;
+    float half_len = (spiral ? SHINE_SPIRAL_SHARD_LENGTH : SHINE_SHARD_LENGTH) * 0.5f * scale;
+    float half_wid = (spiral ? SHINE_SPIRAL_SHARD_WIDTH : SHINE_SHARD_WIDTH) * 0.5f * scale;
+
+    float dx, dy;
+    if (spiral) {
+        float phase_deg = pr->phase_seed * (180.0f / (float)M_PI);
+        float angle_deg = fmodf(time * SHINE_SPIRAL_SPIN_SPEED + phase_deg, 360.0f);
+        float angle = angle_deg * ((float)M_PI / 180.0f);
+        dx = sinf(angle);
+        dy = -cosf(angle);
+    } else {
+        float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+        dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+        dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+    }
+    float px = -dy, py = dx;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = kShineAccent;
+    glow.a = 70;
+    shine_shard_layer(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.3f, half_len * 0.9f, half_wid * 2.2f, glow);
+
+    shine_shard_layer(ctx->renderer, cx, cy, dx, dy, px, py, half_len, half_len * 0.6f, half_wid, kShineAccent);
+
+    shine_shard_layer(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 0.85f, half_len * 0.4f, half_wid * 0.55f,
+                       kShineWhite);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
+}
+
 static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Projectile *pr, bool is_player) {
     if (!pr->alive) return;
     float scale = gs->scale;
@@ -497,6 +564,10 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
          * C-24's sphere while selected_ship is SHIP_MOTHERSHIP. */
         if (pr->style_ship == SHIP_C24) {
             draw_c24_sphere_shot(ctx, pr, scale, gs->time_elapsed);
+            return;
+        }
+        if (pr->style_ship == SHIP_SHINE) {
+            draw_shine_shard(ctx, pr, scale, gs->time_elapsed);
             return;
         }
         switch (pr->kind) {
@@ -750,7 +821,7 @@ static void draw_life_bar(SdlRendererCtx *ctx, const GameState *gs) {
     float text_size = (h * 0.5f) / 7.0f; /* the pixel font is 7 dots tall */
     float text_w = pf_text_width(buf, text_size);
     float text_h = 7.0f * text_size;
-    pf_draw_text(ctx->renderer, x + (w - text_w) / 2.0f, y + (h - text_h) / 2.0f, text_size, kDim, buf);
+    pf_draw_text_plain(ctx->renderer, x + (w - text_w) / 2.0f, y + (h - text_h) / 2.0f, text_size, kDim, buf);
 }
 
 /* Top-center life bar for the boss fight: same grey-outline/red-fill
@@ -796,7 +867,8 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
     float pct_size = (bar_h * 0.5f) / 7.0f;
     float pct_w = pf_text_width(pct_buf, pct_size);
     float pct_h = 7.0f * pct_size;
-    pf_draw_text(ctx->renderer, bar_x + (bar_w - pct_w) / 2.0f, y + (bar_h - pct_h) / 2.0f, pct_size, kDim, pct_buf);
+    pf_draw_text_plain(ctx->renderer, bar_x + (bar_w - pct_w) / 2.0f, y + (bar_h - pct_h) / 2.0f, pct_size, kDim,
+                        pct_buf);
 
     const char *label = "BOSS";
     float label_size = 1.3f * gs->scale; /* half the old 2.6f label size */
@@ -807,6 +879,7 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
     "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
+    "SHARDS", "OMNI", "SPIRAL",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -815,12 +888,12 @@ static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
  * usecases/ship.h - B-20 draws 5, C-24 only 3), with the mode's name above.
  * Three states per box, same language as the life bar's "red means can't
  * act right now": green for whichever mode is currently selected (every
- * ship, every mode); red for B-20's mode 2 specifically while its
- * rapid_cooldown_timer has it locked out (see update_shoot_mode_switch) -
- * the only mode that can ever be red, and never while it's also the
- * selected/green one, since selecting it is exactly what's disallowed
- * during that cooldown; yellow for every other unselected, available
- * mode. */
+ * ship, every mode); red while locked out on cooldown - B-20's mode 2
+ * (rapid_cooldown_timer) or Shine's mode 2 (shine_omni_cooldown_timer,
+ * which - unlike B-20's - can never also be the selected/green slot at the
+ * same time, since Shine's mode 2 is never a persistent shoot_mode value
+ * at all, see SHOOT_MODE_SHINE_OMNI's own doc comment); yellow for every
+ * other unselected, available mode. */
 static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) {
     const Player *p = &gs->player;
     int slot_count = ship_shoot_mode_slot_count(gs->selected_ship);
@@ -837,7 +910,8 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
         float x = x0 + (float)i * (box + gap);
         ShootMode slot_mode = ship_shoot_mode_for_slot(gs->selected_ship, i);
         bool active = (slot_mode == p->shoot_mode);
-        bool cooling_down = slot_mode == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f;
+        bool cooling_down = (slot_mode == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) ||
+                            (slot_mode == SHOOT_MODE_SHINE_OMNI && p->shine_omni_cooldown_timer > 0.0f);
 
         Color outline = active ? kGreen : (cooling_down ? kRed : kYellow);
         gp_fill_rect(ctx->renderer, x, y0, box, box, outline);
@@ -1097,16 +1171,17 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
     return line_count;
 }
 
-static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP"};
+static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE"};
 
 /* Ad copy for the ship-select screen's description panel - written from
  * the same capsule descriptions each ship was specced with ("versatile
  * and fast... built for the most skilled pilots" / "resilient and strong,
  * piloted only by the bravest" / "the matriarch who fights against evil,
- * dispatching brave warriors to fight by her side"), expanded to fill the
- * panel. All caps: the pixel font (adapters/pixel_font) only has uppercase
- * glyphs, same convention every other in-game string here already
- * follows. */
+ * dispatching brave warriors to fight by her side" / "leverages the cosmic
+ * powers of the galaxy to materialize crystals for offense and defense"),
+ * expanded to fill the panel. All caps: the pixel font
+ * (adapters/pixel_font) only has uppercase glyphs, same convention every
+ * other in-game string here already follows. */
 static const char *const kShipDescriptions[SHIP_COUNT] = {
     "A VERSATILE, FAST SPACESHIP BUILT FOR THE MOST SKILLED PILOTS. "
     "QUICK ON THE STICK AND SHARP IN A DOGFIGHT, THE B-20 REWARDS "
@@ -1117,6 +1192,9 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "THE MATRIARCH WHO FIGHTS AGAINST EVIL, AND THE STRONGEST "
     "SPACESHIP IN THE FLEET. SHE DOES NOT FIGHT ALONE - SHE DISPATCHES "
     "BRAVE, COURAGEOUS WARRIORS TO FIGHT BY HER SIDE.",
+    "SHINE LEVERAGES THE COSMIC POWERS OF THE GALAXY TO MATERIALIZE "
+    "POWERFUL CRYSTALS, USED FOR BOTH OFFENSE AND DEFENSE AGAINST THE "
+    "MOST NEFARIOUS ELEMENTS OF THE GALAXY.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};
@@ -1241,7 +1319,8 @@ static void draw_ship_select_screen(SdlRendererCtx *ctx, const GameState *gs) {
     char lines[12][96];
     int line_count = wrap_text_lines(kShipDescriptions[ship], desc_size, right_w, lines, 12, 96);
     for (int i = 0; i < line_count; i++) {
-        draw_left(ctx, right_x0, desc_y + desc_line_h * (float)i, lines[i], desc_size, kDim);
+        pf_draw_text_strong_shadow(ctx->renderer, right_x0, desc_y + desc_line_h * (float)i, desc_size, kDim,
+                                    lines[i]);
     }
 
     const char *instructions = "ARROWS CHOOSE  ENTER/SPACE CONFIRM  ESC BACK";

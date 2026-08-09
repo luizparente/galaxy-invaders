@@ -432,6 +432,56 @@
 #define MOTHERSHIP_CHILD_FORMATION_SIDE_OFFSET_X 75.0f
 #define MOTHERSHIP_CHILD_FORMATION_SIDE_OFFSET_Y 45.0f
 
+/* --- Shine's own weapon (see usecases/ship.c for her 3-slot moveset) ---
+ * Every shot across all 3 modes is a crystal "shard" - a slim pointed
+ * quad oriented along its own travel direction (see draw_shine_shard in
+ * adapters/sdl_renderer.c), the same direction-vector construction
+ * enemy beams already use (capsule_bolt) but tapered to points instead of
+ * rounded caps, for the icicle look. Kept fully independent of
+ * PLAYER_PROJECTILE_W/H/SPEED - same "kept-independent copies, not shared"
+ * precedent as SHIP_C24_PROJECTILE_RADIUS elsewhere here - so retuning
+ * Shine's shots can never silently retune B-20's own. */
+#define SHINE_SHARD_SPEED PLAYER_PROJECTILE_SPEED
+#define SHINE_SHARD_LENGTH 22.0f
+#define SHINE_SHARD_WIDTH 7.0f
+/* Mode 1 (default): twin shards, straight ahead, close together - "the
+ * gap between them equals one shard's width" (SHINE_SHARD_WIDTH). Each
+ * shard's center sits SHINE_SHARD_WIDTH out from the nose, which by
+ * construction leaves exactly one shard-width of empty space between
+ * their facing edges (2 * offset - width = 2*width - width = width). Each
+ * shard's damage is halved, same "two shots cost the same total as one"
+ * precedent DOUBLE_BARREL_DAMAGE_MULTIPLIER already sets for B-20's own
+ * twin-shot mode. */
+#define SHINE_SHARDS_FIRE_COOLDOWN 0.18f
+#define SHINE_TWIN_SHARD_OFFSET_X SHINE_SHARD_WIDTH
+#define SHINE_TWIN_SHARD_DAMAGE_MULTIPLIER 0.5f
+/* Mode 2: not a mode the player ever stays in - key 2 instantly fires this
+ * 12-way burst (SHINE_OMNI_SHOT_COUNT, half again as many as every other
+ * ship's own 8-way SHOOT_MODE_OMNI/ENEMY_SHOOT_OMNI) and puts shoot_mode
+ * straight back to mode 1 (see trigger_shine_omni_burst in
+ * usecases/game_logic.c). Each shard deals a full, unreduced hit - same as
+ * C-24's own 8-way OMNI mode already does despite also being a multi-shot
+ * burst, so a multi-directional volley's per-shot damage doesn't
+ * universally get nerfed just for having many pellets. */
+#define SHINE_OMNI_SHOT_COUNT 12
+#define SHINE_OMNI_COOLDOWN 20.0f
+/* Mode 3: a single longer shard (SHINE_SPIRAL_SHARD_LENGTH, longer than
+ * the twin/omni shards' own SHINE_SHARD_LENGTH - length only, its width is
+ * the same SHINE_SHARD_WIDTH as those) fired straight ahead, "2 shots per
+ * second" per spec, that visually spins in place (SHINE_SPIRAL_SPIN_SPEED,
+ * degrees/sec) as it flies - a cosmetic-only rotation computed from
+ * GameState.time_elapsed plus the shot's own phase_seed (draw_shine_shard),
+ * the same "per-instance seed plus the global clock" convention
+ * Projectile.phase_seed already establishes for C-24's hue cycling - travel
+ * direction itself is unaffected, still straight up. Triples its damage
+ * (SHINE_SPIRAL_DAMAGE_MULTIPLIER) - the tradeoff for being a single,
+ * slower-cadence shot rather than modes 1/2's many smaller ones. */
+#define SHINE_SPIRAL_FIRE_COOLDOWN 0.5f
+#define SHINE_SPIRAL_SHARD_LENGTH 60.0f
+#define SHINE_SPIRAL_SHARD_WIDTH SHINE_SHARD_WIDTH
+#define SHINE_SPIRAL_SPIN_SPEED 360.0f
+#define SHINE_SPIRAL_DAMAGE_MULTIPLIER 3.0f
+
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50
 /* The boss's own baseline size range, scaled up by BOSS_SIZE_MULTIPLIER -
