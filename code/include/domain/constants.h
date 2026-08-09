@@ -78,7 +78,7 @@
  * just goes further - so raising this can only ever make the smoke darker,
  * never introduce a lighter shade). Deliberately tiny - under 5% - so the
  * effect stays barely-there. */
-#define BACKGROUND_SMOKE_CONTRAST 0.15f
+#define BACKGROUND_SMOKE_CONTRAST 0.25f
 
 #define PLAYER_WIDTH 32.0f
 #define PLAYER_HEIGHT 32.0f
@@ -375,13 +375,22 @@
  * PLAYER_FIRE_COOLDOWN since each "shot" here is a whole extra ship, not a
  * projectile. */
 #define MOTHERSHIP_DISPATCH_COOLDOWN 0.6f
-/* "The equivalent of 50% of the life the spaceships would have if they
- * were controlled by the player" - PLAYER_LIFE_MAX itself, not a
- * kind-specific value, since a ship's Strength rating already maps to
- * *damage taken per hit* (ship_damage_taken_multiplier), not a bigger life
- * pool - see usecases/ship.c. Applies the same regardless of a child's own
- * SHIP_B20/SHIP_C24 kind. */
-#define MOTHERSHIP_CHILD_LIFE_MAX (PLAYER_LIFE_MAX * 0.5f)
+/* "The equivalent of 20% of the life the spaceships would have if they
+ * were controlled by the player" (2 of B-20's own PLAYER_LIFE_LOSS_PER_HIT
+ * shots to die) - PLAYER_LIFE_MAX itself, not a kind-specific value, since
+ * a ship's Strength rating already maps to *damage taken per hit*
+ * (ship_damage_taken_multiplier), not a bigger life pool - see
+ * usecases/ship.c. Applies the same regardless of a child's own
+ * SHIP_B20/SHIP_C24 kind - a C-24-kind child's own higher Strength still
+ * softens each individual hit, so it takes a bit more than 2 to die. */
+#define MOTHERSHIP_CHILD_LIFE_MAX (PLAYER_LIFE_MAX * 0.20f)
+/* A dispatched child's own weapon mode (see update_mothership_dispatch) is
+ * fixed at its kind's own mode #1 (slot 0) the overwhelming majority of the
+ * time - only a 5% chance rolls a uniformly random mode from the rest of
+ * that kind's own moveset instead. A B-20-kind child rolled into mode #2
+ * (SHOOT_MODE_RAPID) permanently falls back to mode #1 the instant its one
+ * burst ends and never returns to mode #2 - see update_child_firing. */
+#define MOTHERSHIP_CHILD_RANDOM_MODE_CHANCE 0.05f
 
 /* The brief post-dispatch launch kick (see update_mothership_dispatch):
  * "their first movement being flying left or right at random, until the

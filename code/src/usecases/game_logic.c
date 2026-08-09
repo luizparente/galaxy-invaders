@@ -927,20 +927,18 @@ static void update_omni_burst(GameState *gs, const InputCommand *input, EventQue
  * are independent concerns) - a condensed mirror of
  * update_normal_fire/update_rapid_fire/update_power_cannon/
  * update_double_barrel/update_side_beams/update_omni_burst above, sourced
- * from the child's own x/y/kind/fixed shoot_mode and writing into its own
- * fire_cooldown/rapid timers instead of the player's, always "firing held"
- * since a CPU escort never releases the trigger. Kept as an independent
- * copy rather than sharing code with the already-tested player routines -
- * same "kept-independent copies, not shared" precedent as
+ * from the child's own x/y/kind/shoot_mode and writing into its own
+ * fire_cooldown/rapid_burst_timer instead of the player's, always "firing
+ * held" since a CPU escort never releases the trigger. Kept as an
+ * independent copy rather than sharing code with the already-tested player
+ * routines - same "kept-independent copies, not shared" precedent as
  * SHIP_C24_PROJECTILE_RADIUS elsewhere in this file. A SHOOT_MODE_RAPID
- * child just loops burst->cooldown forever at the same RAPID_FIRE_*
- * constants - there's nothing else for it to auto-switch away to. */
+ * child (the rare 5% dispatch roll - see MOTHERSHIP_CHILD_RANDOM_MODE_CHANCE)
+ * fires exactly one burst and then permanently falls back to mode #1 the
+ * instant it ends, never bursting again - unlike the player's own mode 2,
+ * there's no cooldown/re-arm cycle here at all. */
 static void update_child_firing(GameState *gs, ChildShip *c, float dt, EventQueue *events) {
     if (c->fire_cooldown > 0.0f) c->fire_cooldown -= dt;
-    if (c->rapid_cooldown_timer > 0.0f) {
-        c->rapid_cooldown_timer -= dt;
-        if (c->rapid_cooldown_timer < 0.0f) c->rapid_cooldown_timer = 0.0f;
-    }
 
     float nose_y = c->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
     float speed = scaled(gs, PLAYER_PROJECTILE_SPEED);
@@ -951,7 +949,13 @@ static void update_child_firing(GameState *gs, ChildShip *c, float dt, EventQueu
                 c->rapid_burst_timer -= dt;
                 if (c->rapid_burst_timer <= 0.0f) {
                     c->rapid_burst_timer = 0.0f;
-                    c->rapid_cooldown_timer = RAPID_FIRE_LOCKOUT_DURATION;
+                    /* Permanently back to mode #1 - see this function's own
+                     * doc comment. ship_shoot_mode_for_slot(c->kind, 0) is
+                     * always B-20's mode #1 here since only a B-20-kind
+                     * child's own moveset ever includes SHOOT_MODE_RAPID at
+                     * all (see ship_shoot_mode_for_slot(SHIP_B20, 1) in
+                     * usecases/ship.c). */
+                    c->shoot_mode = ship_shoot_mode_for_slot(c->kind, 0);
                     break;
                 }
                 if (c->fire_cooldown <= 0.0f) {
@@ -962,10 +966,13 @@ static void update_child_firing(GameState *gs, ChildShip *c, float dt, EventQueu
                 }
                 break;
             }
-            if (c->rapid_cooldown_timer <= 0.0f) {
-                c->rapid_burst_timer = RAPID_FIRE_BURST_DURATION;
-                c->fire_cooldown = 0.0f;
-            }
+            /* Reached exactly once per SHOOT_MODE_RAPID child - the very
+             * first update_child_firing call after dispatch, since every
+             * later call either lands in the burst branch above or (once
+             * the burst ends) shoot_mode has already moved on to mode #1,
+             * so this case is never reached again at all. */
+            c->rapid_burst_timer = RAPID_FIRE_BURST_DURATION;
+            c->fire_cooldown = 0.0f;
             break;
 
         case SHOOT_MODE_POWER:
@@ -1168,9 +1175,15 @@ static void update_mothership_dispatch(GameState *gs, const InputCommand *input,
     c->launch_timer = MOTHERSHIP_CHILD_LAUNCH_DURATION;
     c->life = MOTHERSHIP_CHILD_LIFE_MAX;
 
+    /* Fixed at mode #1 (slot 0) the overwhelming majority of the time - see
+     * MOTHERSHIP_CHILD_RANDOM_MODE_CHANCE's own doc comment. */
+    int mode_slot = 0;
     int mode_count = ship_shoot_mode_slot_count(c->kind);
-    int mode_slot = (int)(frand01() * (float)mode_count);
-    if (mode_slot >= mode_count) mode_slot = mode_count - 1;
+    if (mode_count > 1 && frand01() < MOTHERSHIP_CHILD_RANDOM_MODE_CHANCE) {
+        int extra_slot = (int)(frand01() * (float)(mode_count - 1));
+        if (extra_slot >= mode_count - 1) extra_slot = mode_count - 2;
+        mode_slot = extra_slot + 1; /* uniformly random slot in [1, mode_count) */
+    }
     c->shoot_mode = ship_shoot_mode_for_slot(c->kind, mode_slot);
 
     p->fire_cooldown = MOTHERSHIP_DISPATCH_COOLDOWN;

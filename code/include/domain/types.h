@@ -165,19 +165,20 @@ typedef struct ChildShip {
     Ship kind; /* always SHIP_B20 or SHIP_C24, rolled 50/50 at dispatch */
     float life; /* [0, MOTHERSHIP_CHILD_LIFE_MAX]; hitting 0 kills this child */
 
-    /* Rolled once at dispatch from kind's own ship_shoot_mode_for_slot
-     * table and fixed for the child's whole lifetime - a CPU escort never
-     * switches modes (see update_mothership_dispatch), so none of the
-     * player-facing mode-switch/lockout machinery (update_shoot_mode_switch)
-     * applies here. fire_cooldown/rapid_burst_timer/rapid_cooldown_timer
-     * mirror Player's own same-named fields, just driving this child's own
-     * fire routine (update_child_firing) instead - a SHOOT_MODE_RAPID
-     * child simply loops burst->cooldown forever at the same RAPID_FIRE_*
-     * constants, with nothing to auto-switch away to. */
+    /* Rolled at dispatch from kind's own ship_shoot_mode_for_slot table -
+     * mode #1 (slot 0) the overwhelming majority of the time, only a
+     * MOTHERSHIP_CHILD_RANDOM_MODE_CHANCE sliver landing on anything else
+     * (see update_mothership_dispatch). A CPU escort never switches modes
+     * on its own initiative the way the player does (none of
+     * update_shoot_mode_switch's mode-switch/lockout machinery applies
+     * here), with exactly one built-in exception: a SHOOT_MODE_RAPID child
+     * permanently falls back to mode #1 the instant its one burst ends
+     * (see update_child_firing) and never returns to mode #2. fire_cooldown/
+     * rapid_burst_timer mirror Player's own same-named fields, just driving
+     * this child's own fire routine instead. */
     ShootMode shoot_mode;
     float fire_cooldown;
     float rapid_burst_timer;
-    float rapid_cooldown_timer;
 
     /* Counts down the brief post-dispatch launch kick (see
      * update_mothership_dispatch/update_children): while positive, this

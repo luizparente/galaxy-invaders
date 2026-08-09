@@ -7,20 +7,20 @@
  * heavier plating; The Mothership trades the most speed of all for the
  * heaviest plating in the fleet, per each one's own description on the
  * ship-select screen. */
-static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 3};
+static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2};
 static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 8, 7};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10};
 
 /* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
  * this isn't derived from a rating formula, it's spec'd directly (The
- * Mothership is "25% bigger than the other player spaceships"). Applied
- * everywhere PLAYER_WIDTH/PLAYER_HEIGHT drive the real player's own
- * size - draw_player, update_player's movement clamp, and
+ * Mothership is "100% bigger than the other player spaceships" - double
+ * size). Applied everywhere PLAYER_WIDTH/PLAYER_HEIGHT drive the real
+ * player's own size - draw_player, update_player's movement clamp, and
  * check_collisions' player half-extents (all in usecases/game_logic.c and
  * adapters/sdl_renderer.c). Never applied to a ChildShip, which always
  * renders/collides at the stock size regardless of which ship dispatched
  * it. */
-static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 1.25f};
+static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 2.0f};
 
 int ship_speed_rating(Ship ship) {
     return kShipSpeedRating[ship];

@@ -259,7 +259,7 @@ static void test_ship_ratings_and_multipliers(void) {
     assert(ship_attack_rating(SHIP_B20) == 8);
     assert(ship_speed_rating(SHIP_C24) == 5);
     assert(ship_strength_rating(SHIP_C24) == 7);
-    assert(ship_attack_rating(SHIP_C24) == 8);
+    assert(ship_attack_rating(SHIP_C24) == 7);
 
     /* B-20 is the tuning baseline: both its multipliers are always 1.0. */
     assert(fabsf(ship_speed_multiplier(SHIP_B20) - 1.0f) < 0.001f);
@@ -1690,20 +1690,95 @@ static void test_super_beam_damages_boss_periodically_while_sustained(void) {
 }
 
 static void test_mothership_ratings_and_moveset(void) {
-    assert(ship_speed_rating(SHIP_MOTHERSHIP) == 3);
+    assert(ship_speed_rating(SHIP_MOTHERSHIP) == 2);
     assert(ship_strength_rating(SHIP_MOTHERSHIP) == 10);
-    assert(ship_attack_rating(SHIP_MOTHERSHIP) == 7);
-    assert(fabsf(ship_speed_multiplier(SHIP_MOTHERSHIP) - 3.0f / 7.0f) < 0.001f);
+    assert(ship_attack_rating(SHIP_MOTHERSHIP) == 10);
+    assert(fabsf(ship_speed_multiplier(SHIP_MOTHERSHIP) - 2.0f / 7.0f) < 0.001f);
     assert(fabsf(ship_damage_taken_multiplier(SHIP_MOTHERSHIP) - 0.5f) < 0.001f);
 
     assert(fabsf(ship_size_multiplier(SHIP_B20) - 1.0f) < 0.001f);
     assert(fabsf(ship_size_multiplier(SHIP_C24) - 1.0f) < 0.001f);
-    assert(fabsf(ship_size_multiplier(SHIP_MOTHERSHIP) - 1.25f) < 0.001f);
+    assert(fabsf(ship_size_multiplier(SHIP_MOTHERSHIP) - 2.0f) < 0.001f);
 
     assert(ship_shoot_mode_slot_count(SHIP_MOTHERSHIP) == 2);
     assert(ship_shoot_mode_for_slot(SHIP_MOTHERSHIP, 0) == SHOOT_MODE_SWARM_WANDER);
     assert(ship_shoot_mode_for_slot(SHIP_MOTHERSHIP, 1) == SHOOT_MODE_SWARM_FORMATION);
     printf("test_mothership_ratings_and_moveset OK\n");
+}
+
+/* Dispatched children are fixed at their kind's own mode #1 the
+ * overwhelming majority of the time - only MOTHERSHIP_CHILD_RANDOM_MODE_CHANCE
+ * (5%) of dispatches should ever roll anything else. Sampled across many
+ * independent single-dispatch trials since the live cap of
+ * MOTHERSHIP_MAX_CHILDREN limits how many draws one run can make. */
+static void test_mothership_child_mode_mostly_fixed_at_slot0(void) {
+    const int total = 300;
+    int non_default = 0;
+    for (int trial = 0; trial < total; trial++) {
+        GameState gs;
+        EventQueue events;
+        start_game_as_mothership(&gs, &events);
+
+        InputCommand fire = no_input();
+        fire.fire_held = true;
+        game_update(&gs, &fire, 0.016f, &events);
+
+        ChildShip *c = NULL;
+        for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) {
+            if (gs.children[i].alive) {
+                c = &gs.children[i];
+                break;
+            }
+        }
+        assert(c != NULL);
+        if (c->shoot_mode != ship_shoot_mode_for_slot(c->kind, 0)) non_default++;
+    }
+    /* Both bounds catch a regression: too many non-default draws means the
+     * "fixed at #1" rule broke; zero across 300 trials (an astronomically
+     * unlikely outcome at a genuine 5% chance) means the random-mode path
+     * itself got dropped. */
+    assert(non_default > 0);
+    assert(non_default < total / 4);
+    printf("test_mothership_child_mode_mostly_fixed_at_slot0 OK\n");
+}
+
+/* A SHOOT_MODE_RAPID child (the rare random-mode dispatch) fires exactly
+ * one burst, then permanently falls back to mode #1 - unlike the player's
+ * own mode 2, it must never come back to mode 2 even after waiting out what
+ * would have been the player's own RAPID_FIRE_LOCKOUT_DURATION cooldown. */
+static void test_mothership_rapid_child_permanently_falls_back_to_mode1(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_mothership(&gs, &events);
+
+    gs.children[0] = (ChildShip){0};
+    gs.children[0].alive = true;
+    gs.children[0].kind = SHIP_B20;
+    gs.children[0].shoot_mode = SHOOT_MODE_RAPID;
+    gs.children[0].x = gs.player.x;
+    gs.children[0].y = gs.player.y - 200.0f;
+    gs.children[0].life = MOTHERSHIP_CHILD_LIFE_MAX;
+
+    InputCommand idle = no_input();
+    game_update(&gs, &idle, 0.016f, &events); /* kicks off the one burst */
+    assert(gs.children[0].shoot_mode == SHOOT_MODE_RAPID);
+    assert(gs.children[0].rapid_burst_timer > 0.0f);
+
+    float elapsed = 0.0f;
+    while (elapsed < RAPID_FIRE_BURST_DURATION + 0.2f) {
+        game_update(&gs, &idle, 0.05f, &events);
+        elapsed += 0.05f;
+    }
+    assert(gs.children[0].shoot_mode == ship_shoot_mode_for_slot(SHIP_B20, 0));
+    assert(gs.children[0].rapid_burst_timer == 0.0f);
+
+    elapsed = 0.0f;
+    while (elapsed < RAPID_FIRE_LOCKOUT_DURATION + 1.0f) {
+        game_update(&gs, &idle, 0.5f, &events);
+        elapsed += 0.5f;
+    }
+    assert(gs.children[0].shoot_mode == ship_shoot_mode_for_slot(SHIP_B20, 0));
+    printf("test_mothership_rapid_child_permanently_falls_back_to_mode1 OK\n");
 }
 
 static void test_mothership_dispatch_caps_and_resumes(void) {
@@ -2057,6 +2132,8 @@ int main(void) {
     test_boss_speed_matches_configured_multiplier();
     test_super_beam_damages_boss_periodically_while_sustained();
     test_mothership_ratings_and_moveset();
+    test_mothership_child_mode_mostly_fixed_at_slot0();
+    test_mothership_rapid_child_permanently_falls_back_to_mode1();
     test_mothership_dispatch_caps_and_resumes();
     test_mothership_child_launch_then_ai_handoff();
     test_mothership_formation_pulls_child_to_slot();
