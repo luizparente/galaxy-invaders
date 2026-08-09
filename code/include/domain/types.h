@@ -233,6 +233,25 @@ typedef enum EnemyShootStyle {
     ENEMY_SHOOT_OMNI,          /* 8 small round shots fired at once, all directions */
 } EnemyShootStyle;
 
+/* How a given enemy moves down the screen - rolled once at spawn time (see
+ * spawn_one_enemy in usecases/spawner.c), based on how many bosses have
+ * been defeated so far this run (GameState.bosses_defeated) -
+ * ERRATIC_ENEMY_CHANCE_PER_BOSS_DEFEAT of ordinary enemies get one of the
+ * three non-NORMAL styles below per defeat, uniformly picked among them;
+ * the rest keep flying NORMAL forever, same as before this existed. Every
+ * non-NORMAL style still nets a steady downward drift underneath its own
+ * pattern (see update_enemies in usecases/game_logic.c) so it still
+ * eventually clears the bottom of the screen the same way a NORMAL enemy
+ * does - none of this needs its own despawn logic. */
+typedef enum EnemyMovementStyle {
+    ENEMY_MOVEMENT_NORMAL = 0, /* the original straight fall + small sideways wobble */
+    ENEMY_MOVEMENT_CIRCLE,     /* loops a fixed-radius circle around a slowly-descending center */
+    ENEMY_MOVEMENT_SPIRAL,     /* same as CIRCLE, but the radius grows over time up to a cap */
+    ENEMY_MOVEMENT_SINE,       /* a wide horizontal sine wave while falling straight down */
+    ENEMY_MOVEMENT_RANDOM,     /* re-rolls a fresh heading (with a guaranteed downward
+                                 * component) every fraction of a second */
+} EnemyMovementStyle;
+
 typedef struct Enemy {
     bool alive;
     float x, y;
@@ -241,7 +260,25 @@ typedef struct Enemy {
     Color color; /* a random color rolled at spawn time (see spawner.c); tints this enemy's projectiles - the sprite itself carries its own fixed colors */
     int kind; /* index into adapters/enemy_sprites' kEnemySprites, [0, ENEMY_KIND_COUNT); also picks this enemy's EnemyShootStyle, see kEnemyKindShootStyle */
     float fire_timer;
+    EnemyMovementStyle movement_style;
+    /* NORMAL's own small sideways wobble phase; repurposed by every
+     * non-NORMAL EnemyMovementStyle for its own single per-frame driver -
+     * CIRCLE/SPIRAL's orbital angle (radians), SINE's wave phase, RANDOM's
+     * countdown to its next re-roll - so a style switch never needs its
+     * own dedicated timer field. */
     float wobble_phase;
+
+    /* CIRCLE/SPIRAL/SINE only: the slowly-descending point the pattern is
+     * actually drawn around - drifts by the enemy's own vx/vy exactly like
+     * a NORMAL enemy's raw position would, while e.x/e.y (the real,
+     * collidable position) orbits/waves around it. Unused by
+     * NORMAL/RANDOM, which write straight into x/y themselves. */
+    float orbit_center_x, orbit_center_y;
+    /* CIRCLE/SPIRAL's orbit radius (SPIRAL's own grows over time, up to
+     * ERRATIC_ENEMY_SPIRAL_RADIUS_MAX) or SINE's wave amplitude - a single
+     * shared "how far from center" field since no enemy ever needs more
+     * than one of these at once. Unused by NORMAL/RANDOM. */
+    float erratic_radius;
 
     /* ENEMY_SHOOT_TRIBURST's own state: burst_shots_remaining counts down
      * shots left in the in-progress burst (0 = idle, waiting on
@@ -538,6 +575,14 @@ typedef struct GameState {
     Orb orb;
     Boss boss;
     int boss_count; /* how many bosses have appeared so far this run */
+    /* How many bosses have actually been *defeated* so far this run (see
+     * end_boss_encounter in usecases/game_logic.c, the single place either
+     * of the two ways a boss can go down - shot down, or its own ring
+     * detonating - both end up) - distinct from boss_count above, which
+     * counts appearances. Drives ERRATIC_ENEMY_CHANCE_PER_BOSS_DEFEAT: 0%
+     * of ordinary enemies fly an erratic pattern before the first defeat,
+     * +10 percentage points after each one since. */
+    int bosses_defeated;
     /* Points earned with the arena clear since the last boss encounter
      * ended. Frozen while a boss is alive and zeroed the moment one leaves,
      * so the next arrival always costs a full fresh BOSS_SCORE_STEP. */

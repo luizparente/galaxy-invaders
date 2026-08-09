@@ -18,6 +18,10 @@ static bool within_radius(float ax, float ay, float bx, float by, float r) {
     return dx * dx + dy * dy <= r * r;
 }
 
+static float deg_to_rad(float deg) {
+    return deg * 0.017453293f;
+}
+
 /* The player's laser is always this exact color for the whole run, never
  * rerolled or varied by score, mode, or anything else - every one of
  * B-20's 5 modes reads pr->color from gs->player.laser_color (see
@@ -486,14 +490,17 @@ static void apply_score_delta(GameState *gs, EventQueue *events, int delta) {
 }
 
 /* The single place a boss leaves the screen, by either route it can go
- * (shot down here, or detonated by ring contact in check_collisions).
- * Restarting the counter at the END of an encounter - not at its start -
- * is what guarantees the full BOSS_SCORE_STEP gap before the next one:
- * from this instant every point has to be earned fresh, with the arena
- * clear. */
+ * (shot down here, or detonated by ring contact in check_collisions) -
+ * both of which are always a defeat (there's no "boss just leaves"
+ * outcome), so this is also the single place bosses_defeated advances.
+ * Restarting score_since_last_boss at the END of an encounter - not at its
+ * start - is what guarantees the full BOSS_SCORE_STEP gap before the next
+ * one: from this instant every point has to be earned fresh, with the
+ * arena clear. */
 static void end_boss_encounter(GameState *gs) {
     gs->boss.alive = false;
     gs->score_since_last_boss = 0;
+    gs->bosses_defeated++;
 }
 
 /* Shared by both ways the boss can take a hit (a direct laser shot, and
@@ -635,6 +642,7 @@ static void reset_run(GameState *gs) {
     memset(&gs->orb, 0, sizeof(gs->orb));
     memset(&gs->boss, 0, sizeof(gs->boss));
     gs->boss_count = 0;
+    gs->bosses_defeated = 0;
     gs->score_since_last_boss = 0;
 
     gs->player.x = (float)gs->screen_w / 2.0f;
@@ -1503,6 +1511,68 @@ static void fire_enemy_shot_style(GameState *gs, Enemy *e, EnemyShootStyle style
     }
 }
 
+/* Moves one enemy according to its own EnemyMovementStyle (rolled once at
+ * spawn - see roll_enemy_movement_style in usecases/spawner.c), writing
+ * into e->x/e->y same as the original NORMAL-only formula this replaced.
+ * CIRCLE/SPIRAL/SINE never touch e->vx/e->vy after spawn - they orbit/wave
+ * around orbit_center_x/orbit_center_y, which drifts by the enemy's own
+ * (possibly ERRATIC_ENEMY_SPEED_MULTIPLIER-boosted) vx/vy exactly the way
+ * a NORMAL enemy's raw x/y would, guaranteeing every style still clears
+ * the bottom of the screen on its own, no separate despawn logic needed. */
+static void update_enemy_movement(GameState *gs, Enemy *e, float dt) {
+    switch (e->movement_style) {
+        case ENEMY_MOVEMENT_CIRCLE:
+        case ENEMY_MOVEMENT_SPIRAL: {
+            float angular_speed = deg_to_rad(e->movement_style == ENEMY_MOVEMENT_SPIRAL
+                                                  ? ERRATIC_ENEMY_SPIRAL_ANGULAR_SPEED
+                                                  : ERRATIC_ENEMY_CIRCLE_ANGULAR_SPEED);
+            e->wobble_phase += angular_speed * dt;
+            if (e->movement_style == ENEMY_MOVEMENT_SPIRAL) {
+                e->erratic_radius += scaled(gs, ERRATIC_ENEMY_SPIRAL_RADIUS_GROWTH) * dt;
+                float max_r = scaled(gs, ERRATIC_ENEMY_SPIRAL_RADIUS_MAX);
+                if (e->erratic_radius > max_r) e->erratic_radius = max_r;
+            }
+            e->orbit_center_x += e->vx * dt;
+            e->orbit_center_y += e->vy * dt;
+            e->x = e->orbit_center_x + cosf(e->wobble_phase) * e->erratic_radius;
+            e->y = e->orbit_center_y + sinf(e->wobble_phase) * e->erratic_radius;
+            break;
+        }
+
+        case ENEMY_MOVEMENT_SINE:
+            e->wobble_phase += deg_to_rad(ERRATIC_ENEMY_SINE_ANGULAR_SPEED) * dt;
+            e->orbit_center_x += e->vx * dt;
+            e->orbit_center_y += e->vy * dt;
+            e->x = e->orbit_center_x + sinf(e->wobble_phase) * e->erratic_radius;
+            e->y = e->orbit_center_y;
+            break;
+
+        case ENEMY_MOVEMENT_RANDOM:
+            e->wobble_phase -= dt;
+            if (e->wobble_phase <= 0.0f) {
+                float speed = scaled(gs, ERRATIC_ENEMY_RANDOM_SPEED) * ERRATIC_ENEMY_SPEED_MULTIPLIER;
+                float angle = frand01() * 6.2831853f;
+                e->vx = cosf(angle) * speed;
+                /* Guarantee a real downward component (never purely
+                 * sideways/upward) so a RANDOM enemy still reliably clears
+                 * the bottom of the screen like every other style. */
+                e->vy = fabsf(sinf(angle)) * speed + scaled(gs, ENEMY_MIN_SIZE) * 0.5f;
+                e->wobble_phase = ERRATIC_ENEMY_RANDOM_RETARGET_MIN +
+                                   frand01() * (ERRATIC_ENEMY_RANDOM_RETARGET_MAX - ERRATIC_ENEMY_RANDOM_RETARGET_MIN);
+            }
+            e->x += e->vx * dt;
+            e->y += e->vy * dt;
+            break;
+
+        case ENEMY_MOVEMENT_NORMAL:
+        default:
+            e->wobble_phase += dt * 3.0f;
+            e->x += (e->vx + sinf(e->wobble_phase) * scaled(gs, 12.0f)) * dt;
+            e->y += e->vy * dt;
+            break;
+    }
+}
+
 static void update_enemies(GameState *gs, float dt) {
     float fire_chance = difficulty_enemy_fire_chance_per_sec(gs->selected_difficulty, gs->time_elapsed);
     float mean_fire_interval = 1.0f / fire_chance;
@@ -1511,9 +1581,7 @@ static void update_enemies(GameState *gs, float dt) {
         Enemy *e = &gs->enemies[i];
         if (!e->alive) continue;
 
-        e->wobble_phase += dt * 3.0f;
-        e->x += (e->vx + sinf(e->wobble_phase) * scaled(gs, 12.0f)) * dt;
-        e->y += e->vy * dt;
+        update_enemy_movement(gs, e, dt);
 
         float half = e->size / 2.0f;
         if (e->x < half) e->x = half;

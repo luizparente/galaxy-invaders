@@ -11,6 +11,7 @@
 #include "usecases/collision.h"
 #include "usecases/difficulty.h"
 #include "usecases/ship.h"
+#include "usecases/spawner.h"
 #include "usecases/game_logic.h"
 
 /* These tests exercise only the usecases layer (pure game rules) directly
@@ -2201,6 +2202,153 @@ static void test_shine_spiral_shot_is_longer_shard_at_two_per_second(void) {
     printf("test_shine_spiral_shot_is_longer_shard_at_two_per_second OK\n");
 }
 
+static void test_erratic_enemy_chance_scales_with_bosses_defeated(void) {
+    assert(fabsf(spawner_erratic_enemy_chance(0) - 0.0f) < 0.001f);
+    assert(fabsf(spawner_erratic_enemy_chance(1) - 0.10f) < 0.001f);
+    assert(fabsf(spawner_erratic_enemy_chance(2) - 0.20f) < 0.001f);
+    assert(fabsf(spawner_erratic_enemy_chance(3) - 0.30f) < 0.001f);
+    /* Capped at 100%, never overshoots past a fistful of defeats. */
+    assert(fabsf(spawner_erratic_enemy_chance(10) - 1.0f) < 0.001f);
+    assert(fabsf(spawner_erratic_enemy_chance(50) - 1.0f) < 0.001f);
+    printf("test_erratic_enemy_chance_scales_with_bosses_defeated OK\n");
+}
+
+/* bosses_defeated tracks actual defeats, distinct from boss_count (which
+ * counts appearances - see test_boss_spawns_at_500_points_with_correct_hits_required) -
+ * both the direct-shot-down path (defeat_current_boss) and the ring-
+ * detonation path must advance it. */
+static void test_boss_defeat_increments_bosses_defeated(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    assert(gs.bosses_defeated == 0);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss_count == 1);
+    defeat_current_boss(&gs, &events);
+    assert(gs.bosses_defeated == 1);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss_count == 2);
+    /* This time, defeat it via the ring-detonation path instead of
+     * shooting it down. */
+    gs.boss.x = gs.player.x;
+    gs.boss.y = gs.player.y;
+    gs.player.god_mode = true; /* survive the ring touch to inspect state after */
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.boss.alive);
+    assert(gs.bosses_defeated == 2);
+    printf("test_boss_defeat_increments_bosses_defeated OK\n");
+}
+
+/* No enemy flies erratically before the first boss defeat; once
+ * bosses_defeated is 1, roughly ERRATIC_ENEMY_CHANCE_PER_BOSS_DEFEAT of
+ * newly-spawned enemies should. Sampled across many independent spawns. */
+static void test_erratic_enemies_start_appearing_after_first_boss_defeat(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    assert(gs.bosses_defeated == 0);
+
+    for (int i = 0; i < 100; i++) {
+        memset(&gs.enemies, 0, sizeof(gs.enemies));
+        gs.spawn_timer = 0.0f;
+        InputCommand none = no_input();
+        game_update(&gs, &none, 0.001f, &events);
+        for (int j = 0; j < MAX_ENEMIES; j++) {
+            if (gs.enemies[j].alive) assert(gs.enemies[j].movement_style == ENEMY_MOVEMENT_NORMAL);
+        }
+    }
+
+    gs.bosses_defeated = 1;
+    int erratic_count = 0, total = 0;
+    for (int i = 0; i < 300; i++) {
+        memset(&gs.enemies, 0, sizeof(gs.enemies));
+        gs.spawn_timer = 0.0f;
+        InputCommand none = no_input();
+        game_update(&gs, &none, 0.001f, &events);
+        for (int j = 0; j < MAX_ENEMIES; j++) {
+            if (!gs.enemies[j].alive) continue;
+            total++;
+            if (gs.enemies[j].movement_style != ENEMY_MOVEMENT_NORMAL) erratic_count++;
+        }
+    }
+    assert(total > 0);
+    float observed = (float)erratic_count / (float)total;
+    /* Generous tolerance around the true 10% - this is sampling noise, not
+     * an exact formula check (that's test_erratic_enemy_chance_scales_with_bosses_defeated
+     * above). */
+    assert(observed > 0.03f);
+    assert(observed < 0.22f);
+    printf("test_erratic_enemies_start_appearing_after_first_boss_defeat OK\n");
+}
+
+/* Pins down CIRCLE's exact orbit formula: a fixed-radius loop around a
+ * center that drifts by the enemy's own vx/vy, so a regression here (e.g.
+ * swapping sin/cos, or forgetting to drift the center) actually fails
+ * instead of silently changing the shape. */
+static void test_circle_enemy_orbits_a_drifting_center(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    Enemy *e = &gs.enemies[0];
+    *e = (Enemy){0};
+    e->alive = true;
+    e->size = 20.0f;
+    e->movement_style = ENEMY_MOVEMENT_CIRCLE;
+    e->orbit_center_x = 100.0f;
+    e->orbit_center_y = 100.0f;
+    e->erratic_radius = 40.0f;
+    e->wobble_phase = 0.0f; /* starts at angle 0: (center_x + radius, center_y) */
+    e->vx = 5.0f;
+    e->vy = 30.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.1f, &events);
+
+    float expected_center_x = 100.0f + 5.0f * 0.1f;
+    float expected_center_y = 100.0f + 30.0f * 0.1f;
+    float expected_angle = ERRATIC_ENEMY_CIRCLE_ANGULAR_SPEED * 0.017453293f * 0.1f;
+    float expected_x = expected_center_x + cosf(expected_angle) * 40.0f;
+    float expected_y = expected_center_y + sinf(expected_angle) * 40.0f;
+
+    assert(fabsf(e->orbit_center_x - expected_center_x) < 0.01f);
+    assert(fabsf(e->orbit_center_y - expected_center_y) < 0.01f);
+    assert(fabsf(e->x - expected_x) < 0.5f);
+    assert(fabsf(e->y - expected_y) < 0.5f);
+    /* Genuinely off the plain "straight fall" path a NORMAL enemy would take. */
+    assert(fabsf(e->x - expected_center_x) > 1.0f);
+    printf("test_circle_enemy_orbits_a_drifting_center OK\n");
+}
+
+/* RANDOM re-rolls its heading periodically but always keeps a downward
+ * component, so - despite the lumpy path - it still nets real progress
+ * toward the bottom of the screen over time, same as every other style. */
+static void test_random_enemy_still_nets_downward_progress(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    Enemy *e = &gs.enemies[0];
+    *e = (Enemy){0};
+    e->alive = true;
+    e->size = 20.0f;
+    e->movement_style = ENEMY_MOVEMENT_RANDOM;
+    e->x = 200.0f;
+    e->y = 100.0f;
+    e->wobble_phase = 0.05f; /* about to retarget on the very first tick */
+
+    InputCommand none = no_input();
+    float start_y = e->y;
+    for (int i = 0; i < 120 && e->alive; i++) {
+        game_update(&gs, &none, 0.05f, &events);
+    }
+    if (e->alive) assert(e->y > start_y);
+    printf("test_random_enemy_still_nets_downward_progress OK\n");
+}
+
 static void test_spawner_eventually_spawns(void) {
     GameState gs;
     EventQueue events;
@@ -2297,6 +2445,11 @@ int main(void) {
     test_shine_twin_shards_close_together_and_halved_damage();
     test_shine_omni_burst_fires_twelve_and_reverts_to_mode1();
     test_shine_spiral_shot_is_longer_shard_at_two_per_second();
+    test_erratic_enemy_chance_scales_with_bosses_defeated();
+    test_boss_defeat_increments_bosses_defeated();
+    test_erratic_enemies_start_appearing_after_first_boss_defeat();
+    test_circle_enemy_orbits_a_drifting_center();
+    test_random_enemy_still_nets_downward_progress();
     test_spawner_eventually_spawns();
     printf("\nAll tests passed.\n");
     return 0;

@@ -66,6 +66,68 @@ int spawner_random_boss_kind(void) {
     return kBossCapableKinds[rand() % BOSS_CAPABLE_KIND_COUNT];
 }
 
+float spawner_erratic_enemy_chance(int bosses_defeated) {
+    float chance = ERRATIC_ENEMY_CHANCE_PER_BOSS_DEFEAT * (float)bosses_defeated;
+    if (chance < 0.0f) chance = 0.0f;
+    if (chance > 1.0f) chance = 1.0f;
+    return chance;
+}
+
+/* Rolls this enemy's own EnemyMovementStyle (see spawner_erratic_enemy_chance
+ * above) and fills in whichever of movement_style/wobble_phase/
+ * orbit_center_x/orbit_center_y/erratic_radius/vy that style actually
+ * reads (see update_enemies in usecases/game_logic.c) - called once, right
+ * after the rest of spawn_one_enemy has already set e->x/e->y/e->vx/e->vy,
+ * since every erratic style's own center/radius/speed is derived from
+ * those. */
+static void roll_enemy_movement_style(GameState *gs, Enemy *e) {
+    if (frand01() >= spawner_erratic_enemy_chance(gs->bosses_defeated)) {
+        e->movement_style = ENEMY_MOVEMENT_NORMAL;
+        e->orbit_center_x = 0.0f;
+        e->orbit_center_y = 0.0f;
+        e->erratic_radius = 0.0f;
+        return;
+    }
+
+    static const EnemyMovementStyle kErraticStyles[] = {
+        ENEMY_MOVEMENT_CIRCLE, ENEMY_MOVEMENT_SPIRAL, ENEMY_MOVEMENT_SINE, ENEMY_MOVEMENT_RANDOM,
+    };
+    e->movement_style = kErraticStyles[rand() % 4];
+    e->orbit_center_x = e->x;
+    e->orbit_center_y = e->y;
+    e->vy *= ERRATIC_ENEMY_SPEED_MULTIPLIER;
+
+    switch (e->movement_style) {
+        case ENEMY_MOVEMENT_CIRCLE: {
+            float min_r = ERRATIC_ENEMY_CIRCLE_RADIUS_MIN * gs->scale;
+            float max_r = ERRATIC_ENEMY_CIRCLE_RADIUS_MAX * gs->scale;
+            e->erratic_radius = min_r + frand01() * (max_r - min_r);
+            e->wobble_phase = frand01() * 6.2831853f; /* starting orbital angle */
+            break;
+        }
+        case ENEMY_MOVEMENT_SPIRAL:
+            e->erratic_radius = 0.0f; /* grows from dead center - see update_enemies */
+            e->wobble_phase = frand01() * 6.2831853f;
+            break;
+        case ENEMY_MOVEMENT_SINE: {
+            float min_a = ERRATIC_ENEMY_SINE_AMPLITUDE_MIN * gs->scale;
+            float max_a = ERRATIC_ENEMY_SINE_AMPLITUDE_MAX * gs->scale;
+            e->erratic_radius = min_a + frand01() * (max_a - min_a);
+            e->wobble_phase = frand01() * 6.2831853f; /* starting wave phase */
+            break;
+        }
+        case ENEMY_MOVEMENT_RANDOM:
+        default:
+            e->erratic_radius = 0.0f; /* unused - RANDOM re-rolls vx/vy directly */
+            /* A short countdown, not a 2*pi-range angle like the other
+             * styles above - RANDOM repurposes wobble_phase as "seconds
+             * until the next re-roll" instead (see update_enemies). */
+            e->wobble_phase = ERRATIC_ENEMY_RANDOM_RETARGET_MIN +
+                               frand01() * (ERRATIC_ENEMY_RANDOM_RETARGET_MAX - ERRATIC_ENEMY_RANDOM_RETARGET_MIN);
+            break;
+    }
+}
+
 static void spawn_one_enemy(GameState *gs) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
@@ -92,6 +154,9 @@ static void spawn_one_enemy(GameState *gs) {
          * once doesn't all puff its first trail particle on the exact same
          * frame. */
         e->trail_emit_timer = frand01() * ENEMY_TRAIL_SPAWN_INTERVAL;
+        /* Overwrites wobble_phase (and vy, for an erratic pick) set above -
+         * must run last. */
+        roll_enemy_movement_style(gs, e);
         return;
     }
 }

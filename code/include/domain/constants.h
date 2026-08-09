@@ -505,4 +505,39 @@
 #define ENEMY_FLEE_SPEED_MULTIPLIER 7.0f
 #define ENEMY_SHOT_FADE_DURATION 0.6f
 
+/* --- Erratic enemy movement (see EnemyMovementStyle in domain/types.h and
+ * update_enemies in usecases/game_logic.c) - CIRCLE/SPIRAL/SINE/RANDOM
+ * instead of the original straight fall + small wobble, unlocked
+ * progressively as bosses are defeated. --- */
+/* Each ordinary enemy rolls this chance at spawn time (see spawn_one_enemy
+ * in usecases/spawner.c), multiplied by GameState.bosses_defeated and
+ * capped at 100% - 0% before the first boss is defeated, 10% after the
+ * first, 20% after the second, and so on. A hit picks uniformly among the
+ * 3 non-NORMAL styles. */
+#define ERRATIC_ENEMY_CHANCE_PER_BOSS_DEFEAT 0.10f
+/* Every erratic style's underlying downward drift (the speed its own
+ * orbit_center_y/y falls at) is this much faster than a normal enemy's own
+ * difficulty-driven fall speed - "maybe even with higher speeds", per
+ * spec. */
+#define ERRATIC_ENEMY_SPEED_MULTIPLIER 1.35f
+#define ERRATIC_ENEMY_CIRCLE_RADIUS_MIN 24.0f
+#define ERRATIC_ENEMY_CIRCLE_RADIUS_MAX 55.0f
+#define ERRATIC_ENEMY_CIRCLE_ANGULAR_SPEED 220.0f /* degrees/sec */
+/* SPIRAL starts at radius 0 (dead center) and grows outward at this rate,
+ * capped at RADIUS_MAX, tracing a widening spiral rather than CIRCLE's own
+ * fixed loop. */
+#define ERRATIC_ENEMY_SPIRAL_RADIUS_GROWTH 30.0f /* design px/sec */
+#define ERRATIC_ENEMY_SPIRAL_RADIUS_MAX 110.0f
+#define ERRATIC_ENEMY_SPIRAL_ANGULAR_SPEED 200.0f /* degrees/sec */
+#define ERRATIC_ENEMY_SINE_AMPLITUDE_MIN 50.0f
+#define ERRATIC_ENEMY_SINE_AMPLITUDE_MAX 110.0f
+#define ERRATIC_ENEMY_SINE_ANGULAR_SPEED 160.0f /* degrees/sec */
+/* RANDOM re-rolls a fresh heading within this speed budget every
+ * RANDOM_RETARGET_MIN..MAX seconds - always with a downward component
+ * (never purely sideways/upward) so it still reliably clears the bottom
+ * of the screen like every other style, just on a lumpier path. */
+#define ERRATIC_ENEMY_RANDOM_SPEED 150.0f /* design px/sec */
+#define ERRATIC_ENEMY_RANDOM_RETARGET_MIN 0.35f
+#define ERRATIC_ENEMY_RANDOM_RETARGET_MAX 0.9f
+
 #endif

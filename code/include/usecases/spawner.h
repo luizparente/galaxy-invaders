@@ -26,4 +26,13 @@ EnemyShootStyle spawner_enemy_kind_shoot_style(int kind);
  * ordinary enemies via spawner_random_enemy_kind, just never as a boss. */
 int spawner_random_boss_kind(void);
 
+/* The odds a newly-spawned ordinary enemy flies an erratic
+ * (CIRCLE/SPIRAL/SINE/RANDOM) pattern instead of the original NORMAL
+ * straight-fall-and-wobble one - ERRATIC_ENEMY_CHANCE_PER_BOSS_DEFEAT per
+ * boss actually defeated so far this run, capped at 1.0 (100%). Exposed as
+ * its own pure function (rather than inlined in spawn_one_enemy) so it can
+ * be pinned down directly in tests, same reasoning as usecases/difficulty's
+ * own pure functions. */
+float spawner_erratic_enemy_chance(int bosses_defeated);
+
 #endif
