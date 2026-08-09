@@ -1103,7 +1103,7 @@ static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSH
  * the same capsule descriptions each ship was specced with ("versatile
  * and fast... built for the most skilled pilots" / "resilient and strong,
  * piloted only by the bravest" / "the matriarch who fights against evil,
- * dispatching brave warriors to fight at her side"), expanded to fill the
+ * dispatching brave warriors to fight by her side"), expanded to fill the
  * panel. All caps: the pixel font (adapters/pixel_font) only has uppercase
  * glyphs, same convention every other in-game string here already
  * follows. */
@@ -1116,8 +1116,7 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "LETTING ITS PILOT STAND AND FIGHT WHEN OTHERS WOULD FLEE.",
     "THE MATRIARCH WHO FIGHTS AGAINST EVIL, AND THE STRONGEST "
     "SPACESHIP IN THE FLEET. SHE DOES NOT FIGHT ALONE - SHE DISPATCHES "
-    "BRAVE, COURAGEOUS WARRIORS TO FIGHT AT HER SIDE, HER OWN "
-    "OVERWHELMING PLATING SHRUGGING OFF WHATEVER SLIPS PAST THEM.",
+    "BRAVE, COURAGEOUS WARRIORS TO FIGHT BY HER SIDE.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};
