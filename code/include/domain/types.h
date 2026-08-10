@@ -71,21 +71,25 @@ typedef enum Difficulty {
  * kept for the whole run - see GameState.selected_ship and usecases/ship.c
  * for how each ship's Speed/Strength ratings translate into real gameplay
  * multipliers. SHIP_B20, SHIP_C24, SHIP_MOTHERSHIP, SHIP_SHINE and
- * SHIP_CRUZADER are implemented; the ship-select grid has room for more
- * (adapters/sdl_renderer.c) but every slot past SHIP_COUNT renders as a
- * locked placeholder, not a real Ship value. SHIP_MOTHERSHIP doesn't fire
- * projectiles of its own at all - its two ShootModes
+ * SHIP_CRUZADER and SHIP_TWINS are implemented; the ship-select grid has
+ * room for more (adapters/sdl_renderer.c) but every slot past SHIP_COUNT
+ * renders as a locked placeholder, not a real Ship value. SHIP_MOTHERSHIP
+ * doesn't fire projectiles of its own at all - its two ShootModes
  * (SHOOT_MODE_SWARM_WANDER/SHOOT_MODE_SWARM_FORMATION below) dispatch
  * CPU-flown ChildShip escorts instead (see GameState.children and
  * update_mothership_dispatch/update_children in usecases/game_logic.c). A
  * ChildShip's own `kind` is always SHIP_B20 or SHIP_C24 - SHIP_MOTHERSHIP
- * itself never appears there. */
+ * itself never appears there. SHIP_TWINS is the one exception to "one
+ * Player, one hitbox" - it's rendered and collided as two independent
+ * bodies sharing a single Player (see the twins_* fields below and
+ * player_hitboxes in usecases/game_logic.c). */
 typedef enum Ship {
     SHIP_B20 = 0,
     SHIP_C24,
     SHIP_MOTHERSHIP,
     SHIP_SHINE,
     SHIP_CRUZADER,
+    SHIP_TWINS,
     SHIP_COUNT,
 } Ship;
 
@@ -150,6 +154,15 @@ typedef enum ShootMode {
      * mode 1. */
     SHOOT_MODE_CRUZADER_ORB,
     SHOOT_MODE_CRUZADER_ROCKETS,  /* mode 3: slow, homing, explosive rockets */
+    /* The Twins' own 2-mode kit (see usecases/ship.c) - none of these are
+     * reachable by any other ship. Both fire identically (see
+     * update_twins_alternating_fire in usecases/game_logic.c) - the only
+     * difference between them is which flight behavior update_player's own
+     * SHIP_TWINS branch applies that frame, read fresh from
+     * Player.shoot_mode every frame same as Mothership's own two modes
+     * above. */
+    SHOOT_MODE_TWINS_ALTERNATE, /* mode 1 (default): rigid formation flight */
+    SHOOT_MODE_TWINS_MIRROR,    /* mode 2: right twin free-flies, left mirrors it */
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -202,6 +215,34 @@ typedef struct Player {
     /* Counts down to the next engine trail particle emission (see
      * update_player_trail) - purely cosmetic, unrelated to fire_cooldown. */
     float trail_emit_timer;
+
+    /* The Twins' own dual-body state - unused by every other ship. x/y
+     * above remain the single input-driven control point (the right
+     * twin's own x directly in SHOOT_MODE_TWINS_MIRROR, or the shared
+     * formation center in SHOOT_MODE_TWINS_ALTERNATE - see update_player);
+     * twins_right_x/twins_left_x are each twin's own actual on-screen x
+     * every frame - directly derived from that control point in mirror
+     * mode, eased toward it (not snapped) in formation mode (see
+     * TWINS_FORMATION_REJOIN_SPEED), or driven directly once only one twin
+     * remains (see kill_twin's own control-transfer step, which snaps x
+     * onto the survivor). y is always shared - both twins move vertically
+     * together, no separate y needed. twins_mirror_center_x is the
+     * reflection axis for mirror mode - NOT always screen-center: it's
+     * re-anchored to the twins' own current midpoint the instant mode 2
+     * activates (see update_shoot_mode_switch), so the left twin always
+     * starts mirroring from wherever it actually already was, never
+     * teleporting to reconcile with a stale/unrelated axis. Re-anchored
+     * the same way (to the twins' own current midpoint) when switching
+     * back to mode 1, so formation's own target center picks up from
+     * their current spread instead of some historical position - that's
+     * what makes them visibly fly toward each other, not teleport
+     * together. twins_next_shot_is_right alternates which twin's own x the
+     * next shot in update_twins_alternating_fire spawns from. */
+    float twins_right_x, twins_left_x;
+    float twins_mirror_center_x;
+    float twins_right_life, twins_left_life;
+    bool twins_right_alive, twins_left_alive;
+    bool twins_next_shot_is_right;
 } Player;
 
 /* A CPU-flown escort dispatched by The Mothership (see

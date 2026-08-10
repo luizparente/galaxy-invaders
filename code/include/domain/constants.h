@@ -558,6 +558,32 @@
  * not a hit the normal damage system should be able to soften further. */
 #define CRUZADER_ENEMY_CONTACT_LIFE_LOSS 10.0f
 
+/* --- The Twins' own weapon/flight (see usecases/ship.c for their 2-slot
+ * moveset, usecases/game_logic.c's SHIP_TWINS branches for how these get
+ * used) - "50% bigger than B-20" would be TWINS_SIZE_MULTIPLIER 1.5, but
+ * per spec The Twins are only 25% bigger. */
+#define TWINS_SIZE_MULTIPLIER 1.25f
+/* Distance kept between the two twins' own centers while flying in rigid
+ * formation (mode 1, SHOOT_MODE_TWINS_ALTERNATE) - wide enough that their
+ * own (already 1.25x) sprites never overlap. */
+#define TWINS_FORMATION_GAP (PLAYER_WIDTH * TWINS_SIZE_MULTIPLIER * 1.3f)
+/* How fast each twin closes the distance back to its own formation slot
+ * (center +/- half TWINS_FORMATION_GAP) after switching back to mode 1
+ * from mode 2 - an eased "fly toward each other" reunion (see
+ * update_player's own SHIP_TWINS branch), not an instant snap, same
+ * steer-toward-target technique as MOTHERSHIP_CHILD_FORMATION_SPEED. A
+ * little faster than the ship's own base PLAYER_SPEED so the reunion
+ * reads as snappy rather than sluggish. */
+#define TWINS_FORMATION_REJOIN_SPEED (PLAYER_SPEED * 1.5f)
+/* "Each twin shoots 2 projectiles per second... together 4 total per
+ * second" per spec - a flat rate specific to The Twins, not derived from
+ * PLAYER_FIRE_COOLDOWN or C-24's own double-barrel cooldown (the mode 1
+ * pattern is only reused loosely: one shot per activation, alternating
+ * muzzle, not two shots at once - see update_twins_alternating_fire). */
+#define TWINS_ALTERNATE_FIRE_COOLDOWN 0.25f
+#define TWINS_BOLT_LENGTH 22.0f
+#define TWINS_BOLT_WIDTH 4.5f
+
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50
 /* The boss's own baseline size range, scaled up by BOSS_SIZE_MULTIPLIER -

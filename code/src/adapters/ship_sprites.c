@@ -4,6 +4,7 @@
 #include "adapters/ship_mothership_sprite.h"
 #include "adapters/ship_shine_sprite.h"
 #include "adapters/ship_cruzader_sprite.h"
+#include "adapters/ship_twins_sprite.h"
 
 const ShipSpriteSheet kShipSprites[SHIP_COUNT] = {
     [SHIP_B20] = {kPlayerSpritePixels, PLAYER_SPRITE_SIZE},
@@ -11,4 +12,5 @@ const ShipSpriteSheet kShipSprites[SHIP_COUNT] = {
     [SHIP_MOTHERSHIP] = {kShipMothershipSpritePixels, SHIP_MOTHERSHIP_SPRITE_SIZE},
     [SHIP_SHINE] = {kShipShineSpritePixels, SHIP_SHINE_SPRITE_SIZE},
     [SHIP_CRUZADER] = {kShipCruzaderSpritePixels, SHIP_CRUZADER_SPRITE_SIZE},
+    [SHIP_TWINS] = {kShipTwinsSpritePixels, SHIP_TWINS_SPRITE_SIZE},
 };

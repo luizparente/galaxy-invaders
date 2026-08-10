@@ -103,6 +103,19 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
         *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
         return;
     }
+    /* The Twins' own bolt (always fired straight up, but built the same
+     * oriented-bounding-box way as Shine/Cruzader above rather than a
+     * simple vertical swap, for consistency). */
+    if (pr->style_ship == SHIP_TWINS) {
+        float length = scaled(gs, TWINS_BOLT_LENGTH);
+        float width = scaled(gs, TWINS_BOLT_WIDTH);
+        float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+        float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+        float dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+        *half_w = fabsf(dx) * length / 2.0f + fabsf(dy) * width / 2.0f;
+        *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -703,6 +716,14 @@ static void reset_run(GameState *gs) {
     gs->player.cruzader_orb_timer = 0.0f;
     gs->player.cruzader_orb_cooldown_timer = 0.0f;
     gs->player.trail_emit_timer = 0.0f;
+    gs->player.twins_right_life = PLAYER_LIFE_MAX;
+    gs->player.twins_left_life = PLAYER_LIFE_MAX;
+    gs->player.twins_right_alive = true;
+    gs->player.twins_left_alive = true;
+    gs->player.twins_next_shot_is_right = true;
+    gs->player.twins_right_x = gs->player.x + scaled(gs, TWINS_FORMATION_GAP) / 2.0f;
+    gs->player.twins_left_x = gs->player.x - scaled(gs, TWINS_FORMATION_GAP) / 2.0f;
+    gs->player.twins_mirror_center_x = gs->player.x;
 
     gs->score = 0;
     gs->time_elapsed = 0.0f;
@@ -853,6 +874,10 @@ static void kill_player(GameState *gs, EventQueue *events) {
     if (gs->player.god_mode) return; /* invincible until Ctrl+G is pressed again */
     gs->player.alive = false;
     gs->player.life = 0.0f;
+    /* Harmless no-op for every ship but SHIP_TWINS - see kill_twin, the
+     * only other place these get cleared. */
+    gs->player.twins_right_alive = false;
+    gs->player.twins_left_alive = false;
     spawn_explosion(gs, gs->player.x, gs->player.y, scaled(gs, PLAYER_WIDTH));
     event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
     gs->last_game_score = gs->score;
@@ -894,6 +919,75 @@ static void damage_cruzader_on_enemy_contact(GameState *gs, EventQueue *events) 
     if (p->life <= 0.0f) {
         p->life = 0.0f;
         kill_player(gs, events);
+    }
+}
+
+/* The Twins' own per-twin death (see damage_twin below for the only other
+ * caller) - modeled on kill_player above, but only that one twin's own
+ * alive flag/explosion, and the control-transfer step: if the other twin
+ * is still standing, p->x (the single shared control point - see
+ * update_player's own SHIP_TWINS branch) snaps onto its current cached
+ * position so it keeps flying from exactly where it already was instead of
+ * jumping, and from this point on is driven directly (no more
+ * mirroring/formation offset) - the "reverse control" the surviving twin
+ * needs, since a bare direct mapping is exactly what makes the right key
+ * move it right regardless of which mode was active when its sibling
+ * died. Once both twins are down, the whole Player dies via kill_player. */
+static void kill_twin(GameState *gs, EventQueue *events, bool right) {
+    Player *p = &gs->player;
+    bool *alive_flag = right ? &p->twins_right_alive : &p->twins_left_alive;
+    if (!*alive_flag) return;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+
+    *alive_flag = false;
+    /* A flat-damage/contact kill (kill_player_hitbox's own else-branch)
+     * never routed through damage_twin's own life<=0 zeroing, so it's
+     * zeroed unconditionally here instead - the dead twin's own life bar
+     * (draw_twins_life_bars) must always read exactly 0, regardless of
+     * which path killed it. */
+    if (right) p->twins_right_life = 0.0f;
+    else p->twins_left_life = 0.0f;
+    float dead_x = right ? p->twins_right_x : p->twins_left_x;
+    spawn_explosion(gs, dead_x, p->y, scaled(gs, PLAYER_WIDTH) * TWINS_SIZE_MULTIPLIER);
+    event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
+
+    if (right && p->twins_left_alive) {
+        p->x = p->twins_left_x;
+    } else if (!right && p->twins_right_alive) {
+        p->x = p->twins_right_x;
+    }
+
+    /* Losing a twin immediately forces mode 1 (formation) - the survivor's
+     * own actual position is untouched by this (update_player's own SHIP_TWINS
+     * solo branch never reads shoot_mode at all, it always drives x directly),
+     * this purely corrects the HUD's own mode indicator/label and, together
+     * with update_shoot_mode_switch's own guard below, locks mode 2 out
+     * entirely until the run ends - a lone twin has nothing left to mirror. */
+    p->shoot_mode = SHOOT_MODE_TWINS_ALTERNATE;
+
+    if (!p->twins_right_alive && !p->twins_left_alive) {
+        kill_player(gs, events);
+    }
+}
+
+/* The Twins' own per-twin damage_player counterpart - same immunity guards
+ * and ship_damage_taken_multiplier scaling, just against that one twin's
+ * own life field instead of the shared Player.life (unused by SHIP_TWINS -
+ * see the Player struct's own doc comment). */
+static void damage_twin(GameState *gs, EventQueue *events, bool right, float amount) {
+    Player *p = &gs->player;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+    if (!(right ? p->twins_right_alive : p->twins_left_alive)) return;
+
+    float *life = right ? &p->twins_right_life : &p->twins_left_life;
+    *life -= amount * ship_damage_taken_multiplier(SHIP_TWINS);
+    if (*life <= 0.0f) {
+        *life = 0.0f;
+        kill_twin(gs, events, right);
     }
 }
 
@@ -974,7 +1068,41 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
         return;
     }
     if (requested == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) return;
+    /* Once one twin is down, mode 2 (mirroring the other twin's own
+     * movement) is meaningless - there's nothing left to mirror. Locked
+     * out entirely for the rest of the run, same "just a no-op" language
+     * as every other unavailable-mode press (RAPID's own cooldown just
+     * above) - see kill_twin's own doc comment for the forced switch back
+     * to mode 1 the instant this happens, and draw_shoot_mode_indicator
+     * for how this reads as a permanently red slot 2. */
+    if (requested == SHOOT_MODE_TWINS_MIRROR &&
+        !(p->twins_right_alive && p->twins_left_alive)) {
+        return;
+    }
     if (requested == p->shoot_mode) return;
+
+    /* The Twins' own mode transitions re-anchor the shared control point
+     * (x) and the mirror reflection axis (twins_mirror_center_x) to
+     * wherever the twins actually currently are, right at the moment the
+     * mode changes - never to some stale value left over from before the
+     * ship last switched away from that mode. That's what keeps both
+     * transitions jump-free: entering mirror mode (2) starts the right
+     * twin's own free flight from its own current x, and the left twin
+     * mirroring from the current midpoint (so it starts exactly where it
+     * already is, not reflected around a screen-center formula it may
+     * never have been symmetric around); entering formation mode (1) sets
+     * the new formation center to the twins' own current midpoint too, so
+     * update_player's own eased catch-up (TWINS_FORMATION_REJOIN_SPEED)
+     * has them fly toward each other from wherever they actually are
+     * instead of snapping onto (or racing toward) a stale, unrelated
+     * center. */
+    if (requested == SHOOT_MODE_TWINS_MIRROR) {
+        p->twins_mirror_center_x = (p->twins_right_x + p->twins_left_x) / 2.0f;
+        p->x = p->twins_right_x;
+    } else if (requested == SHOOT_MODE_TWINS_ALTERNATE) {
+        p->x = (p->twins_right_x + p->twins_left_x) / 2.0f;
+    }
+
     p->shoot_mode = requested;
     event_queue_push_sfx(events, SFX_MENU_SELECT);
 }
@@ -1065,6 +1193,39 @@ static void update_double_barrel(GameState *gs, const InputCommand *input, Event
     spawn_player_shot(gs, p->x - wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
     spawn_player_shot(gs, p->x + wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
     p->fire_cooldown = PLAYER_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* The Twins' own weapon, shared by both of their moveset slots
+ * (SHOOT_MODE_TWINS_ALTERNATE and SHOOT_MODE_TWINS_MIRROR - mode 2 changes
+ * flight only, never firing, see update_player's own SHIP_TWINS branch):
+ * one shot per activation, alternating muzzle between the two twins' own
+ * cached x positions (twins_next_shot_is_right) so together they reach
+ * TWINS_ALTERNATE_FIRE_COOLDOWN's combined 4 shots/sec, 2/sec from either
+ * twin alone - loosely "C-24's own mode 1" in spirit (a wingtip-style
+ * pattern from two source points), but a single alternating shot per
+ * activation rather than a simultaneous pair, at Twins' own explicitly
+ * specced rate instead of double-barrel's. Once one twin has died, every
+ * shot simply comes from whichever twin survives - the toggle only flips
+ * while both are still alive. */
+static void update_twins_alternating_fire(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+    if (!p->twins_right_alive && !p->twins_left_alive) return;
+
+    bool fire_right = p->twins_next_shot_is_right;
+    if (fire_right && !p->twins_right_alive) fire_right = false;
+    if (!fire_right && !p->twins_left_alive) fire_right = true;
+
+    float x = fire_right ? p->twins_right_x : p->twins_left_x;
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) * TWINS_SIZE_MULTIPLIER / 2.0f;
+    float vy = -scaled(gs, PLAYER_PROJECTILE_SPEED);
+    spawn_player_shot(gs, x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE);
+
+    if (p->twins_right_alive && p->twins_left_alive) {
+        p->twins_next_shot_is_right = !fire_right;
+    }
+    p->fire_cooldown = TWINS_ALTERNATE_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
@@ -1509,12 +1670,25 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_SHINE_SPIRAL: update_shine_spiral(gs, input, events); break;
         case SHOOT_MODE_CRUZADER_TWIN: update_cruzader_twin(gs, input, events); break;
         case SHOOT_MODE_CRUZADER_ROCKETS: update_cruzader_rockets(gs, input, events); break;
+        case SHOOT_MODE_TWINS_ALTERNATE:
+        case SHOOT_MODE_TWINS_MIRROR: update_twins_alternating_fire(gs, input, events); break;
         case SHOOT_MODE_SHINE_OMNI: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_CRUZADER_ORB: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_NORMAL:
         case SHOOT_MODE_COUNT:
         default: update_normal_fire(gs, input, events); break;
     }
+}
+
+/* Steers a single scalar toward target by at most max_step - the 1D
+ * analogue of mothership_formation_slot's own dx/dy steering above, used by
+ * The Twins' own formation catch-up (see update_player's SHIP_TWINS
+ * branch): snaps to target outright once within one step of it, otherwise
+ * moves max_step in target's direction. */
+static float ease_toward_1d(float current, float target, float max_step) {
+    float diff = target - current;
+    if (fabsf(diff) <= max_step) return target;
+    return current + (diff > 0.0f ? max_step : -max_step);
 }
 
 static void update_player(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
@@ -1534,17 +1708,81 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
 
     float speed = scaled(gs, PLAYER_SPEED) * ship_speed_multiplier(gs->selected_ship);
     if (p->super_beam_timer > 0.0f) speed *= SUPER_BEAM_SPEED_MULTIPLIER;
-    p->x += dx * speed * dt;
-    p->y += dy * speed * dt;
 
     float size_mult = ship_size_multiplier(gs->selected_ship);
     float half_w = scaled(gs, PLAYER_WIDTH) * size_mult / 2.0f;
     float min_y = scaled(gs, PLAYER_HEIGHT) * size_mult / 2.0f; /* free to roam the whole screen, not just the lower band */
     float max_y = (float)gs->screen_h - scaled(gs, PLAYER_BOTTOM_MARGIN);
-    if (p->x < half_w) p->x = half_w;
-    if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
-    if (p->y < min_y) p->y = min_y;
-    if (p->y > max_y) p->y = max_y;
+
+    if (gs->selected_ship == SHIP_TWINS) {
+        /* y is always shared - both twins move vertically together. x is
+         * the single input-driven control point; how it maps onto each
+         * twin's own actual position depends on flight mode and on whether
+         * both twins are still alive (see the Player struct's own doc
+         * comment and kill_twin's control-transfer step). */
+        p->y += dy * speed * dt;
+        if (p->y < min_y) p->y = min_y;
+        if (p->y > max_y) p->y = max_y;
+
+        bool both_alive = p->twins_right_alive && p->twins_left_alive;
+        if (both_alive && p->shoot_mode == SHOOT_MODE_TWINS_MIRROR) {
+            /* Mode 2: the right twin is directly, fully input-driven
+             * across the whole screen width; the left twin mirrors its
+             * position around twins_mirror_center_x - re-anchored to the
+             * twins' own current midpoint the instant this mode activates
+             * (see update_shoot_mode_switch), not always screen-center, so
+             * the left twin always starts mirroring from wherever it
+             * actually already was. */
+            p->x += dx * speed * dt;
+            if (p->x < half_w) p->x = half_w;
+            if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
+            p->twins_right_x = p->x;
+            float mirrored = 2.0f * p->twins_mirror_center_x - p->x;
+            if (mirrored < half_w) mirrored = half_w;
+            if (mirrored > (float)gs->screen_w - half_w) mirrored = (float)gs->screen_w - half_w;
+            p->twins_left_x = mirrored;
+        } else if (both_alive) {
+            /* Mode 1 (default): rigid formation - x is the shared,
+             * input-driven formation center, kept TWINS_FORMATION_GAP
+             * apart. The twins' own actual positions EASE toward that
+             * center +/- half the gap (TWINS_FORMATION_REJOIN_SPEED)
+             * rather than snapping there outright, so returning from mode
+             * 2 (where they may have drifted far apart) reads as flying
+             * toward each other - same steer-toward-target technique as
+             * mothership_formation_slot's own child catch-up. Once
+             * they're already at their slot (the overwhelmingly common
+             * case - every frame that isn't the first one or two after a
+             * mode switch) this is a no-op, identical to the direct
+             * assignment it replaces. */
+            float half_gap = scaled(gs, TWINS_FORMATION_GAP) / 2.0f;
+            float min_x = half_w + half_gap;
+            float max_x = (float)gs->screen_w - half_w - half_gap;
+            p->x += dx * speed * dt;
+            if (p->x < min_x) p->x = min_x;
+            if (p->x > max_x) p->x = max_x;
+            float rejoin_step = scaled(gs, TWINS_FORMATION_REJOIN_SPEED) * dt;
+            p->twins_right_x = ease_toward_1d(p->twins_right_x, p->x + half_gap, rejoin_step);
+            p->twins_left_x = ease_toward_1d(p->twins_left_x, p->x - half_gap, rejoin_step);
+        } else {
+            /* Solo: whichever twin survives is now under direct control -
+             * kill_twin already snapped x onto its position, so plain
+             * integration from here on just naturally makes the right key
+             * move it right, regardless of which mode/offset was active
+             * when its sibling died. */
+            p->x += dx * speed * dt;
+            if (p->x < half_w) p->x = half_w;
+            if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
+            if (p->twins_right_alive) p->twins_right_x = p->x;
+            if (p->twins_left_alive) p->twins_left_x = p->x;
+        }
+    } else {
+        p->x += dx * speed * dt;
+        p->y += dy * speed * dt;
+        if (p->x < half_w) p->x = half_w;
+        if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
+        if (p->y < min_y) p->y = min_y;
+        if (p->y > max_y) p->y = max_y;
+    }
 
     update_shoot_mode_switch(gs, input, events);
     update_player_firing(gs, input, dt, events);
@@ -1554,6 +1792,25 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
  * to the top of the screen. While active it needs no fire input: it just
  * sweeps every enemy and enemy projectile inside its width off the board,
  * every frame, for its whole duration. */
+/* The super beam's own column origin(s) for this frame: 1 entry (p->x, same
+ * as ever) for every ship but SHIP_TWINS, or one per currently-alive twin
+ * (1 or 2) for SHIP_TWINS - so the orb's super beam sweeps a column from
+ * each twin still standing, not just a single column from whatever p->x
+ * happens to mean for the ship's own current flight mode. Every other
+ * ship's own single-column behavior is completely unchanged (out[0] = p->x,
+ * count 1, identical to reading p->x directly). */
+static int player_beam_origin_xs(const GameState *gs, float out[2]) {
+    const Player *p = &gs->player;
+    if (gs->selected_ship == SHIP_TWINS) {
+        int n = 0;
+        if (p->twins_right_alive) out[n++] = p->twins_right_x;
+        if (p->twins_left_alive) out[n++] = p->twins_left_x;
+        return n;
+    }
+    out[0] = p->x;
+    return 1;
+}
+
 static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
     Player *p = &gs->player;
     if (p->super_beam_timer <= 0.0f) {
@@ -1569,13 +1826,18 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
     if (!p->alive) return;
 
     float beam_half_w = scaled(gs, PLAYER_PROJECTILE_W) * SUPER_BEAM_WIDTH_MULTIPLIER / 2.0f;
+    float origins[2];
+    int origin_count = player_beam_origin_xs(gs, origins);
 
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
         if (!e->alive) continue;
         if (e->y >= p->y) continue;
-        if (fabsf(e->x - p->x) <= beam_half_w + e->size / 2.0f) {
-            destroy_enemy_for_score(gs, events, e);
+        for (int o = 0; o < origin_count; o++) {
+            if (fabsf(e->x - origins[o]) <= beam_half_w + e->size / 2.0f) {
+                destroy_enemy_for_score(gs, events, e);
+                break;
+            }
         }
     }
 
@@ -1585,14 +1847,24 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
         if (pr->y >= p->y) continue;
         float pr_half_w, pr_half_h;
         enemy_shot_half_extents(pr, &pr_half_w, &pr_half_h);
-        if (fabsf(pr->x - p->x) <= beam_half_w + pr_half_w) {
-            pr->alive = false;
+        for (int o = 0; o < origin_count; o++) {
+            if (fabsf(pr->x - origins[o]) <= beam_half_w + pr_half_w) {
+                pr->alive = false;
+                break;
+            }
         }
     }
 
     if (gs->boss.alive) {
-        bool boss_in_beam = gs->boss.y < p->y &&
-                             fabsf(gs->boss.x - p->x) <= beam_half_w + gs->boss.size / 2.0f;
+        bool boss_in_beam = false;
+        if (gs->boss.y < p->y) {
+            for (int o = 0; o < origin_count; o++) {
+                if (fabsf(gs->boss.x - origins[o]) <= beam_half_w + gs->boss.size / 2.0f) {
+                    boss_in_beam = true;
+                    break;
+                }
+            }
+        }
         if (boss_in_beam) {
             if (gs->boss.beam_contact_timer <= 0.0f) {
                 damage_boss(gs, events, BASE_PLAYER_DAMAGE);
@@ -1902,7 +2174,14 @@ static void update_player_trail(GameState *gs, float dt) {
             p->trail_emit_timer = TRAIL_SPAWN_INTERVAL;
             float back_y = p->y + scaled(gs, PLAYER_HEIGHT) / 2.0f;
             float jitter_x = (frand01() - 0.5f) * scaled(gs, PLAYER_WIDTH) * 0.3f;
-            spawn_trail_particle(gs, p->x + jitter_x, back_y);
+            if (gs->selected_ship == SHIP_TWINS) {
+                /* One puff behind each currently-alive twin instead of a
+                 * single one behind p->x - matches the two-rockets look. */
+                if (p->twins_right_alive) spawn_trail_particle(gs, p->twins_right_x + jitter_x, back_y);
+                if (p->twins_left_alive) spawn_trail_particle(gs, p->twins_left_x + jitter_x, back_y);
+            } else {
+                spawn_trail_particle(gs, p->x + jitter_x, back_y);
+            }
         }
     }
 
@@ -2039,10 +2318,59 @@ static void update_projectile_trails(GameState *gs, float dt) {
     }
 }
 
+/* The player's own hitbox(es) for this frame: 1 entry (gs->player.x/y, same
+ * as ever) for every ship but SHIP_TWINS, or one entry per currently-alive
+ * twin (0, 1, or 2) for SHIP_TWINS - see the Player struct's own doc
+ * comment for what twins_right_x/twins_left_x mean. Every collision site in
+ * check_collisions that used to test a single player hitbox loops over this
+ * instead, so Twins' two independent bodies plug into every one of them
+ * without changing behavior for any other ship (hb_count is always 1
+ * there, identical to the single test each of those sites used to run
+ * directly). */
+typedef struct PlayerHitbox {
+    float x, y, half_w, half_h;
+    bool right; /* only meaningful for SHIP_TWINS */
+} PlayerHitbox;
+
+static int player_hitboxes(const GameState *gs, PlayerHitbox out[2]) {
+    if (!gs->player.alive) return 0;
+    float half_h = scaled(gs, PLAYER_HEIGHT) * ship_size_multiplier(gs->selected_ship) / 2.0f;
+    float half_w = scaled(gs, PLAYER_WIDTH) * ship_size_multiplier(gs->selected_ship) / 2.0f;
+    if (gs->selected_ship == SHIP_TWINS) {
+        int n = 0;
+        if (gs->player.twins_right_alive) {
+            out[n++] = (PlayerHitbox){gs->player.twins_right_x, gs->player.y, half_w, half_h, true};
+        }
+        if (gs->player.twins_left_alive) {
+            out[n++] = (PlayerHitbox){gs->player.twins_left_x, gs->player.y, half_w, half_h, false};
+        }
+        return n;
+    }
+    out[0] = (PlayerHitbox){gs->player.x, gs->player.y, half_w, half_h, false};
+    return 1;
+}
+
+/* Routes to kill_twin/damage_twin for SHIP_TWINS (using PlayerHitbox.right
+ * to say which twin), or straight to kill_player/damage_player otherwise -
+ * so every non-Twins call site is functionally identical to calling
+ * kill_player/damage_player directly, just through one extra layer. */
+static void kill_player_hitbox(GameState *gs, EventQueue *events, const PlayerHitbox *hb) {
+    if (gs->selected_ship == SHIP_TWINS) {
+        kill_twin(gs, events, hb->right);
+    } else {
+        kill_player(gs, events);
+    }
+}
+
+static void damage_player_hitbox(GameState *gs, EventQueue *events, const PlayerHitbox *hb, float amount) {
+    if (gs->selected_ship == SHIP_TWINS) {
+        damage_twin(gs, events, hb->right, amount);
+    } else {
+        damage_player(gs, events, amount);
+    }
+}
+
 static void check_collisions(GameState *gs, EventQueue *events) {
-    float player_size_mult = ship_size_multiplier(gs->selected_ship);
-    float player_half_w = scaled(gs, PLAYER_WIDTH) * player_size_mult / 2.0f;
-    float player_half_h = scaled(gs, PLAYER_HEIGHT) * player_size_mult / 2.0f;
     /* Children always collide at the stock (unmultiplied) size - see
      * ship_size_multiplier's own doc comment. */
     float child_half_w = scaled(gs, PLAYER_WIDTH) / 2.0f;
@@ -2080,19 +2408,23 @@ static void check_collisions(GameState *gs, EventQueue *events) {
      * the ring-touch block further down) - this carve-out is scoped to
      * ordinary enemies only, per spec. */
     if (gs->player.alive) {
-        for (int j = 0; j < MAX_ENEMIES; j++) {
-            Enemy *e = &gs->enemies[j];
-            if (!e->alive) continue;
-            if (collision_aabb_overlap(gs->player.x, gs->player.y, player_half_w, player_half_h,
-                                        e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
-                e->alive = false;
-                spawn_explosion(gs, e->x, e->y, e->size);
-                if (gs->selected_ship == SHIP_CRUZADER) {
-                    damage_cruzader_on_enemy_contact(gs, events);
-                } else {
-                    kill_player(gs, events);
+        PlayerHitbox hbs[2];
+        int hb_count = player_hitboxes(gs, hbs);
+        for (int h = 0; h < hb_count; h++) {
+            for (int j = 0; j < MAX_ENEMIES; j++) {
+                Enemy *e = &gs->enemies[j];
+                if (!e->alive) continue;
+                if (collision_aabb_overlap(hbs[h].x, hbs[h].y, hbs[h].half_w, hbs[h].half_h,
+                                            e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
+                    e->alive = false;
+                    spawn_explosion(gs, e->x, e->y, e->size);
+                    if (gs->selected_ship == SHIP_CRUZADER) {
+                        damage_cruzader_on_enemy_contact(gs, events);
+                    } else {
+                        kill_player_hitbox(gs, events, &hbs[h]);
+                    }
+                    break;
                 }
-                break;
             }
         }
     }
@@ -2139,6 +2471,8 @@ static void check_collisions(GameState *gs, EventQueue *events) {
     }
 
     if (gs->player.alive) {
+        PlayerHitbox hbs[2];
+        int hb_count = player_hitboxes(gs, hbs);
         for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
             Projectile *pr = &gs->enemy_shots[i];
             /* inert = fading out after a boss arrived; harmless. A shot
@@ -2150,22 +2484,25 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             if (!pr->alive || pr->inert || pr->reflected) continue;
             float enemy_shot_half_w, enemy_shot_half_h;
             enemy_shot_half_extents(pr, &enemy_shot_half_w, &enemy_shot_half_h);
-            if (collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
-                                        gs->player.x, gs->player.y, player_half_w, player_half_h)) {
-                /* Cruzader's passive: 50% chance to bounce the shot back
-                 * (see reflect_enemy_shot) instead of taking a full hit -
-                 * only reached here when the orb above isn't already
-                 * handling every shot in range for free. A reflected shot
-                 * stays alive (it keeps flying, now away from the player)
-                 * so the pass below can still land it on an enemy/boss. */
-                if (gs->selected_ship == SHIP_CRUZADER && frand01() < CRUZADER_PASSIVE_REFLECT_CHANCE) {
-                    reflect_enemy_shot(pr, CRUZADER_REFLECTED_SHOT_DAMAGE);
-                    damage_player(gs, events, PLAYER_LIFE_LOSS_PER_HIT * CRUZADER_PASSIVE_REFLECT_DAMAGE_MULTIPLIER);
-                } else {
-                    pr->alive = false;
-                    damage_player(gs, events, PLAYER_LIFE_LOSS_PER_HIT);
+            for (int h = 0; h < hb_count; h++) {
+                if (collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
+                                            hbs[h].x, hbs[h].y, hbs[h].half_w, hbs[h].half_h)) {
+                    /* Cruzader's passive: 50% chance to bounce the shot back
+                     * (see reflect_enemy_shot) instead of taking a full hit -
+                     * only reached here when the orb above isn't already
+                     * handling every shot in range for free. A reflected shot
+                     * stays alive (it keeps flying, now away from the player)
+                     * so the pass below can still land it on an enemy/boss. */
+                    if (gs->selected_ship == SHIP_CRUZADER && frand01() < CRUZADER_PASSIVE_REFLECT_CHANCE) {
+                        reflect_enemy_shot(pr, CRUZADER_REFLECTED_SHOT_DAMAGE);
+                        damage_player_hitbox(gs, events, &hbs[h],
+                                              PLAYER_LIFE_LOSS_PER_HIT * CRUZADER_PASSIVE_REFLECT_DAMAGE_MULTIPLIER);
+                    } else {
+                        pr->alive = false;
+                        damage_player_hitbox(gs, events, &hbs[h], PLAYER_LIFE_LOSS_PER_HIT);
+                    }
+                    break;
                 }
-                break;
             }
         }
     }
@@ -2288,12 +2625,22 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         bool cruzader_orb_blocks_ring = gs->selected_ship == SHIP_CRUZADER && gs->player.cruzader_orb_timer > 0.0f;
         if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring) {
             float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
-            float player_radius = fmaxf(player_half_w, player_half_h);
-            if (within_radius(gs->player.x, gs->player.y, gs->boss.x, gs->boss.y, ring_radius + player_radius)) {
-                spawn_explosion(gs, gs->boss.x, gs->boss.y, gs->boss.size * 1.4f);
-                end_boss_encounter(gs);
-                event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
-                kill_player(gs, events);
+            /* Fatal to the whole player on any touch, same as every other
+             * ship - not per-twin like an ordinary enemy shot/contact hit
+             * (see PlayerHitbox's own doc comment): this hazard already
+             * ends the run outright for everyone else, so it's simply
+             * checked against both of Twins' own hitboxes for detection. */
+            PlayerHitbox hbs[2];
+            int hb_count = player_hitboxes(gs, hbs);
+            for (int h = 0; h < hb_count; h++) {
+                float player_radius = fmaxf(hbs[h].half_w, hbs[h].half_h);
+                if (within_radius(hbs[h].x, hbs[h].y, gs->boss.x, gs->boss.y, ring_radius + player_radius)) {
+                    spawn_explosion(gs, gs->boss.x, gs->boss.y, gs->boss.size * 1.4f);
+                    end_boss_encounter(gs);
+                    event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
+                    kill_player(gs, events);
+                    break;
+                }
             }
         }
 
@@ -2362,12 +2709,26 @@ static void check_collisions(GameState *gs, EventQueue *events) {
      * just detonated it this same frame. */
     if (gs->orb.alive && gs->player.alive) {
         float orb_half = gs->orb.size / 2.0f;
-        if (collision_aabb_overlap(gs->player.x, gs->player.y, player_half_w, player_half_h,
-                                    gs->orb.x, gs->orb.y, orb_half, orb_half)) {
-            gs->orb.alive = false;
-            gs->player.super_beam_timer = SUPER_BEAM_DURATION;
-            gs->player.life = PLAYER_LIFE_MAX;
-            event_queue_push_sfx(events, SFX_ORB_CAPTURED);
+        PlayerHitbox hbs[2];
+        int hb_count = player_hitboxes(gs, hbs);
+        for (int h = 0; h < hb_count; h++) {
+            if (collision_aabb_overlap(hbs[h].x, hbs[h].y, hbs[h].half_w, hbs[h].half_h,
+                                        gs->orb.x, gs->orb.y, orb_half, orb_half)) {
+                gs->orb.alive = false;
+                gs->player.super_beam_timer = SUPER_BEAM_DURATION;
+                if (gs->selected_ship == SHIP_TWINS) {
+                    /* Only heals whichever twin(s) are still alive - a dead
+                     * twin's own life bar must keep reading 0 (see
+                     * kill_twin), never get resurrected back to full by a
+                     * later orb capture. */
+                    if (gs->player.twins_right_alive) gs->player.twins_right_life = PLAYER_LIFE_MAX;
+                    if (gs->player.twins_left_alive) gs->player.twins_left_life = PLAYER_LIFE_MAX;
+                } else {
+                    gs->player.life = PLAYER_LIFE_MAX;
+                }
+                event_queue_push_sfx(events, SFX_ORB_CAPTURED);
+                break;
+            }
         }
     }
 }

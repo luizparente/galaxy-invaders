@@ -109,6 +109,25 @@ static void start_game_as_cruzader(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_CRUZADER);
 }
 
+/* Same as start_game_as_cruzader, but navigates one slot further right to
+ * SHIP_TWINS, for The Twins' own weapon/life tests below. */
+static void start_game_as_twins(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &right, 0.016f, events); /* SHIP_MOTHERSHIP -> SHIP_SHINE */
+    game_update(gs, &right, 0.016f, events); /* SHIP_SHINE -> SHIP_CRUZADER */
+    game_update(gs, &right, 0.016f, events); /* SHIP_CRUZADER -> SHIP_TWINS */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_TWINS);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -247,7 +266,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_CRUZADER); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_TWINS); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -2562,6 +2581,389 @@ static void test_cruzader_orb_blocks_boss_ring_without_free_kill(void) {
     printf("test_cruzader_orb_blocks_boss_ring_without_free_kill OK\n");
 }
 
+static void test_twins_ratings_and_moveset(void) {
+    assert(ship_speed_rating(SHIP_TWINS) == 10);
+    assert(ship_strength_rating(SHIP_TWINS) == 5);
+    assert(ship_attack_rating(SHIP_TWINS) == 4);
+    assert(fabsf(ship_size_multiplier(SHIP_TWINS) - 1.25f) < 0.001f); /* 25% bigger than B-20 */
+
+    /* The single fastest ship in the fleet (10 > B-20's own 7). */
+    assert(ship_speed_multiplier(SHIP_TWINS) > 1.0f);
+    assert(fabsf(ship_speed_multiplier(SHIP_TWINS) - 10.0f / 7.0f) < 0.001f);
+    /* Same Strength as B-20 (5 == 5) - a full, standard hit per twin. */
+    assert(fabsf(ship_damage_taken_multiplier(SHIP_TWINS) - 1.0f) < 0.001f);
+
+    assert(ship_shoot_mode_slot_count(SHIP_TWINS) == 2);
+    assert(ship_shoot_mode_for_slot(SHIP_TWINS, 0) == SHOOT_MODE_TWINS_ALTERNATE);
+    assert(ship_shoot_mode_for_slot(SHIP_TWINS, 1) == SHOOT_MODE_TWINS_MIRROR);
+    printf("test_twins_ratings_and_moveset OK\n");
+}
+
+/* Mode 1 (default): one shot per activation, alternating muzzle between the
+ * two twins, combined 4 shots/sec (2/sec per twin). */
+static void test_twins_alternating_fire(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_ALTERNATE);
+
+    float right_x = gs.player.twins_right_x;
+    float left_x = gs.player.twins_left_x;
+    assert(right_x > left_x);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    int found = 0, first_idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        first_idx = i;
+    }
+    assert(found == 1); /* one shot per activation, not a simultaneous pair */
+    assert(gs.player_shots[first_idx].style_ship == SHIP_TWINS);
+    assert(gs.player_shots[first_idx].kind == PROJECTILE_KIND_NORMAL);
+    assert(fabsf(gs.player_shots[first_idx].damage - BASE_PLAYER_DAMAGE) < 0.001f);
+    assert(fabsf(gs.player_shots[first_idx].x - right_x) < 0.001f); /* first shot from the right twin */
+    assert(fabsf(gs.player.fire_cooldown - TWINS_ALTERNATE_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(TWINS_ALTERNATE_FIRE_COOLDOWN - 0.25f) < 0.001f); /* 4 shots/sec combined */
+
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &fire, 0.016f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive || i == first_idx) continue;
+        found++;
+        assert(fabsf(gs.player_shots[i].x - left_x) < 0.001f); /* second shot alternates to the left twin */
+    }
+    assert(found == 1);
+    printf("test_twins_alternating_fire OK\n");
+}
+
+/* Life is tracked per twin: an enemy shot overlapping only one twin's own
+ * hitbox damages only that twin, and killing one twin transfers control to
+ * the survivor (control point snapped onto its own position) without
+ * ending the run - only killing both does. */
+static void test_twins_individual_damage_and_control_transfer(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+
+    float right_x = gs.player.twins_right_x;
+    float left_x = gs.player.twins_left_x;
+    assert(fabsf(gs.player.twins_right_life - PLAYER_LIFE_MAX) < 0.001f);
+    assert(fabsf(gs.player.twins_left_life - PLAYER_LIFE_MAX) < 0.001f);
+
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = right_x;
+    gs.enemy_shots[0].y = gs.player.y;
+    gs.enemy_shots[0].vx = 0.0f;
+    gs.enemy_shots[0].vy = 10.0f;
+    gs.enemy_shots[0].enemy_kind = ENEMY_PROJECTILE_ORB;
+    gs.enemy_shots[0].half_len = 6.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.twins_right_life < PLAYER_LIFE_MAX);
+    assert(fabsf(gs.player.twins_left_life - PLAYER_LIFE_MAX) < 0.001f); /* untouched */
+    assert(gs.player.twins_right_alive);
+    assert(gs.player.twins_left_alive);
+    assert(gs.player.alive);
+
+    /* Drive the right twin's life low, then land one more hit to kill it
+     * outright rather than simulating dozens of real hits. */
+    gs.player.twins_right_life = 5.0f;
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.twins_right_x;
+    gs.enemy_shots[0].y = gs.player.y;
+    gs.enemy_shots[0].vx = 0.0f;
+    gs.enemy_shots[0].vy = 10.0f;
+    gs.enemy_shots[0].enemy_kind = ENEMY_PROJECTILE_ORB;
+    gs.enemy_shots[0].half_len = 6.0f;
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.player.twins_right_alive);
+    assert(gs.player.twins_left_alive);
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    /* The dead twin's own life bar reads exactly 0. */
+    assert(gs.player.twins_right_life == 0.0f);
+    /* Control snapped onto the survivor - x now equals the left twin's own
+     * position, not wherever the right twin was. */
+    assert(fabsf(gs.player.x - left_x) < 1.0f);
+    /* Losing a twin immediately forces mode 1, and mode 2 is now locked
+     * out entirely - pressing key 2 does nothing for the rest of the run. */
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_ALTERNATE);
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    float locked_left_x = gs.player.twins_left_x;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_ALTERNATE); /* still locked out */
+    assert(fabsf(gs.player.twins_left_x - locked_left_x) < 1.0f); /* no jump from the rejected switch */
+
+    /* From here on, every shot originates from the survivor. */
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    gs.player.fire_cooldown = 0.0f;
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    game_update(&gs, &fire, 0.016f, &events);
+    int idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) {
+            idx = i;
+            break;
+        }
+    }
+    assert(idx >= 0);
+    assert(fabsf(gs.player_shots[idx].x - gs.player.twins_left_x) < 1.0f);
+
+    /* Killing the second twin ends the run, same as any other ship. */
+    gs.player.twins_left_life = 5.0f;
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.twins_left_x;
+    gs.enemy_shots[0].y = gs.player.y;
+    gs.enemy_shots[0].vx = 0.0f;
+    gs.enemy_shots[0].vy = 10.0f;
+    gs.enemy_shots[0].enemy_kind = ENEMY_PROJECTILE_ORB;
+    gs.enemy_shots[0].half_len = 6.0f;
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.player.twins_left_alive);
+    assert(!gs.player.alive);
+    assert(gs.state == STATE_GAME_OVER);
+    printf("test_twins_individual_damage_and_control_transfer OK\n");
+}
+
+/* Mode 1 (default): rigid formation - both twins move together, keeping a
+ * fixed gap. Mode 2: the right twin free-flies under direct input, the left
+ * twin mirrors its position around the twins' own current midpoint (not
+ * always screen-center - see twins_mirror_center_x's own doc comment). */
+static void test_twins_mirrored_flight(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_ALTERNATE);
+
+    float start_right = gs.player.twins_right_x;
+    float start_left = gs.player.twins_left_x;
+    assert(fabsf(gs.player.twins_right_x - gs.player.twins_left_x - TWINS_FORMATION_GAP) < 0.001f);
+
+    InputCommand right_input = no_input();
+    right_input.move_right = true;
+    game_update(&gs, &right_input, 0.1f, &events);
+    assert(gs.player.twins_right_x > start_right);
+    assert(gs.player.twins_left_x > start_left);
+    /* Gap preserved - both moved together, not independently. */
+    assert(fabsf((gs.player.twins_right_x - gs.player.twins_left_x) -
+                 (start_right - start_left)) < 0.001f);
+
+    float pre_switch_right = gs.player.twins_right_x;
+    float pre_switch_left = gs.player.twins_left_x;
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_MIRROR);
+    /* Switching modes must never teleport either twin - each stays exactly
+     * where it currently is the instant the mode changes. */
+    assert(fabsf(gs.player.twins_right_x - pre_switch_right) < 0.001f);
+    assert(fabsf(gs.player.twins_left_x - pre_switch_left) < 0.001f);
+
+    float before_right = gs.player.twins_right_x;
+    float before_left = gs.player.twins_left_x;
+    float mirror_center = gs.player.twins_mirror_center_x;
+    game_update(&gs, &right_input, 0.1f, &events);
+    assert(gs.player.twins_right_x > before_right); /* right twin moves right, under direct input */
+    assert(gs.player.twins_left_x < before_left); /* left twin mirrors - moves the opposite way */
+    /* Mirrored around the twins' own current midpoint at the moment mode 2
+     * activated, which - since they'd already moved together in formation
+     * mode first - is not screen-center. */
+    assert(fabsf(gs.player.twins_left_x - (2.0f * mirror_center - gs.player.twins_right_x)) < 0.001f);
+    printf("test_twins_mirrored_flight OK\n");
+}
+
+/* Regression for a reported bug: switching modes must never snap either
+ * twin's own actual position. Mode 2 re-anchors the mirror axis to the
+ * twins' own current midpoint (so each twin starts mirroring from exactly
+ * where it already is, not some stale screen-center-relative spot); mode 1
+ * re-centers the formation target on their own current midpoint too, so
+ * they visibly fly toward each other (eased at TWINS_FORMATION_REJOIN_SPEED)
+ * instead of snapping into formation instantly, or - the reported bug -
+ * springing back to wherever they were before the previous mode-1 switch
+ * the next time mode 2 is re-selected. */
+static void test_twins_mode_switch_reanchors_without_teleport(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_MIRROR);
+
+    /* Spread the twins far apart under mirrored control. */
+    InputCommand right_input = no_input();
+    right_input.move_right = true;
+    for (int i = 0; i < 10; i++) game_update(&gs, &right_input, 0.1f, &events);
+    float spread_right = gs.player.twins_right_x;
+    float spread_left = gs.player.twins_left_x;
+    assert(spread_right - spread_left > TWINS_FORMATION_GAP * 2.0f); /* meaningfully spread apart */
+
+    /* Switching to mode 1 must NOT snap them into formation instantly -
+     * their own actual positions are unchanged the very same frame the
+     * mode switch happens. */
+    InputCommand mode1 = no_input();
+    mode1.shoot_mode_1_pressed = true;
+    game_update(&gs, &mode1, 0.001f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_ALTERNATE);
+    assert(fabsf(gs.player.twins_right_x - spread_right) < 1.0f);
+    assert(fabsf(gs.player.twins_left_x - spread_left) < 1.0f);
+    assert(gs.player.twins_right_x - gs.player.twins_left_x > TWINS_FORMATION_GAP * 1.5f); /* still spread */
+
+    /* Over subsequent frames they ease closer together - monotonically,
+     * never overshooting outward - eventually converging on the standard
+     * formation gap, same as flying toward each other under their own
+     * power. */
+    float prev_gap = gs.player.twins_right_x - gs.player.twins_left_x;
+    InputCommand none = no_input();
+    for (int i = 0; i < 200 && fabsf(prev_gap - TWINS_FORMATION_GAP) > 0.01f; i++) {
+        game_update(&gs, &none, 0.1f, &events);
+        float gap = gs.player.twins_right_x - gs.player.twins_left_x;
+        assert(gap <= prev_gap + 0.001f);
+        prev_gap = gap;
+    }
+    assert(fabsf(prev_gap - TWINS_FORMATION_GAP) < 0.01f); /* fully reformed */
+
+    /* Switching back to mode 2 now must keep these exact reformed
+     * positions as the new starting point - NOT revert to the spread-apart
+     * positions from before the mode-1 switch (the reported bug). */
+    float reformed_right = gs.player.twins_right_x;
+    float reformed_left = gs.player.twins_left_x;
+    game_update(&gs, &mode2, 0.001f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_TWINS_MIRROR);
+    assert(fabsf(gs.player.twins_right_x - reformed_right) < 0.5f);
+    assert(fabsf(gs.player.twins_left_x - reformed_left) < 0.5f);
+    assert(fabsf(gs.player.twins_right_x - spread_right) > 1.0f); /* not the old spread-apart values */
+    printf("test_twins_mode_switch_reanchors_without_teleport OK\n");
+}
+
+/* Enemy CONTACT (not a projectile hit) is an instant kill, bypassing
+ * damage_twin's own gradual life-loss path entirely (see
+ * kill_player_hitbox in usecases/game_logic.c) - kill_twin must still zero
+ * that twin's own life field itself, so its life bar never reads a stale
+ * nonzero value after an instant death. */
+static void test_twins_enemy_contact_zeroes_dead_twins_life(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.twins_right_x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.player.twins_right_alive);
+    assert(gs.player.twins_right_life == 0.0f);
+    assert(gs.player.twins_left_alive);
+    assert(fabsf(gs.player.twins_left_life - PLAYER_LIFE_MAX) < 0.001f);
+    assert(gs.player.alive);
+    printf("test_twins_enemy_contact_zeroes_dead_twins_life OK\n");
+}
+
+/* The power orb heals whichever twin(s) are still alive back to full and
+ * grants the super beam - same "full refill" every other ship's own orb
+ * capture already does - but must never resurrect a twin that's already
+ * dead: its own life bar stays at 0. */
+static void test_twins_orb_capture_heals_survivor_not_dead_twin(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.twins_right_x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.player.twins_right_alive);
+
+    gs.player.twins_left_life = 40.0f;
+    gs.orb.alive = true;
+    gs.orb.x = gs.player.twins_left_x;
+    gs.orb.y = gs.player.y;
+    gs.orb.size = 20.0f;
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.orb.alive);
+    assert(fabsf(gs.player.super_beam_timer - SUPER_BEAM_DURATION) < 0.01f);
+    assert(fabsf(gs.player.twins_left_life - PLAYER_LIFE_MAX) < 0.01f); /* survivor healed */
+    assert(gs.player.twins_right_life == 0.0f); /* dead twin NOT resurrected */
+    assert(!gs.player.twins_right_alive);
+    printf("test_twins_orb_capture_heals_survivor_not_dead_twin OK\n");
+}
+
+/* The super beam (granted by the orb, see the previous test) sweeps a
+ * column from each twin still alive - both columns while both are
+ * standing, only the survivor's own column once one has died - rather than
+ * a single column from whatever p->x happens to mean for the ship's own
+ * current flight mode. */
+static void test_twins_super_beam_sweeps_both_twins_columns(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.twins_right_x;
+    gs.enemies[0].y = gs.player.y - 100.0f;
+    gs.enemies[0].size = 10.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    gs.enemies[1].alive = true;
+    gs.enemies[1].x = gs.player.twins_left_x;
+    gs.enemies[1].y = gs.player.y - 100.0f;
+    gs.enemies[1].size = 10.0f;
+    gs.enemies[1].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    /* Both destroyed - one beam column per twin. */
+    assert(!gs.enemies[0].alive);
+    assert(!gs.enemies[1].alive);
+
+    /* Once solo (killed here via plain contact, with no beam active yet -
+     * the beam itself would otherwise grant immunity), only the
+     * survivor's own column remains active - an enemy lined up with the
+     * dead twin's old position no longer gets swept. */
+    start_game_as_twins(&gs, &events);
+    float dead_right_x = gs.player.twins_right_x;
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = dead_right_x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.player.twins_right_alive);
+
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+    gs.enemies[1].alive = true;
+    gs.enemies[1].x = dead_right_x;
+    gs.enemies[1].y = gs.player.y - 100.0f;
+    gs.enemies[1].size = 10.0f;
+    gs.enemies[1].fire_timer = 999.0f;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(gs.enemies[1].alive); /* no column at the dead twin's old spot */
+    printf("test_twins_super_beam_sweeps_both_twins_columns OK\n");
+}
+
 /* All 4 arrows navigate the ship-select grid, not just left/right: up/down
  * step by a full SHIP_SELECT_GRID_COLS-wide row, clamped at the last real
  * ship (SHIP_COUNT - 1) rather than wrapping into one of the locked
@@ -2603,15 +3005,27 @@ static void test_ship_select_up_down_navigate_grid_rows(void) {
     game_update(&gs, &up, 0.016f, &events);
     assert(gs.selected_ship == SHIP_B20);
 
-    /* From C-24 (col 1), down would land on a locked placeholder slot - the
-     * grid only has one real ship in row 1 (Cruzader, col 0) - so it's
-     * blocked rather than jumping sideways or wrapping. */
+    /* From C-24 (row 0 col 1), down now lands on The Twins (row 1 col 1) -
+     * a real ship now that The Twins joined the fleet, no longer one of
+     * the locked placeholder slots that used to fill out the rest of
+     * row 1. */
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     game_update(&gs, &right, 0.016f, &events);
     assert(gs.selected_ship == SHIP_C24);
     game_update(&gs, &down, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_C24);
+    assert(gs.selected_ship == SHIP_TWINS);
+
+    /* Twins' own row (row 1) has no slot further down either. */
+    game_update(&gs, &down, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_TWINS);
+
+    /* Left/right within row 1 moves directly between Cruzader and Twins. */
+    InputCommand left = no_input();
+    left.nav_left_pressed = true;
+    game_update(&gs, &left, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_CRUZADER);
+
     printf("test_ship_select_up_down_navigate_grid_rows OK\n");
 }
 
@@ -2865,6 +3279,14 @@ int main(void) {
     test_cruzader_rockets_home_and_explode_with_power_cannon_radius();
     test_cruzader_survives_enemy_contact_for_flat_damage_but_not_boss_ring();
     test_cruzader_orb_blocks_boss_ring_without_free_kill();
+    test_twins_ratings_and_moveset();
+    test_twins_alternating_fire();
+    test_twins_individual_damage_and_control_transfer();
+    test_twins_mirrored_flight();
+    test_twins_mode_switch_reanchors_without_teleport();
+    test_twins_enemy_contact_zeroes_dead_twins_life();
+    test_twins_orb_capture_heals_survivor_not_dead_twin();
+    test_twins_super_beam_sweeps_both_twins_columns();
     test_ship_select_up_down_navigate_grid_rows();
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();

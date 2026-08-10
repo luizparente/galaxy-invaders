@@ -195,8 +195,23 @@ static void draw_player(SdlRendererCtx *ctx, const GameState *gs) {
     float size_mult = ship_size_multiplier(gs->selected_ship);
     float w = PLAYER_WIDTH * gs->scale * size_mult;
     float h = PLAYER_HEIGHT * gs->scale * size_mult;
-    draw_ship_sprite(ctx, &kShipSprites[gs->selected_ship], p->x, p->y, w, h,
-                      p->god_mode ? &kGodModeTint : NULL);
+    const Color *tint = p->god_mode ? &kGodModeTint : NULL;
+
+    if (gs->selected_ship == SHIP_TWINS) {
+        /* Two independent blits of the same single-twin sheet - see
+         * ship_twins_sprite's own doc comment - each skipped once that
+         * twin's own life is spent (see the Player struct's own doc
+         * comment for twins_right_x/twins_left_x). */
+        if (p->twins_right_alive) {
+            draw_ship_sprite(ctx, &kShipSprites[SHIP_TWINS], p->twins_right_x, p->y, w, h, tint);
+        }
+        if (p->twins_left_alive) {
+            draw_ship_sprite(ctx, &kShipSprites[SHIP_TWINS], p->twins_left_x, p->y, w, h, tint);
+        }
+        return;
+    }
+
+    draw_ship_sprite(ctx, &kShipSprites[gs->selected_ship], p->x, p->y, w, h, tint);
 }
 
 /* Cruzader's own mode 2 deflector orb (see check_collisions and
@@ -613,6 +628,38 @@ static void draw_cruzader_bolt(SdlRendererCtx *ctx, const Projectile *pr, float 
     gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
 }
 
+/* The Twins' own bolt (SHOOT_MODE_TWINS_ALTERNATE/_MIRROR, see
+ * update_twins_alternating_fire) - same capsule_bolt glow/core/hot/glint
+ * layering as draw_cruzader_bolt above, recolored silver/blue to match the
+ * reference rocket art instead of Cruzader's green/blue. */
+static void draw_twins_bolt(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    static const Color kTwinsSilver = {200, 210, 220, 255};
+    static const Color kTwinsBlue = {90, 180, 255, 255};
+
+    float half_len = TWINS_BOLT_LENGTH * 0.5f * scale;
+    float half_wid = TWINS_BOLT_WIDTH * 0.5f * scale;
+    float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+    float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+    float dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+    float px = -dy, py = dx;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = kTwinsBlue;
+    glow.a = 70;
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.3f, half_wid * 2.4f, glow);
+    glow.a = 130;
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.15f, half_wid * 1.6f, glow);
+
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len, half_wid, kTwinsSilver);
+
+    Color hot = lerp_color(kTwinsBlue, kWhite, 0.5f);
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 0.8f, half_wid * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
+}
+
 /* Cruzader's own mode 3 rockets - "white with a red tip" per spec: the same
  * capsule_bolt body as draw_cruzader_bolt above, just white with a small
  * red circle at the nose for the tip instead of a green/blue palette; the
@@ -710,6 +757,10 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
             } else {
                 draw_cruzader_bolt(ctx, pr, scale);
             }
+            return;
+        }
+        if (pr->style_ship == SHIP_TWINS) {
+            draw_twins_bolt(ctx, pr, scale);
             return;
         }
         switch (pr->kind) {
@@ -831,11 +882,26 @@ static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
 
     Color glow = lerp_color(beam_hue, kWhite, 0.15f);
     glow.a = (unsigned char)(70.0f * alpha_pulse);
-    gp_fill_rect(ctx->renderer, p->x - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
-
     Color core = lerp_color(beam_hue, kWhite, 0.6f);
     core.a = (unsigned char)(235.0f * alpha_pulse);
-    gp_fill_rect(ctx->renderer, p->x - beam_w / 2.0f, 0.0f, beam_w, top, core);
+
+    /* One column per currently-alive twin (matches update_super_beam's own
+     * player_beam_origin_xs in usecases/game_logic.c exactly, so the beam
+     * always looks like it's hitting precisely what it actually hits) -
+     * every other ship still draws its single column at p->x, unchanged. */
+    float origins[2];
+    int origin_count = 1;
+    origins[0] = p->x;
+    if (gs->selected_ship == SHIP_TWINS) {
+        origin_count = 0;
+        if (p->twins_right_alive) origins[origin_count++] = p->twins_right_x;
+        if (p->twins_left_alive) origins[origin_count++] = p->twins_left_x;
+    }
+
+    for (int i = 0; i < origin_count; i++) {
+        gp_fill_rect(ctx->renderer, origins[i] - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
+        gp_fill_rect(ctx->renderer, origins[i] - beam_w / 2.0f, 0.0f, beam_w, top, core);
+    }
 }
 
 /* Engine exhaust: fades in and out over its TRAIL_PARTICLE_LIFETIME-second
@@ -931,16 +997,15 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     draw_player(ctx, gs);
 }
 
-/* Fixed top-left life bar: a grey outline always shows the full-bar
- * extent, and a yellow fill (red once life drops to
- * PLAYER_LIFE_LOW_THRESHOLD or below) shrinks from the right edge to
- * reflect gs->player.life, with the percentage centered on top. */
-static void draw_life_bar(SdlRendererCtx *ctx, const GameState *gs) {
-    float margin = 12.0f * gs->scale;
-    float w = 130.0f * gs->scale;
-    float h = 16.0f * gs->scale;
-    float outline_t = 2.0f * gs->scale;
-    float x = margin, y = margin;
+/* One life bar's worth of drawing, shared by draw_life_bar (a single bar,
+ * every ship but SHIP_TWINS) and draw_twins_life_bars (two, stacked) below:
+ * a grey outline always shows the full-bar extent, and a yellow fill (red
+ * once life drops to PLAYER_LIFE_LOW_THRESHOLD or below) shrinks from the
+ * right edge to reflect life, with the percentage (optionally prefixed,
+ * for Twins' own "R"/"L" markers) centered on top. */
+static void draw_one_life_bar(SdlRendererCtx *ctx, float scale, float x, float y, float w, float h, float life,
+                               const char *prefix) {
+    float outline_t = 2.0f * scale;
 
     gp_fill_rect(ctx->renderer, x, y, w, h, kDim);
 
@@ -950,7 +1015,6 @@ static void draw_life_bar(SdlRendererCtx *ctx, const GameState *gs) {
     float inner_h = h - outline_t * 2.0f;
     gp_fill_rect(ctx->renderer, inner_x, inner_y, inner_w, inner_h, kBackground);
 
-    float life = gs->player.life;
     if (life < 0.0f) life = 0.0f;
     if (life > PLAYER_LIFE_MAX) life = PLAYER_LIFE_MAX;
     float fill_w = inner_w * (life / PLAYER_LIFE_MAX);
@@ -959,12 +1023,39 @@ static void draw_life_bar(SdlRendererCtx *ctx, const GameState *gs) {
         gp_fill_rect(ctx->renderer, inner_x, inner_y, fill_w, inner_h, fill_color);
     }
 
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%d%%", (int)(life + 0.5f));
+    char buf[12];
+    if (prefix) {
+        snprintf(buf, sizeof(buf), "%s %d%%", prefix, (int)(life + 0.5f));
+    } else {
+        snprintf(buf, sizeof(buf), "%d%%", (int)(life + 0.5f));
+    }
     float text_size = (h * 0.5f) / 7.0f; /* the pixel font is 7 dots tall */
     float text_w = pf_text_width(buf, text_size);
     float text_h = 7.0f * text_size;
     pf_draw_text_plain(ctx->renderer, x + (w - text_w) / 2.0f, y + (h - text_h) / 2.0f, text_size, kDim, buf);
+}
+
+static void draw_life_bar(SdlRendererCtx *ctx, const GameState *gs) {
+    float margin = 12.0f * gs->scale;
+    float w = 130.0f * gs->scale;
+    float h = 16.0f * gs->scale;
+    draw_one_life_bar(ctx, gs->scale, margin, margin, w, h, gs->player.life, NULL);
+}
+
+/* The Twins' own dual life bars (see the Player struct's own doc comment
+ * for why they need two) - same top-left corner and per-bar visual
+ * language as draw_life_bar above, just stacked vertically (right twin's
+ * own bar on top, left twin's directly below), each with an "R"/"L" prefix
+ * so they're distinguishable. A dead twin's own life is already clamped to
+ * 0 by kill_twin, so its bar simply renders empty/red - no separate "dead"
+ * state needed. */
+static void draw_twins_life_bars(SdlRendererCtx *ctx, const GameState *gs) {
+    float margin = 12.0f * gs->scale;
+    float w = 130.0f * gs->scale;
+    float h = 16.0f * gs->scale;
+    float gap = 4.0f * gs->scale;
+    draw_one_life_bar(ctx, gs->scale, margin, margin, w, h, gs->player.twins_right_life, "R");
+    draw_one_life_bar(ctx, gs->scale, margin, margin + h + gap, w, h, gs->player.twins_left_life, "L");
 }
 
 /* Top-center life bar for the boss fight: same grey-outline/red-fill
@@ -1022,7 +1113,7 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
     "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
-    "SHARDS", "OMNI", "SPIRAL", "TWIN", "ORB", "ROCKETS",
+    "SHARDS", "OMNI", "SPIRAL", "TWIN", "ORB", "ROCKETS", "ALTERNATE", "MIRROR",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -1053,9 +1144,15 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
         float x = x0 + (float)i * (box + gap);
         ShootMode slot_mode = ship_shoot_mode_for_slot(gs->selected_ship, i);
         bool active = (slot_mode == p->shoot_mode);
+        /* SHOOT_MODE_TWINS_MIRROR reads as permanently on cooldown (red)
+         * the instant one twin dies - there's nothing left to mirror, and
+         * update_shoot_mode_switch locks the mode out for the rest of the
+         * run to match (see kill_twin's own doc comment). */
         bool cooling_down = (slot_mode == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) ||
                             (slot_mode == SHOOT_MODE_SHINE_OMNI && p->shine_omni_cooldown_timer > 0.0f) ||
-                            (slot_mode == SHOOT_MODE_CRUZADER_ORB && p->cruzader_orb_cooldown_timer > 0.0f);
+                            (slot_mode == SHOOT_MODE_CRUZADER_ORB && p->cruzader_orb_cooldown_timer > 0.0f) ||
+                            (slot_mode == SHOOT_MODE_TWINS_MIRROR &&
+                             !(p->twins_right_alive && p->twins_left_alive));
 
         Color outline = active ? kGreen : (cooling_down ? kRed : kYellow);
         gp_fill_rect(ctx->renderer, x, y0, box, box, outline);
@@ -1101,7 +1198,11 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
 }
 
 static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
-    draw_life_bar(ctx, gs);
+    if (gs->selected_ship == SHIP_TWINS) {
+        draw_twins_life_bars(ctx, gs);
+    } else {
+        draw_life_bar(ctx, gs);
+    }
     draw_boss_bar(ctx, gs);
     draw_shoot_mode_indicator(ctx, gs);
 
@@ -1315,7 +1416,8 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
     return line_count;
 }
 
-static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE", "CRUZADER"};
+static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE", "CRUZADER",
+                                                     "THE TWINS"};
 
 /* Ad copy for the ship-select screen's description panel - written from
  * the same capsule descriptions each ship was specced with ("versatile
@@ -1343,6 +1445,8 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "STRENGTH, HONOR AND VIRTUE ARE THE THREE QUALIFYING CRITERIA FOR "
     "PILOTING THE CRUZADER. HE FIGHTS FOR TRUE JUSTICE, AND HAS NO PITY "
     "FOR EVIL.",
+    "INSEPARABLE BROTHERS IN ARMS, THE TWINS ARE TRUE SPACE GLADIATORS. "
+    "THEIR FIGHT NEVER STOPS, AS THE EVIL NEVER SLEEPS.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};
