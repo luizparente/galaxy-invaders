@@ -2,27 +2,29 @@
 #include "domain/constants.h"
 
 /* One Speed/Strength/Attack rating per Ship (domain/types.h), ordered to
- * match: B-20, C-24, SHIP_MOTHERSHIP, SHIP_SHINE. B-20 is the versatile,
- * fast baseline every skilled pilot starts on; C-24 trades some of that
- * speed for heavier plating; The Mothership trades the most speed of all
- * for the heaviest plating in the fleet; Shine trades the most plating of
- * all for the fastest ship in the fleet - faster even than B-20 itself -
- * per each one's own description on the ship-select screen. */
-static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8};
-static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6};
+ * match: B-20, C-24, SHIP_MOTHERSHIP, SHIP_SHINE, SHIP_CRUZADER. B-20 is the
+ * versatile, fast baseline every skilled pilot starts on; C-24 trades some
+ * of that speed for heavier plating; The Mothership trades the most speed
+ * of all for the heaviest plating in the fleet; Shine trades the most
+ * plating of all for the fastest ship in the fleet - faster even than B-20
+ * itself; Cruzader trades some of B-20's own speed for the heaviest
+ * plating short of The Mothership itself - per each one's own description
+ * on the ship-select screen. */
+static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5};
+static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4};
 
 /* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
  * this isn't derived from a rating formula, it's spec'd directly (The
  * Mothership is "100% bigger than the other player spaceships" - double
- * size; Shine is explicitly "the same size as B-20"). Applied everywhere
- * PLAYER_WIDTH/PLAYER_HEIGHT drive the real player's own size -
- * draw_player, update_player's movement clamp, and check_collisions'
- * player half-extents (all in usecases/game_logic.c and
- * adapters/sdl_renderer.c). Never applied to a ChildShip, which always
- * renders/collides at the stock size regardless of which ship dispatched
- * it. */
-static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 2.0f, 1.0f};
+ * size; Shine is explicitly "the same size as B-20"; Cruzader is "50%
+ * bigger than B-20"). Applied everywhere PLAYER_WIDTH/PLAYER_HEIGHT drive
+ * the real player's own size - draw_player, update_player's movement
+ * clamp, and check_collisions' player half-extents (all in
+ * usecases/game_logic.c and adapters/sdl_renderer.c). Never applied to a
+ * ChildShip, which always renders/collides at the stock size regardless of
+ * which ship dispatched it. */
+static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 2.0f, 1.0f, CRUZADER_SIZE_MULTIPLIER};
 
 int ship_speed_rating(Ship ship) {
     return kShipSpeedRating[ship];
@@ -91,6 +93,17 @@ static const ShootMode kShineShootModeSlots[] = {
     SHOOT_MODE_SHINE_SHARDS, SHOOT_MODE_SHINE_OMNI, SHOOT_MODE_SHINE_SPIRAL,
 };
 
+/* Cruzader's own moveset - see the SHOOT_MODE_CRUZADER_* entries' own doc
+ * comments in domain/types.h. Slot 1 (key 2) is the odd one out, same as
+ * Shine's own slot 1: it's listed here purely so
+ * ship_shoot_mode_slot_count/for_slot and the HUD indicator
+ * (adapters/sdl_renderer.c) know about it at all - it's never actually
+ * assigned to Player.shoot_mode (update_shoot_mode_switch intercepts it
+ * before that point). */
+static const ShootMode kCruzaderShootModeSlots[] = {
+    SHOOT_MODE_CRUZADER_TWIN, SHOOT_MODE_CRUZADER_ORB, SHOOT_MODE_CRUZADER_ROCKETS,
+};
+
 typedef struct ShipShootModeSlots {
     const ShootMode *modes;
     int count;
@@ -101,6 +114,7 @@ static const ShipShootModeSlots kShipShootModeSlots[SHIP_COUNT] = {
     [SHIP_C24] = {kC24ShootModeSlots, 3},
     [SHIP_MOTHERSHIP] = {kMothershipShootModeSlots, 2},
     [SHIP_SHINE] = {kShineShootModeSlots, 3},
+    [SHIP_CRUZADER] = {kCruzaderShootModeSlots, 3},
 };
 
 int ship_shoot_mode_slot_count(Ship ship) {

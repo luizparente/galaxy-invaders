@@ -8,6 +8,7 @@
 #include "adapters/graphics_primitives.h"
 #include "adapters/pixel_font.h"
 #include "adapters/ship_sprites.h"
+#include "adapters/cruzader_rocket_sprite.h"
 #include "adapters/enemy_sprites.h"
 #include "adapters/menu_ship_sprite.h"
 #include "adapters/menu_planet_sprites.h"
@@ -196,6 +197,35 @@ static void draw_player(SdlRendererCtx *ctx, const GameState *gs) {
     float h = PLAYER_HEIGHT * gs->scale * size_mult;
     draw_ship_sprite(ctx, &kShipSprites[gs->selected_ship], p->x, p->y, w, h,
                       p->god_mode ? &kGodModeTint : NULL);
+}
+
+/* Cruzader's own mode 2 deflector orb (see check_collisions and
+ * trigger_cruzader_orb in usecases/game_logic.c) - a translucent silver/
+ * gold/blue shield sphere at CRUZADER_ORB_RADIUS, matching the ship's own
+ * palette, drawn just before the ship so Cruzader reads as standing inside
+ * it. Alpha eases down over the last portion of the active window as a
+ * visual cue the orb is about to drop, rather than popping off abruptly. */
+static void draw_cruzader_orb(SdlRendererCtx *ctx, const GameState *gs) {
+    const Player *p = &gs->player;
+    if (gs->selected_ship != SHIP_CRUZADER || p->cruzader_orb_timer <= 0.0f) return;
+
+    float life = p->cruzader_orb_timer / CRUZADER_ORB_DURATION;
+    float fade = life < 0.25f ? life / 0.25f : 1.0f;
+    float r = CRUZADER_ORB_RADIUS * gs->scale;
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
+    /* Soft outer glow, a gold rim (a slightly smaller near-black glass fill
+     * drawn on top leaves a visible ring of it showing), then a translucent
+     * blue "glass" interior - reads as a shield sphere, not a solid ball. */
+    Color glow = (Color){140, 190, 255, (unsigned char)(50.0f * fade)};
+    gp_fill_circle(ctx->renderer, p->x, p->y, r * 1.08f, glow);
+
+    Color rim = (Color){212, 175, 90, (unsigned char)(200.0f * fade)};
+    gp_fill_circle(ctx->renderer, p->x, p->y, r, rim);
+
+    Color glass = (Color){80, 140, 220, (unsigned char)(60.0f * fade)};
+    gp_fill_circle(ctx->renderer, p->x, p->y, r * 0.9f, glass);
 }
 
 /* Children always render at the stock size regardless of which ship
@@ -546,6 +576,110 @@ static void draw_shine_shard(SdlRendererCtx *ctx, const Projectile *pr, float sc
     gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
 }
 
+/* Cruzader's own mode 1 (twin wingtip bolts) - "green with blue accents"
+ * per spec: the same layered glow/core/hot/glint capsule_bolt construction
+ * draw_enemy_beam uses, oriented along the shot's own (always-straight-up)
+ * travel direction, just recolored - green core, blue glow/hot layers
+ * instead of a single per-shot hue. Reflected shots (see reflect_enemy_shot
+ * in usecases/game_logic.c) never reach this function - they stay in
+ * gs->enemy_shots and keep rendering with their original enemy design
+ * (draw_enemy_beam/draw_enemy_orb), per feedback that a reflected
+ * projectile must not change appearance. */
+static void draw_cruzader_bolt(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    static const Color kCruzaderGreen = {70, 210, 100, 255};
+    static const Color kCruzaderBlue = {90, 180, 255, 255};
+
+    float half_len = CRUZADER_BOLT_LENGTH * 0.5f * scale;
+    float half_wid = CRUZADER_BOLT_WIDTH * 0.5f * scale;
+    float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+    float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+    float dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+    float px = -dy, py = dx;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = kCruzaderBlue;
+    glow.a = 70;
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.3f, half_wid * 2.4f, glow);
+    glow.a = 130;
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.15f, half_wid * 1.6f, glow);
+
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len, half_wid, kCruzaderGreen);
+
+    Color hot = lerp_color(kCruzaderBlue, kWhite, 0.5f);
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 0.8f, half_wid * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
+}
+
+/* Cruzader's own mode 3 rockets - "white with a red tip" per spec: the same
+ * capsule_bolt body as draw_cruzader_bolt above, just white with a small
+ * red circle at the nose for the tip instead of a green/blue palette; the
+ * "increased smoke trail" ask is handled purely by a shorter
+ * trail_emit_timer reset for this kind (see update_projectile_trails in
+ * usecases/game_logic.c), not anything drawn here. */
+/* Cruzader's own mode 3 rocket - the reference sprite (kCruzaderRocketSpritePixels,
+ * see adapters/cruzader_rocket_sprite.h) rotated to match the shot's own
+ * actual travel direction every frame, the same "keeps its exact original
+ * design" bar as every other sprite in this game, just drawn per-texel
+ * instead of axis-aligned like draw_ship_sprite (a rocket homes, so it can
+ * point any way - a ship never rotates, so that function never needed
+ * this). Each opaque texel becomes one small quad: `right`/`forward` are
+ * the shot's own perpendicular/travel unit vectors (same construction
+ * capsule_bolt's callers already use), and a texel's local offset from the
+ * sprite's center - COLS wide, ROWS tall, row 0 = nose - is expressed in
+ * that (right, forward) basis instead of plain (x, y) before being placed
+ * in the world. Scaled to fill exactly CRUZADER_ROCKET_LENGTH x
+ * CRUZADER_ROCKET_WIDTH (the same bounding box the old procedural design
+ * used, and the one player_shot_half_extents already hit-tests against) -
+ * "keep the size, change the design" per feedback. */
+static void draw_cruzader_rocket(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    const int cols = CRUZADER_ROCKET_SPRITE_COLS;
+    const int rows = CRUZADER_ROCKET_SPRITE_ROWS;
+    float width = CRUZADER_ROCKET_WIDTH * scale;
+    float height = CRUZADER_ROCKET_LENGTH * scale;
+    float cell_w = width / (float)cols;
+    float cell_h = height / (float)rows;
+    float half_cell_w = cell_w / 2.0f;
+    float half_cell_h = cell_h / 2.0f;
+
+    float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+    float forward_x = speed > 0.0f ? pr->vx / speed : 0.0f;
+    float forward_y = speed > 0.0f ? pr->vy / speed : -1.0f;
+    float right_x = -forward_y, right_y = forward_x;
+    float cx = pr->x, cy = pr->y;
+
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++) {
+            uint32_t packed = kCruzaderRocketSpritePixels[row * cols + col];
+            unsigned char a = (unsigned char)(packed & 0xFFu);
+            if (a == 0) continue;
+            Color c = {
+                (unsigned char)((packed >> 24) & 0xFFu),
+                (unsigned char)((packed >> 16) & 0xFFu),
+                (unsigned char)((packed >> 8) & 0xFFu),
+                a,
+            };
+
+            float local_right = ((float)col + 0.5f - (float)cols / 2.0f) * cell_w;
+            float local_forward = ((float)rows / 2.0f - ((float)row + 0.5f)) * cell_h;
+
+            float c0r = local_right - half_cell_w, c0f = local_forward + half_cell_h;
+            float c1r = local_right + half_cell_w, c1f = local_forward + half_cell_h;
+            float c2r = local_right + half_cell_w, c2f = local_forward - half_cell_h;
+            float c3r = local_right - half_cell_w, c3f = local_forward - half_cell_h;
+
+            gp_fill_quad(ctx->renderer,
+                         cx + c0r * right_x + c0f * forward_x, cy + c0r * right_y + c0f * forward_y,
+                         cx + c1r * right_x + c1f * forward_x, cy + c1r * right_y + c1f * forward_y,
+                         cx + c2r * right_x + c2f * forward_x, cy + c2r * right_y + c2f * forward_y,
+                         cx + c3r * right_x + c3f * forward_x, cy + c3r * right_y + c3f * forward_y,
+                         c);
+        }
+    }
+}
+
 static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Projectile *pr, bool is_player) {
     if (!pr->alive) return;
     float scale = gs->scale;
@@ -568,6 +702,14 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
         }
         if (pr->style_ship == SHIP_SHINE) {
             draw_shine_shard(ctx, pr, scale, gs->time_elapsed);
+            return;
+        }
+        if (pr->style_ship == SHIP_CRUZADER) {
+            if (pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET) {
+                draw_cruzader_rocket(ctx, pr, scale);
+            } else {
+                draw_cruzader_bolt(ctx, pr, scale);
+            }
             return;
         }
         switch (pr->kind) {
@@ -767,7 +909,7 @@ static void draw_projectile_trail_particle(SdlRendererCtx *ctx, const Projectile
 
     float fade_in = life < 0.08f ? life / 0.08f : 1.0f;
     float fade_out = 1.0f - life;
-    color.a = (unsigned char)((float)PROJECTILE_TRAIL_MAX_ALPHA * fade_in * fade_out);
+    color.a = (unsigned char)((float)t->alpha_cap * fade_in * fade_out);
 
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
     gp_fill_circle(ctx->renderer, t->x, t->y, radius, color);
@@ -785,6 +927,7 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) draw_trail_particle(ctx, &gs->trail_particles[i]);
     draw_super_beam(ctx, gs);
     for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) draw_child(ctx, gs, &gs->children[i]);
+    draw_cruzader_orb(ctx, gs);
     draw_player(ctx, gs);
 }
 
@@ -879,7 +1022,7 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
     "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
-    "SHARDS", "OMNI", "SPIRAL",
+    "SHARDS", "OMNI", "SPIRAL", "TWIN", "ORB", "ROCKETS",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -911,7 +1054,8 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
         ShootMode slot_mode = ship_shoot_mode_for_slot(gs->selected_ship, i);
         bool active = (slot_mode == p->shoot_mode);
         bool cooling_down = (slot_mode == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) ||
-                            (slot_mode == SHOOT_MODE_SHINE_OMNI && p->shine_omni_cooldown_timer > 0.0f);
+                            (slot_mode == SHOOT_MODE_SHINE_OMNI && p->shine_omni_cooldown_timer > 0.0f) ||
+                            (slot_mode == SHOOT_MODE_CRUZADER_ORB && p->cruzader_orb_cooldown_timer > 0.0f);
 
         Color outline = active ? kGreen : (cooling_down ? kRed : kYellow);
         gp_fill_rect(ctx->renderer, x, y0, box, box, outline);
@@ -1171,15 +1315,16 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
     return line_count;
 }
 
-static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE"};
+static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE", "CRUZADER"};
 
 /* Ad copy for the ship-select screen's description panel - written from
  * the same capsule descriptions each ship was specced with ("versatile
  * and fast... built for the most skilled pilots" / "resilient and strong,
  * piloted only by the bravest" / "the matriarch who fights against evil,
  * dispatching brave warriors to fight by her side" / "leverages the cosmic
- * powers of the universe to materialize crystals for offense and defense"),
- * expanded to fill the panel. All caps: the pixel font
+ * powers of the universe to materialize crystals for offense and defense" /
+ * "strength, honor and virtue... fights for true justice, and must have no
+ * pity for evil"), expanded to fill the panel. All caps: the pixel font
  * (adapters/pixel_font) only has uppercase glyphs, same convention every
  * other in-game string here already follows. */
 static const char *const kShipDescriptions[SHIP_COUNT] = {
@@ -1195,12 +1340,13 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "SHINE LEVERAGES THE COSMIC POWERS OF THE UNIVERSE TO MATERIALIZE "
     "POWERFUL CRYSTALS, USED FOR BOTH OFFENSE AND DEFENSE AGAINST THE "
     "MOST NEFARIOUS ELEMENTS OF THE GALAXY.",
+    "STRENGTH, HONOR AND VIRTUE ARE THE THREE QUALIFYING CRITERIA FOR "
+    "PILOTING THE CRUZADER. HE FIGHTS FOR TRUE JUSTICE, AND HAS NO PITY "
+    "FOR EVIL.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};
 
-#define SHIP_SELECT_GRID_COLS 4
-#define SHIP_SELECT_GRID_ROWS 4
 #define SHIP_SELECT_GRID_SLOTS (SHIP_SELECT_GRID_COLS * SHIP_SELECT_GRID_ROWS)
 
 /* A 0-10 rating drawn as 10 small blocks, filled left to right - shared by

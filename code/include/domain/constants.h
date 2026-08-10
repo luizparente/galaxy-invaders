@@ -15,6 +15,16 @@
 
 #define TARGET_FPS 60
 
+/* The ship-select screen's cursor grid (adapters/sdl_renderer.c draws it,
+ * usecases/game_logic.c's update_ship_select navigates it with all 4 arrow
+ * keys) - shared here so the two can never drift apart, same rationale as
+ * every other cross-layer shared constant in this file (e.g.
+ * BOSS_MENACE_RING_RATIO). Slots past SHIP_COUNT render as locked
+ * placeholders rather than real ships - see the Ship enum's own doc
+ * comment in domain/types.h. */
+#define SHIP_SELECT_GRID_COLS 4
+#define SHIP_SELECT_GRID_ROWS 4
+
 #define MAX_PLAYER_PROJECTILES 32
 /* Sized for MAX_ENEMIES all firing at once, including the shooting styles
  * that spawn several shots per trigger (ENEMY_SHOOT_TRISHOT: 3,
@@ -161,7 +171,8 @@
 /* ~8% of 255 - half of the previous 40, for a subtler wake. Every shot's
  * trail reads at this same visibility, player and enemy alike - deliberately
  * a single flat constant, not something any one ship's weapon mode can
- * override. */
+ * override, with exactly one deliberate exception: Cruzader's own mode 3
+ * rockets (see CRUZADER_ROCKET_TRAIL_MAX_ALPHA). */
 #define PROJECTILE_TRAIL_MAX_ALPHA 20
 
 #define PLAYER_PROJECTILE_W 3.0f
@@ -481,6 +492,71 @@
 #define SHINE_SPIRAL_SHARD_WIDTH SHINE_SHARD_WIDTH
 #define SHINE_SPIRAL_SPIN_SPEED 360.0f
 #define SHINE_SPIRAL_DAMAGE_MULTIPLIER 3.0f
+
+/* --- Cruzader's own weapon (see usecases/ship.c for his 3-slot moveset) ---
+ * Kept fully independent of PLAYER_PROJECTILE_W/H/SPEED and the Power
+ * Cannon's own constants below, same "kept-independent copies, not shared"
+ * precedent as Shine's own block above. */
+#define CRUZADER_SIZE_MULTIPLIER 1.5f /* "50% bigger than B-20" - usecases/ship.c's kShipSizeMultiplier */
+
+/* Mode 1 (default): B-20's DOUBLE pattern (two wingtip shots), recolored
+ * green with blue accents (see draw_cruzader_bolt in
+ * adapters/sdl_renderer.c), at 1.5 shots/sec - reuses B-20's own
+ * DOUBLE_BARREL_DAMAGE_MULTIPLIER, matching "same as B-20's #4" per spec. */
+#define CRUZADER_TWIN_FIRE_COOLDOWN (1.0f / 1.5f)
+#define CRUZADER_BOLT_LENGTH 26.0f /* oriented bounding box, same construction as Shine's own shard */
+#define CRUZADER_BOLT_WIDTH 4.5f /* 50% slimmer than the original 9.0f - "too thick" per feedback */
+
+/* Mode 2: the deflector orb - see SHOOT_MODE_CRUZADER_ORB's own doc comment
+ * (domain/types.h) and trigger_cruzader_orb/check_collisions in
+ * usecases/game_logic.c. CRUZADER_ORB_RADIUS is deliberately bigger than
+ * Cruzader's own (already 1.5x) hitbox - "no projectiles can penetrate the
+ * orb" reads as a shield around the ship, not just at its own edges. */
+#define CRUZADER_ORB_DURATION 5.0f
+#define CRUZADER_ORB_COOLDOWN 20.0f
+#define CRUZADER_ORB_RADIUS (PLAYER_WIDTH * CRUZADER_SIZE_MULTIPLIER * 1.4f)
+#define CRUZADER_REFLECTED_SHOT_DAMAGE BASE_PLAYER_DAMAGE
+
+/* Mode 3: homing rockets - "1 shot per 2 seconds," slower than a normal
+ * bolt so the homing curve reads as a rocket correcting its own course
+ * rather than an instant hit. Explosion radius reuses B-20's own Power
+ * Cannon radius (POWER_CANNON_EXPLOSION_RADIUS_RATIO, see
+ * trigger_power_cannon_explosion) unscaled - confirmed with the user as
+ * what "B-20's #2" meant, since B-20's actual key 2 (Rapid Fire) has no
+ * explosion of its own. */
+#define CRUZADER_ROCKET_FIRE_COOLDOWN 2.0f
+#define CRUZADER_ROCKET_SPEED (PLAYER_PROJECTILE_SPEED * 0.6f)
+#define CRUZADER_ROCKET_DAMAGE (BASE_PLAYER_DAMAGE * POWER_CANNON_DAMAGE_MULTIPLIER)
+#define CRUZADER_ROCKET_LENGTH 24.0f
+#define CRUZADER_ROCKET_WIDTH 5.0f /* 50% slimmer than the original 10.0f - "too thick" per feedback */
+/* Denser, more visible, blue-tinted smoke than every other shot's own
+ * PROJECTILE_TRAIL_SPAWN_INTERVAL/PROJECTILE_TRAIL_MAX_ALPHA - "increase the
+ * visibility of the smoke... make it blue" per feedback, scoped to this one
+ * shooting mode on this one ship only (see update_projectile_trails in
+ * usecases/game_logic.c) - every other projectile's trail (every other
+ * Cruzader mode included) is completely untouched. Color is a plain Color
+ * literal, not a #define, next to its two size/cadence siblings here. */
+#define CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL (PROJECTILE_TRAIL_SPAWN_INTERVAL * 0.4f)
+#define CRUZADER_ROCKET_TRAIL_MAX_ALPHA 90 /* ~4.5x PROJECTILE_TRAIL_MAX_ALPHA's 20 */
+#define CRUZADER_ROCKET_TRAIL_SIZE_MULTIPLIER 1.6f
+
+/* Passive (always on, no key of its own): a 50% chance to bounce an
+ * incoming enemy shot back instead of taking a full hit - half the usual
+ * life loss on a successful reflect (the shot still grazes the ship on its
+ * way out), same reflected-shot mechanics/damage as the orb above, just at
+ * a much smaller "shield" - only the shot that would've hit the player's
+ * own hitbox, not everything in CRUZADER_ORB_RADIUS, and only while the
+ * orb itself isn't already handling that shot for free. */
+#define CRUZADER_PASSIVE_REFLECT_CHANCE 0.5f
+#define CRUZADER_PASSIVE_REFLECT_DAMAGE_MULTIPLIER 0.5f
+
+/* Notes: Cruzader never explodes from touching an ordinary enemy (see
+ * damage_cruzader_on_enemy_contact in usecases/game_logic.c), but isn't
+ * fully unscathed either - a flat, fixed life-loss penalty, deliberately
+ * NOT run through ship_damage_taken_multiplier the way a projectile hit
+ * (damage_player) is: this is a trade-off for surviving contact at all,
+ * not a hit the normal damage system should be able to soften further. */
+#define CRUZADER_ENEMY_CONTACT_LIFE_LOSS 10.0f
 
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50

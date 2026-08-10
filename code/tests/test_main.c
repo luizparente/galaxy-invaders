@@ -91,6 +91,24 @@ static void start_game_as_shine(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_SHINE);
 }
 
+/* Same as start_game_as_shine, but navigates one slot further right to
+ * SHIP_CRUZADER, for Cruzader's own weapon tests below. */
+static void start_game_as_cruzader(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &right, 0.016f, events); /* SHIP_MOTHERSHIP -> SHIP_SHINE */
+    game_update(gs, &right, 0.016f, events); /* SHIP_SHINE -> SHIP_CRUZADER */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_CRUZADER);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -229,7 +247,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_SHINE); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_CRUZADER); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -2202,6 +2220,401 @@ static void test_shine_spiral_shot_is_longer_shard_at_two_per_second(void) {
     printf("test_shine_spiral_shot_is_longer_shard_at_two_per_second OK\n");
 }
 
+static void test_cruzader_ratings_and_moveset(void) {
+    assert(ship_speed_rating(SHIP_CRUZADER) == 5);
+    assert(ship_strength_rating(SHIP_CRUZADER) == 8);
+    assert(ship_attack_rating(SHIP_CRUZADER) == 4);
+    assert(fabsf(ship_size_multiplier(SHIP_CRUZADER) - 1.5f) < 0.001f); /* 50% bigger than B-20 */
+
+    /* Slower than B-20 (5 < 7). */
+    assert(ship_speed_multiplier(SHIP_CRUZADER) < 1.0f);
+    assert(fabsf(ship_speed_multiplier(SHIP_CRUZADER) - 5.0f / 7.0f) < 0.001f);
+    /* Tougher than B-20 (8 > 5) - takes less damage per hit. */
+    assert(ship_damage_taken_multiplier(SHIP_CRUZADER) < 1.0f);
+    assert(fabsf(ship_damage_taken_multiplier(SHIP_CRUZADER) - 5.0f / 8.0f) < 0.001f);
+
+    assert(ship_shoot_mode_slot_count(SHIP_CRUZADER) == 3);
+    assert(ship_shoot_mode_for_slot(SHIP_CRUZADER, 0) == SHOOT_MODE_CRUZADER_TWIN);
+    assert(ship_shoot_mode_for_slot(SHIP_CRUZADER, 1) == SHOOT_MODE_CRUZADER_ORB);
+    assert(ship_shoot_mode_for_slot(SHIP_CRUZADER, 2) == SHOOT_MODE_CRUZADER_ROCKETS);
+    printf("test_cruzader_ratings_and_moveset OK\n");
+}
+
+/* Mode 1 (default): B-20's own DOUBLE pattern, recolored, at 1.5 shots/sec. */
+static void test_cruzader_twin_bolts_recolored_and_correct_rate(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_cruzader(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_CRUZADER_TWIN);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    int found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        assert(gs.player_shots[i].style_ship == SHIP_CRUZADER);
+        assert(gs.player_shots[i].kind == PROJECTILE_KIND_NORMAL);
+        assert(fabsf(gs.player_shots[i].damage - BASE_PLAYER_DAMAGE * DOUBLE_BARREL_DAMAGE_MULTIPLIER) < 0.001f);
+        found++;
+    }
+    assert(found == 2);
+    assert(fabsf(gs.player.fire_cooldown - CRUZADER_TWIN_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(CRUZADER_TWIN_FIRE_COOLDOWN - (1.0f / 1.5f)) < 0.001f); /* exactly 1.5 shots/sec */
+    printf("test_cruzader_twin_bolts_recolored_and_correct_rate OK\n");
+}
+
+/* Mode 2: triggered-and-revert like Shine's own mode 2, plus a 5s active
+ * window that reflects every enemy shot within CRUZADER_ORB_RADIUS at zero
+ * player damage, then a 20s cooldown lockout. */
+static void test_cruzader_orb_activates_reflects_and_reverts_with_cooldown(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_cruzader(&gs, &events);
+
+    /* Start from mode 3, not the default mode 1, to prove the revert isn't
+     * just "shoot_mode never changed in the first place". */
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_CRUZADER_ROCKETS);
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+
+    assert(gs.player.shoot_mode == SHOOT_MODE_CRUZADER_TWIN);
+    assert(gs.player.cruzader_orb_timer > 0.0f);
+
+    /* Pressing it again mid-activation does nothing further - the timer
+     * only ticks down by dt, it's never reset back up to full. */
+    float timer_before_retry = gs.player.cruzader_orb_timer;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.cruzader_orb_timer < timer_before_retry);
+
+    /* An enemy shot inside the orb radius is bounced back in place - still
+     * the exact same shot (never destroyed/respawned), flying the opposite
+     * way, at zero player damage - and its original design (color, shape,
+     * size) is completely untouched, per feedback that a reflected
+     * projectile must not change appearance. */
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.x;
+    /* Inside the orb radius but well outside the player's own contact
+     * range, so placing an enemy at this same spot below tests only the
+     * reflected shot's own collision, not the player physically touching
+     * that enemy too. */
+    gs.enemy_shots[0].y = gs.player.y - CRUZADER_ORB_RADIUS * 0.9f;
+    gs.enemy_shots[0].vx = 0.0f;
+    gs.enemy_shots[0].vy = 100.0f;
+    gs.enemy_shots[0].enemy_kind = ENEMY_PROJECTILE_BEAM;
+    gs.enemy_shots[0].color = (Color){200, 60, 90, 255};
+    gs.enemy_shots[0].half_len = 12.0f;
+    gs.enemy_shots[0].half_wid = 3.0f;
+    float life_before = gs.player.life;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.016f, &events);
+
+    assert(gs.enemy_shots[0].alive); /* reflected in place, not consumed */
+    assert(gs.enemy_shots[0].reflected);
+    assert(gs.enemy_shots[0].vy < 0.0f); /* now flying back the way it came */
+    assert(fabsf(gs.enemy_shots[0].damage - CRUZADER_REFLECTED_SHOT_DAMAGE) < 0.001f);
+    assert(gs.enemy_shots[0].enemy_kind == ENEMY_PROJECTILE_BEAM);
+    assert(gs.enemy_shots[0].color.r == 200 && gs.enemy_shots[0].color.g == 60 && gs.enemy_shots[0].color.b == 90);
+    assert(fabsf(gs.enemy_shots[0].half_len - 12.0f) < 0.001f);
+    assert(fabsf(gs.enemy_shots[0].half_wid - 3.0f) < 0.001f);
+    assert(fabsf(gs.player.life - life_before) < 0.001f);
+
+    /* And it can still go on to hurt an enemy, still in that same
+     * unmodified shape. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.enemy_shots[0].x;
+    gs.enemies[0].y = gs.enemy_shots[0].y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.enemies[0].alive);
+    assert(!gs.enemy_shots[0].alive); /* consumed on the enemy it hit */
+
+    /* Once the active window fully elapses, the cooldown starts immediately
+     * and mode 2 stays unselectable until it too elapses. */
+    gs.player.cruzader_orb_timer = 0.016f;
+    game_update(&gs, &none, 0.016f, &events);
+    assert(gs.player.cruzader_orb_timer <= 0.0f);
+    assert(gs.player.cruzader_orb_cooldown_timer > 0.0f);
+
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.cruzader_orb_timer <= 0.0f); /* not reactivated during cooldown */
+
+    gs.player.cruzader_orb_cooldown_timer = 0.0f;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.cruzader_orb_timer > 0.0f); /* free to trigger again once cooldown clears */
+
+    printf("test_cruzader_orb_activates_reflects_and_reverts_with_cooldown OK\n");
+}
+
+/* Passive (always on): 50% chance to reflect an incoming enemy shot at half
+ * damage taken instead of a full hit - run many trials since it's
+ * probabilistic (no RNG seeding hook exists to force a specific outcome). */
+static void test_cruzader_passive_reflect_or_full_damage(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_cruzader(&gs, &events);
+
+    int reflect_count = 0, full_damage_count = 0;
+    InputCommand none = no_input();
+    float expected_full = PLAYER_LIFE_LOSS_PER_HIT * ship_damage_taken_multiplier(SHIP_CRUZADER);
+    float expected_half = expected_full * CRUZADER_PASSIVE_REFLECT_DAMAGE_MULTIPLIER;
+    Color original_color = (Color){10, 220, 30, 255};
+
+    for (int t = 0; t < 200; t++) {
+        memset(&gs.enemy_shots, 0, sizeof(gs.enemy_shots));
+        memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+        gs.player.life = PLAYER_LIFE_MAX;
+
+        gs.enemy_shots[0].alive = true;
+        gs.enemy_shots[0].x = gs.player.x;
+        gs.enemy_shots[0].y = gs.player.y;
+        gs.enemy_shots[0].vx = 0.0f;
+        gs.enemy_shots[0].vy = 10.0f;
+        gs.enemy_shots[0].enemy_kind = ENEMY_PROJECTILE_ORB;
+        gs.enemy_shots[0].color = original_color;
+        gs.enemy_shots[0].half_len = 6.0f;
+
+        game_update(&gs, &none, 0.001f, &events);
+
+        float loss = PLAYER_LIFE_MAX - gs.player.life;
+        if (fabsf(loss - expected_half) < 0.01f) {
+            reflect_count++;
+            /* Reflected in place - still that same shot, original design
+             * (color, shape, size) completely untouched. */
+            assert(gs.enemy_shots[0].alive);
+            assert(gs.enemy_shots[0].reflected);
+            assert(gs.enemy_shots[0].vy < 0.0f);
+            assert(gs.enemy_shots[0].enemy_kind == ENEMY_PROJECTILE_ORB);
+            assert(gs.enemy_shots[0].color.r == original_color.r && gs.enemy_shots[0].color.g == original_color.g &&
+                   gs.enemy_shots[0].color.b == original_color.b);
+            assert(fabsf(gs.enemy_shots[0].half_len - 6.0f) < 0.001f);
+        } else {
+            assert(fabsf(loss - expected_full) < 0.01f);
+            assert(!gs.enemy_shots[0].alive); /* consumed on a normal hit */
+            full_damage_count++;
+        }
+    }
+    /* Over 200 trials at a true 50% chance, both outcomes are certain in
+     * practice - this would only flake with astronomically bad luck. */
+    assert(reflect_count > 0);
+    assert(full_damage_count > 0);
+    printf("test_cruzader_passive_reflect_or_full_damage OK\n");
+}
+
+/* Mode 3: slow rockets that home toward the closest alive enemy and, on
+ * contact, explode with B-20's own Power Cannon radius (confirmed with the
+ * user as what "B-20's #2" meant) rather than only harming what they
+ * directly touched. */
+static void test_cruzader_rockets_home_and_explode_with_power_cannon_radius(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_cruzader(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_CRUZADER_ROCKETS);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    int idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) {
+            idx = i;
+            break;
+        }
+    }
+    assert(idx >= 0);
+    assert(gs.player_shots[idx].kind == PROJECTILE_KIND_CRUZADER_ROCKET);
+    assert(fabsf(gs.player_shots[idx].damage - CRUZADER_ROCKET_DAMAGE) < 0.001f);
+    assert(fabsf(gs.player.fire_cooldown - CRUZADER_ROCKET_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(CRUZADER_ROCKET_FIRE_COOLDOWN - 2.0f) < 0.001f); /* 1 shot/2s */
+
+    /* Plant an enemy off to one side - the rocket, fired straight up,
+     * should bend its heading toward it within a single update tick. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player_shots[idx].x + 200.0f;
+    gs.enemies[0].y = gs.player_shots[idx].y - 300.0f;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.016f, &events);
+
+    assert(gs.player_shots[idx].alive);
+    assert(gs.player_shots[idx].vx > 0.0f); /* now steering rightward, toward the enemy */
+
+    /* Fast-forward it onto the enemy and plant a second one nearby - the
+     * blast should catch both, not just what it directly touched. */
+    gs.player_shots[idx].x = gs.enemies[0].x;
+    gs.player_shots[idx].y = gs.enemies[0].y;
+
+    float radius = POWER_CANNON_EXPLOSION_RADIUS_RATIO * fminf((float)gs.screen_w, (float)gs.screen_h);
+    gs.enemies[1].alive = true;
+    gs.enemies[1].x = gs.enemies[0].x + radius * 0.5f;
+    gs.enemies[1].y = gs.enemies[0].y;
+    gs.enemies[1].size = 20.0f;
+    gs.enemies[1].fire_timer = 999.0f;
+
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.player_shots[idx].alive);
+    assert(!gs.enemies[0].alive);
+    assert(!gs.enemies[1].alive); /* caught in the same blast, not directly touched */
+    printf("test_cruzader_rockets_home_and_explode_with_power_cannon_radius OK\n");
+}
+
+/* Notes: Cruzader survives touching an ordinary enemy (the enemy still
+ * dies) but takes a flat CRUZADER_ENEMY_CONTACT_LIFE_LOSS penalty instead of
+ * exploding outright - unscaled by his own Strength multiplier. A boss's
+ * danger ring is unaffected by any of this and stays fatal outside the orb. */
+static void test_cruzader_survives_enemy_contact_for_flat_damage_but_not_boss_ring(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_cruzader(&gs, &events);
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+    float life_before = gs.player.life;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    assert(!gs.enemies[0].alive); /* still destroyed on contact */
+    assert(fabsf((life_before - gs.player.life) - CRUZADER_ENEMY_CONTACT_LIFE_LOSS) < 0.001f);
+    assert(fabsf(CRUZADER_ENEMY_CONTACT_LIFE_LOSS - 10.0f) < 0.001f); /* exactly 10 points, unscaled */
+
+    /* Repeated contact keeps draining that same flat amount, same as any
+     * other life-loss source, and is still fatal once life runs out -
+     * bounded well past PLAYER_LIFE_MAX / CRUZADER_ENEMY_CONTACT_LIFE_LOSS
+     * so a regression here fails loudly instead of hanging the suite. */
+    int contacts = 0;
+    while (gs.player.alive && contacts < 50) {
+        gs.enemies[0].alive = true;
+        gs.enemies[0].x = gs.player.x;
+        gs.enemies[0].y = gs.player.y;
+        gs.enemies[0].size = 20.0f;
+        gs.enemies[0].fire_timer = 999.0f;
+        game_update(&gs, &none, 0.001f, &events);
+        contacts++;
+    }
+    assert(!gs.player.alive);
+    assert(gs.state == STATE_GAME_OVER);
+
+    /* The boss's danger ring is a different story - still unconditionally
+     * fatal, immunity or not. */
+    start_game_as_cruzader(&gs, &events);
+    gs.boss.alive = true;
+    gs.boss.size = 100.0f;
+    gs.boss.x = gs.player.x;
+    gs.boss.y = gs.player.y;
+
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.player.alive);
+    assert(gs.state == STATE_GAME_OVER);
+    printf("test_cruzader_survives_enemy_contact_for_flat_damage_but_not_boss_ring OK\n");
+}
+
+/* While the deflector orb is active, a boss ring touch does nothing at all
+ * - not fatal to Cruzader, but not a free boss kill either (confirmed with
+ * the user). The exact same touch is fatal again once the orb drops. */
+static void test_cruzader_orb_blocks_boss_ring_without_free_kill(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_cruzader(&gs, &events);
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.cruzader_orb_timer > 0.0f);
+
+    gs.boss.alive = true;
+    gs.boss.size = 100.0f;
+    gs.boss.x = gs.player.x;
+    gs.boss.y = gs.player.y;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.alive);
+    assert(gs.boss.alive);
+    assert(gs.state == STATE_GAME);
+
+    gs.player.cruzader_orb_timer = 0.0f;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.player.alive);
+    printf("test_cruzader_orb_blocks_boss_ring_without_free_kill OK\n");
+}
+
+/* All 4 arrows navigate the ship-select grid, not just left/right: up/down
+ * step by a full SHIP_SELECT_GRID_COLS-wide row, clamped at the last real
+ * ship (SHIP_COUNT - 1) rather than wrapping into one of the locked
+ * placeholder slots that fill out the rest of the grid. Deliberately placed
+ * here, after every RNG-sensitive test earlier in this suite (Mothership's
+ * random child-mode rolls, spawner timing, etc.) rather than back up near
+ * test_ship_select_navigation_clamps_at_ends - this suite runs on a single
+ * unseeded rand() stream shared across every test in one process, and an
+ * earlier test's own game_init/game_update calls consume from that same
+ * stream, so inserting a new test earlier than an RNG-sensitive one can
+ * shift its draws enough to change outcomes it hardcodes assertions
+ * against. */
+static void test_ship_select_up_down_navigate_grid_rows(void) {
+    GameState gs;
+    EventQueue events;
+    game_init(&gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(&gs, &confirm, 0.016f, &events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(&gs, &confirm, 0.016f, &events); /* -> STATE_SHIP_SELECT */
+    assert(gs.selected_ship == SHIP_B20);
+
+    InputCommand down = no_input();
+    down.nav_down_pressed = true;
+    game_update(&gs, &down, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_CRUZADER); /* row 0 col 0 -> row 1 col 0, the only slot 4 further down */
+
+    /* Cruzader's row has no slot 4 further down (that would land past
+     * SHIP_COUNT, in locked-placeholder territory) - down is a no-op here. */
+    game_update(&gs, &down, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_CRUZADER);
+
+    InputCommand up = no_input();
+    up.nav_up_pressed = true;
+    game_update(&gs, &up, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_B20); /* back up to row 0 col 0 */
+
+    /* No further row above row 0 - up is a no-op, doesn't go negative. */
+    game_update(&gs, &up, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_B20);
+
+    /* From C-24 (col 1), down would land on a locked placeholder slot - the
+     * grid only has one real ship in row 1 (Cruzader, col 0) - so it's
+     * blocked rather than jumping sideways or wrapping. */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(&gs, &right, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_C24);
+    game_update(&gs, &down, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_C24);
+    printf("test_ship_select_up_down_navigate_grid_rows OK\n");
+}
+
 static void test_erratic_enemy_chance_scales_with_bosses_defeated(void) {
     assert(fabsf(spawner_erratic_enemy_chance(0) - 0.0f) < 0.001f);
     assert(fabsf(spawner_erratic_enemy_chance(1) - 0.10f) < 0.001f);
@@ -2445,6 +2858,14 @@ int main(void) {
     test_shine_twin_shards_close_together_and_halved_damage();
     test_shine_omni_burst_fires_twelve_and_reverts_to_mode1();
     test_shine_spiral_shot_is_longer_shard_at_two_per_second();
+    test_cruzader_ratings_and_moveset();
+    test_cruzader_twin_bolts_recolored_and_correct_rate();
+    test_cruzader_orb_activates_reflects_and_reverts_with_cooldown();
+    test_cruzader_passive_reflect_or_full_damage();
+    test_cruzader_rockets_home_and_explode_with_power_cannon_radius();
+    test_cruzader_survives_enemy_contact_for_flat_damage_but_not_boss_ring();
+    test_cruzader_orb_blocks_boss_ring_without_free_kill();
+    test_ship_select_up_down_navigate_grid_rows();
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();
     test_erratic_enemies_start_appearing_after_first_boss_defeat();

@@ -70,8 +70,8 @@ typedef enum Difficulty {
  * usecases/game_logic.c) reached right after confirming a difficulty, and
  * kept for the whole run - see GameState.selected_ship and usecases/ship.c
  * for how each ship's Speed/Strength ratings translate into real gameplay
- * multipliers. SHIP_B20, SHIP_C24, SHIP_MOTHERSHIP and SHIP_SHINE are
- * implemented; the ship-select grid has room for more
+ * multipliers. SHIP_B20, SHIP_C24, SHIP_MOTHERSHIP, SHIP_SHINE and
+ * SHIP_CRUZADER are implemented; the ship-select grid has room for more
  * (adapters/sdl_renderer.c) but every slot past SHIP_COUNT renders as a
  * locked placeholder, not a real Ship value. SHIP_MOTHERSHIP doesn't fire
  * projectiles of its own at all - its two ShootModes
@@ -85,6 +85,7 @@ typedef enum Ship {
     SHIP_C24,
     SHIP_MOTHERSHIP,
     SHIP_SHINE,
+    SHIP_CRUZADER,
     SHIP_COUNT,
 } Ship;
 
@@ -133,6 +134,22 @@ typedef enum ShootMode {
      * 1 on SHIP_SHINE before the normal switch-and-stay assignment runs. */
     SHOOT_MODE_SHINE_OMNI,
     SHOOT_MODE_SHINE_SPIRAL, /* mode 3: one longer shard, visually spinning as it flies */
+    /* Cruzader's own 3-mode kit (see usecases/ship.c) - none of these are
+     * reachable by any other ship. */
+    SHOOT_MODE_CRUZADER_TWIN,     /* mode 1 (default): green/blue twin wingtip bolts */
+    /* Mode 2: like SHOOT_MODE_SHINE_OMNI, never actually persists as
+     * Player.shoot_mode - pressing key 2 triggers the deflector orb (see
+     * trigger_cruzader_orb in usecases/game_logic.c) and immediately puts
+     * shoot_mode back to SHOOT_MODE_CRUZADER_TWIN. Unlike Shine's omni
+     * (a single instant burst), the orb also starts a
+     * Player.cruzader_orb_timer active window (reflecting every incoming
+     * enemy shot in range for its duration) before the following
+     * Player.cruzader_orb_cooldown_timer lockout begins - both timers tick
+     * unconditionally in update_player_firing, independent of shoot_mode,
+     * since the orb stays active while shoot_mode has already reverted to
+     * mode 1. */
+    SHOOT_MODE_CRUZADER_ORB,
+    SHOOT_MODE_CRUZADER_ROCKETS,  /* mode 3: slow, homing, explosive rockets */
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -167,6 +184,20 @@ typedef struct Player {
      * comment) - this timer purely gates whether pressing key 2 again does
      * anything. Unused by every other ship. */
     float shine_omni_cooldown_timer;
+
+    /* Cruzader's own mode 2 (SHOOT_MODE_CRUZADER_ORB) two-phase timer - the
+     * same duration/cooldown pairing rapid_burst_timer/rapid_cooldown_timer
+     * above use, just not gated on shoot_mode (the orb stays active while
+     * shoot_mode has already reverted to mode 1 - see trigger_cruzader_orb
+     * in usecases/game_logic.c). cruzader_orb_timer counts down the 5s
+     * active window (during which check_collisions reflects every enemy
+     * shot within CRUZADER_ORB_RADIUS and blocks boss-ring contact
+     * entirely); the instant it expires, cruzader_orb_cooldown_timer starts
+     * its own 20s countdown, during which pressing key 2 again is a no-op.
+     * Both tick unconditionally in update_player_firing. Only one is ever
+     * nonzero at a time. Unused by every other ship. */
+    float cruzader_orb_timer;
+    float cruzader_orb_cooldown_timer;
 
     /* Counts down to the next engine trail particle emission (see
      * update_player_trail) - purely cosmetic, unrelated to fire_cooldown. */
@@ -311,6 +342,13 @@ typedef enum ProjectileKind {
      * use, and the only kind that spins in place (see draw_shine_shard in
      * adapters/sdl_renderer.c) while flying straight ahead. */
     PROJECTILE_KIND_SHINE_SPIRAL,
+    /* Cruzader's own mode 3 shot (SHOOT_MODE_CRUZADER_ROCKETS) - homes
+     * toward the closest alive Enemy every frame (see
+     * update_cruzader_rocket_homing in usecases/game_logic.c) and, like
+     * PROJECTILE_KIND_POWER, explodes in a radius sweep on contact (see
+     * trigger_power_cannon_explosion) rather than only harming whatever it
+     * directly touched. */
+    PROJECTILE_KIND_CRUZADER_ROCKET,
 } ProjectileKind;
 
 /* Drives an enemy shot's rendering (adapters/sdl_renderer.c) and hitbox
@@ -357,13 +395,26 @@ typedef struct Projectile {
     float half_len;
     float half_wid;
 
+    /* Enemy shots only: set by Cruzader's passive/orb (see
+     * reflect_enemy_shot in usecases/game_logic.c) when this shot gets
+     * bounced back instead of hitting the player - vx/vy are negated in
+     * place and every other field (color, enemy_kind, half_len/half_wid) is
+     * left untouched, so a reflected shot keeps flying with its exact
+     * original design, just backwards. check_collisions then tests
+     * reflected shots against gs->enemies/gs->boss instead of the player.
+     * Reset to false whenever a slot is reused (see spawn_enemy_shot).
+     * Unused by player shots. */
+    bool reflected;
+
     /* Counts down to this shot's next smoke-trail puff emission - see
      * spawn_projectile_trail_particle/update_projectile_trails in
      * usecases/game_logic.c, the projectile counterpart to
      * Player.trail_emit_timer/Enemy.trail_emit_timer. Shared by both
      * player_shots and enemy_shots, at the same PROJECTILE_TRAIL_MAX_ALPHA
-     * visibility for every shot regardless of source - player and enemy
-     * projectiles read identically here by design. Purely cosmetic. */
+     * visibility and spawn cadence for every shot regardless of source -
+     * except Cruzader's own mode 3 rockets, the one deliberate exception
+     * (see ProjectileTrailParticle's own doc comment and
+     * CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL). Purely cosmetic. */
     float trail_emit_timer;
     /* Random per-shot phase seed, radians [0, 2*pi) - set at spawn (see
      * spawn_player_shot). Read by C-24's own sphere-shot rendering
@@ -436,13 +487,20 @@ typedef struct EnemyTrailParticle {
  * every projectile - player and enemy shots alike - instead of a ship; see
  * spawn_projectile_trail_particle and update_projectile_trails in
  * usecases/game_logic.c. Unlike the ship trails, which start fire-colored
- * and cool into gray smoke as they age, color is captured once at spawn
- * from the exact Projectile.color that emitted it and never shifts -
- * only alpha (fade) and size (growth) animate over the puff's life, so the
- * trail always reads as "this projectile's own color," never a generic
- * fire/smoke tone. A single pool shared by both player_shots and
- * enemy_shots (each Projectile carries its own trail_emit_timer) since
- * projectiles of either side get identical treatment. */
+ * and cool into gray smoke as they age, color is captured once at spawn -
+ * normally the exact Projectile.color that emitted it, so the trail reads
+ * as "this projectile's own color," but Cruzader's own mode 3 rockets
+ * (PROJECTILE_KIND_CRUZADER_ROCKET) are the one deliberate exception,
+ * spawning theirs blue regardless of pr->color - and never shifts
+ * afterward; only alpha (fade) and size (growth) animate over the puff's
+ * life. alpha_cap (same "per-source max visibility" convention as
+ * EnemyTrailParticle's own field above) is PROJECTILE_TRAIL_MAX_ALPHA for
+ * every normal shot, and CRUZADER_ROCKET_TRAIL_MAX_ALPHA (much higher) for
+ * a Cruzader rocket's own puffs only - "increase the visibility of the
+ * smoke... make it blue" per feedback, scoped to that one shooting mode on
+ * that one ship, nothing else. A single pool shared by both player_shots
+ * and enemy_shots (each Projectile carries its own trail_emit_timer) since
+ * every other projectile of either side still gets identical treatment. */
 typedef struct ProjectileTrailParticle {
     bool alive;
     float x, y;
@@ -451,6 +509,7 @@ typedef struct ProjectileTrailParticle {
     float max_age;
     float size;
     Color color;
+    unsigned char alpha_cap;
 } ProjectileTrailParticle;
 
 typedef struct Star {

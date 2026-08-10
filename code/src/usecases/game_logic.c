@@ -85,6 +85,24 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
         *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
         return;
     }
+    /* Cruzader's own shots (twin bolts and rockets - reflected shots never
+     * reach here, they stay in gs->enemy_shots with their original enemy
+     * design untouched, see reflect_enemy_shot) use the same
+     * oriented-bounding-box construction as Shine's own branch above rather
+     * than a simple vertical/horizontal swap, since a rocket's homing curve
+     * can bend it to any angle. */
+    if (pr->style_ship == SHIP_CRUZADER) {
+        float length = scaled(gs, pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET ? CRUZADER_ROCKET_LENGTH
+                                                                                : CRUZADER_BOLT_LENGTH);
+        float width = scaled(gs, pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET ? CRUZADER_ROCKET_WIDTH
+                                                                               : CRUZADER_BOLT_WIDTH);
+        float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+        float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+        float dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+        *half_w = fabsf(dx) * length / 2.0f + fabsf(dy) * width / 2.0f;
+        *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -262,8 +280,13 @@ static void spawn_enemy_trail_particle(GameState *gs, float x, float y, float si
  * away from the direction the shot is heading regardless of which way that
  * is - unlike the ship trails, a projectile can travel in any direction,
  * not just down or up. */
+/* size_mult/alpha_cap default to 1.0f/PROJECTILE_TRAIL_MAX_ALPHA for every
+ * ordinary shot (see update_projectile_trails' own call site) - Cruzader's
+ * mode 3 rockets are the one deliberate exception, passing
+ * CRUZADER_ROCKET_TRAIL_SIZE_MULTIPLIER/CRUZADER_ROCKET_TRAIL_MAX_ALPHA
+ * instead for a bigger, more visible puff, per feedback. */
 static void spawn_projectile_trail_particle(GameState *gs, float x, float y, float back_dx, float back_dy,
-                                             Color color) {
+                                             Color color, float size_mult, unsigned char alpha_cap) {
     for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
         ProjectileTrailParticle *t = &gs->projectile_trails[i];
         if (t->alive) continue;
@@ -277,8 +300,9 @@ static void spawn_projectile_trail_particle(GameState *gs, float x, float y, flo
         t->vy = back_dy * drift + perp_y * jitter;
         t->age = 0.0f;
         t->max_age = PROJECTILE_TRAIL_LIFETIME;
-        t->size = scaled(gs, PROJECTILE_TRAIL_BASE_SIZE) * (0.7f + frand01() * 0.6f);
+        t->size = scaled(gs, PROJECTILE_TRAIL_BASE_SIZE) * (0.7f + frand01() * 0.6f) * size_mult;
         t->color = color;
+        t->alpha_cap = alpha_cap;
         return;
     }
 }
@@ -354,9 +378,28 @@ static void spawn_enemy_shot(GameState *gs, float x, float y, float vx, float vy
         pr->half_wid = half_wid;
         pr->inert = false;
         pr->inert_age = 0.0f;
+        pr->reflected = false;
         pr->trail_emit_timer = frand01() * PROJECTILE_TRAIL_SPAWN_INTERVAL;
         return;
     }
+}
+
+/* Cruzader's own reflect mechanics (his passive 50% chance and his
+ * deflector orb - see check_collisions): bounces an incoming enemy shot
+ * back the way it came, in place - only vx/vy (negated) and damage/
+ * reflected change, so the shot keeps its exact original design (color,
+ * beam vs orb shape, size) rather than turning into one of Cruzader's own
+ * bolts. Stays in gs->enemy_shots (never moved into player_shots); a
+ * separate pass in check_collisions tests reflected shots against
+ * gs->enemies/gs->boss instead of the player. damage is stashed in
+ * Projectile.damage, the same field a player shot already uses to carry
+ * its own boss-damage amount, so the reflected-vs-boss test below can read
+ * it the same way. */
+static void reflect_enemy_shot(Projectile *pr, float damage) {
+    pr->vx = -pr->vx;
+    pr->vy = -pr->vy;
+    pr->damage = damage;
+    pr->reflected = true;
 }
 
 /* The 8 unit direction vectors an all-directions burst fires along, evenly
@@ -657,6 +700,8 @@ static void reset_run(GameState *gs) {
     gs->player.rapid_burst_timer = 0.0f;
     gs->player.rapid_cooldown_timer = 0.0f;
     gs->player.shine_omni_cooldown_timer = 0.0f;
+    gs->player.cruzader_orb_timer = 0.0f;
+    gs->player.cruzader_orb_cooldown_timer = 0.0f;
     gs->player.trail_emit_timer = 0.0f;
 
     gs->score = 0;
@@ -743,11 +788,12 @@ static void update_difficulty_select(GameState *gs, const InputCommand *input, E
     }
 }
 
-/* The ship-select screen reached right after confirming a difficulty -
- * left/right moves the cursor across the row of unlocked ships
+/* The ship-select screen reached right after confirming a difficulty - all
+ * 4 arrow keys move the cursor across the grid of unlocked ships
  * (gs->selected_ship doubles as both the cursor position and, once
  * confirmed, the run's actual ship, same "selection is the state" pattern
- * as gs->selected_difficulty above), clamped at SHIP_B20/the last
+ * as gs->selected_difficulty above): left/right step by 1, up/down step by
+ * a full SHIP_SELECT_GRID_COLS-wide row, all clamped at SHIP_B20/the last
  * implemented ship rather than wrapping. Everything past SHIP_COUNT in the
  * ship-select grid is a locked placeholder the renderer draws directly
  * (adapters/sdl_renderer.c) - there's no cursor state for those slots to
@@ -761,6 +807,20 @@ static void update_ship_select(GameState *gs, const InputCommand *input, EventQu
     }
     if (input->nav_right_pressed && gs->selected_ship < SHIP_COUNT - 1) {
         gs->selected_ship++;
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+    }
+    /* Up/down step by a full grid row (SHIP_SELECT_GRID_COLS, shared with
+     * the renderer's own grid layout), same row/col math
+     * draw_ship_select_screen uses to place each icon - clamped rather than
+     * wrapping, and clamped at SHIP_COUNT - 1 (the last real ship) rather
+     * than SHIP_SELECT_GRID_SLOTS - 1, so the cursor can never land on one
+     * of the locked placeholder slots past it. */
+    if (input->nav_up_pressed && gs->selected_ship >= SHIP_SELECT_GRID_COLS) {
+        gs->selected_ship -= SHIP_SELECT_GRID_COLS;
+        event_queue_push_sfx(events, SFX_MENU_SELECT);
+    }
+    if (input->nav_down_pressed && gs->selected_ship + SHIP_SELECT_GRID_COLS <= SHIP_COUNT - 1) {
+        gs->selected_ship += SHIP_SELECT_GRID_COLS;
         event_queue_push_sfx(events, SFX_MENU_SELECT);
     }
     if (input->confirm_pressed) {
@@ -818,6 +878,25 @@ static void damage_player(GameState *gs, EventQueue *events, float amount) {
     }
 }
 
+/* Cruzader's own carve-out from the always-fatal player-enemy contact rule
+ * (see check_collisions): instead of kill_player, a flat
+ * CRUZADER_ENEMY_CONTACT_LIFE_LOSS life-loss penalty - deliberately not run
+ * through ship_damage_taken_multiplier the way damage_player's projectile
+ * hits are (see that constant's own doc comment) - still gated on the same
+ * super beam/god mode immunity every other form of damage respects. */
+static void damage_cruzader_on_enemy_contact(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+
+    p->life -= CRUZADER_ENEMY_CONTACT_LIFE_LOSS;
+    if (p->life <= 0.0f) {
+        p->life = 0.0f;
+        kill_player(gs, events);
+    }
+}
+
 /* Shine's own mode 2 (SHOOT_MODE_SHINE_OMNI): fires SHINE_OMNI_SHOT_COUNT
  * shards in every direction at once, gated on Player.shine_omni_cooldown_timer
  * (decremented unconditionally in update_player_firing, the same pattern
@@ -839,6 +918,26 @@ static void trigger_shine_omni_burst(GameState *gs, EventQueue *events) {
     }
     p->shine_omni_cooldown_timer = SHINE_OMNI_COOLDOWN;
     p->shoot_mode = ship_shoot_mode_for_slot(SHIP_SHINE, 0);
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Cruzader's own mode 2 (SHOOT_MODE_CRUZADER_ORB): like
+ * trigger_shine_omni_burst above, never actually assigns its own ShootMode
+ * to p->shoot_mode - intercepted directly from update_shoot_mode_switch
+ * below and immediately leaves shoot_mode at mode 1
+ * (SHOOT_MODE_CRUZADER_TWIN). Unlike Shine's instant single burst, this
+ * also starts the 5s active window (cruzader_orb_timer) check_collisions
+ * reads to reflect incoming fire - see SHOOT_MODE_CRUZADER_ORB's own doc
+ * comment in domain/types.h. No-ops (no sfx, no state change) while
+ * already active or on cooldown, same "silently does nothing" convention
+ * every other mode's own switch already follows when it's not actually
+ * available. */
+static void trigger_cruzader_orb(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->cruzader_orb_timer > 0.0f || p->cruzader_orb_cooldown_timer > 0.0f) return;
+
+    p->cruzader_orb_timer = CRUZADER_ORB_DURATION;
+    p->shoot_mode = ship_shoot_mode_for_slot(SHIP_CRUZADER, 0);
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
@@ -868,6 +967,10 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
     ShootMode requested = ship_shoot_mode_for_slot(gs->selected_ship, slot);
     if (requested == SHOOT_MODE_SHINE_OMNI) {
         trigger_shine_omni_burst(gs, events);
+        return;
+    }
+    if (requested == SHOOT_MODE_CRUZADER_ORB) {
+        trigger_cruzader_orb(gs, events);
         return;
     }
     if (requested == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) return;
@@ -1035,6 +1138,49 @@ static void update_shine_spiral(GameState *gs, const InputCommand *input, EventQ
                        0.0f, -scaled(gs, SHINE_SHARD_SPEED), PROJECTILE_KIND_SHINE_SPIRAL, false,
                        BASE_PLAYER_DAMAGE * SHINE_SPIRAL_DAMAGE_MULTIPLIER);
     p->fire_cooldown = SHINE_SPIRAL_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Cruzader's own mode 1 (default): B-20's own DOUBLE pattern (two wingtip
+ * shots), just recolored (see draw_cruzader_bolt in adapters/sdl_renderer.c)
+ * and at CRUZADER_TWIN_FIRE_COOLDOWN's own 1.5 shots/sec instead of
+ * PLAYER_FIRE_COOLDOWN - "same as B-20's #4" per spec, so this reuses
+ * B-20's own DOUBLE_BARREL_DAMAGE_MULTIPLIER rather than a Cruzader-specific
+ * one. Wingtip/nose offsets are scaled by Cruzader's own
+ * ship_size_multiplier (1.5x) - the first firing ship bigger than B-20's
+ * own baseline, so muzzle points need to track the bigger sprite's actual
+ * wingtips instead of assuming the stock PLAYER_WING_OFFSET_X/HEIGHT. */
+static void update_cruzader_twin(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float size_mult = ship_size_multiplier(SHIP_CRUZADER);
+    float wing_x = scaled(gs, PLAYER_WING_OFFSET_X) * size_mult;
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f * size_mult;
+    float vy = -scaled(gs, PLAYER_PROJECTILE_SPEED);
+    float damage = BASE_PLAYER_DAMAGE * DOUBLE_BARREL_DAMAGE_MULTIPLIER;
+    spawn_player_shot(gs, p->x - wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
+    spawn_player_shot(gs, p->x + wing_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
+    p->fire_cooldown = CRUZADER_TWIN_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Cruzader's own mode 3: a single slow rocket from the nose (offset by his
+ * own size multiplier, same reasoning as update_cruzader_twin above) every
+ * CRUZADER_ROCKET_FIRE_COOLDOWN (1 shot/2s per spec) - see
+ * update_cruzader_rocket_homing (update_projectiles) for the actual
+ * closest-enemy homing, and check_collisions for its Power-Cannon-style
+ * explosion on contact. Initial heading is straight up, same as every
+ * other single-shot mode; homing takes over from the very next frame. */
+static void update_cruzader_rockets(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float size_mult = ship_size_multiplier(SHIP_CRUZADER);
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f * size_mult;
+    float speed = scaled(gs, CRUZADER_ROCKET_SPEED);
+    spawn_player_shot(gs, p->x, y, 0.0f, -speed, PROJECTILE_KIND_CRUZADER_ROCKET, false, CRUZADER_ROCKET_DAMAGE);
+    p->fire_cooldown = CRUZADER_ROCKET_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
@@ -1329,6 +1475,22 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         p->shine_omni_cooldown_timer -= dt;
         if (p->shine_omni_cooldown_timer < 0.0f) p->shine_omni_cooldown_timer = 0.0f;
     }
+    /* cruzader_orb_timer/cruzader_orb_cooldown_timer tick unconditionally,
+     * same as shine_omni_cooldown_timer above - not gated on shoot_mode,
+     * since the orb stays active while shoot_mode has already reverted to
+     * mode 1 (see trigger_cruzader_orb). The instant the active window
+     * expires, the following cooldown starts immediately - mutually
+     * exclusive, same convention as rapid_burst_timer/rapid_cooldown_timer. */
+    if (p->cruzader_orb_timer > 0.0f) {
+        p->cruzader_orb_timer -= dt;
+        if (p->cruzader_orb_timer <= 0.0f) {
+            p->cruzader_orb_timer = 0.0f;
+            p->cruzader_orb_cooldown_timer = CRUZADER_ORB_COOLDOWN;
+        }
+    } else if (p->cruzader_orb_cooldown_timer > 0.0f) {
+        p->cruzader_orb_cooldown_timer -= dt;
+        if (p->cruzader_orb_cooldown_timer < 0.0f) p->cruzader_orb_cooldown_timer = 0.0f;
+    }
 
     /* While the super beam is active it replaces every shooting mode
      * entirely - see update_super_beam, which fires automatically every
@@ -1345,7 +1507,10 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_SWARM_FORMATION: update_mothership_dispatch(gs, input, events); break;
         case SHOOT_MODE_SHINE_SHARDS: update_shine_shards(gs, input, events); break;
         case SHOOT_MODE_SHINE_SPIRAL: update_shine_spiral(gs, input, events); break;
+        case SHOOT_MODE_CRUZADER_TWIN: update_cruzader_twin(gs, input, events); break;
+        case SHOOT_MODE_CRUZADER_ROCKETS: update_cruzader_rockets(gs, input, events); break;
         case SHOOT_MODE_SHINE_OMNI: /* never persists as the active mode - see its own doc comment */
+        case SHOOT_MODE_CRUZADER_ORB: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_NORMAL:
         case SHOOT_MODE_COUNT:
         default: update_normal_fire(gs, input, events); break;
@@ -1639,7 +1804,43 @@ static void update_pending_orb_kills(GameState *gs, float dt, EventQueue *events
     }
 }
 
+/* Cruzader's own mode 3 rockets (PROJECTILE_KIND_CRUZADER_ROCKET): every
+ * frame, before position integration, snap each alive rocket's heading to
+ * point exactly at the closest currently-alive Enemy, preserving its
+ * current speed - guaranteed-impact homing ("auto-flying towards the
+ * closest enemy's direction to ensure impact" per spec), not a gradual
+ * turn-rate steer. A rocket with no enemies left alive just keeps flying
+ * on whatever heading it already had. */
+static void update_cruzader_rocket_homing(GameState *gs) {
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        Projectile *pr = &gs->player_shots[i];
+        if (!pr->alive || pr->kind != PROJECTILE_KIND_CRUZADER_ROCKET) continue;
+
+        Enemy *closest = NULL;
+        float best_dist2 = 0.0f;
+        for (int j = 0; j < MAX_ENEMIES; j++) {
+            Enemy *e = &gs->enemies[j];
+            if (!e->alive) continue;
+            float dx = e->x - pr->x, dy = e->y - pr->y;
+            float dist2 = dx * dx + dy * dy;
+            if (!closest || dist2 < best_dist2) {
+                closest = e;
+                best_dist2 = dist2;
+            }
+        }
+        if (!closest) continue;
+
+        float dx = closest->x - pr->x, dy = closest->y - pr->y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist <= 0.0001f) continue;
+        float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+        pr->vx = dx / dist * speed;
+        pr->vy = dy / dist * speed;
+    }
+}
+
 static void update_projectiles(GameState *gs, float dt) {
+    update_cruzader_rocket_homing(gs);
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
         if (!pr->alive) continue;
@@ -1795,11 +1996,28 @@ static void update_projectile_trails(GameState *gs, float dt) {
             if (!pr->alive) continue;
             pr->trail_emit_timer -= dt;
             if (pr->trail_emit_timer <= 0.0f) {
-                pr->trail_emit_timer = PROJECTILE_TRAIL_SPAWN_INTERVAL;
+                /* Cruzader's rockets get a denser, bigger, more visible,
+                 * blue-tinted smoke trail than every other shot - "increase
+                 * the visibility of the smoke... make it blue" per feedback
+                 * - scoped to this exact kind/ship combination; every other
+                 * shot (every other Cruzader mode included) keeps the
+                 * ordinary color/cadence/size/alpha untouched. */
+                bool is_cruzader_rocket =
+                    pr->style_ship == SHIP_CRUZADER && pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET;
+                pr->trail_emit_timer =
+                    is_cruzader_rocket ? CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL : PROJECTILE_TRAIL_SPAWN_INTERVAL;
                 float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
                 float back_dx = speed > 0.0f ? -pr->vx / speed : 0.0f;
                 float back_dy = speed > 0.0f ? -pr->vy / speed : -1.0f;
-                spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, pr->color);
+                if (is_cruzader_rocket) {
+                    static const Color kCruzaderRocketSmokeBlue = {70, 150, 255, 255};
+                    spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, kCruzaderRocketSmokeBlue,
+                                                     CRUZADER_ROCKET_TRAIL_SIZE_MULTIPLIER,
+                                                     CRUZADER_ROCKET_TRAIL_MAX_ALPHA);
+                } else {
+                    spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, pr->color, 1.0f,
+                                                     PROJECTILE_TRAIL_MAX_ALPHA);
+                }
             }
         }
     }
@@ -1844,7 +2062,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             if (collision_aabb_overlap(pr->x, pr->y, shot_half_w, shot_half_h,
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                 pr->alive = false;
-                if (pr->kind == PROJECTILE_KIND_POWER) {
+                if (pr->kind == PROJECTILE_KIND_POWER || pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET) {
                     trigger_power_cannon_explosion(gs, events, pr->x, pr->y, pr->style_ship);
                 } else {
                     destroy_enemy_for_score(gs, events, e);
@@ -1854,6 +2072,13 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         }
     }
 
+    /* Cruzader never explodes from touching an ordinary enemy - the enemy
+     * still dies (e->alive = false; spawn_explosion, both unconditional
+     * below), but takes a flat life-loss penalty instead of the usual
+     * instant kill_player (see damage_cruzader_on_enemy_contact's own doc
+     * comment). Contact with the boss's own danger ring stays fatal (see
+     * the ring-touch block further down) - this carve-out is scoped to
+     * ordinary enemies only, per spec. */
     if (gs->player.alive) {
         for (int j = 0; j < MAX_ENEMIES; j++) {
             Enemy *e = &gs->enemies[j];
@@ -1862,7 +2087,11 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                 e->alive = false;
                 spawn_explosion(gs, e->x, e->y, e->size);
-                kill_player(gs, events);
+                if (gs->selected_ship == SHIP_CRUZADER) {
+                    damage_cruzader_on_enemy_contact(gs, events);
+                } else {
+                    kill_player(gs, events);
+                }
                 break;
             }
         }
@@ -1890,18 +2119,90 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         }
     }
 
+    /* Cruzader's deflector orb (mode 2): while active, every enemy shot
+     * within CRUZADER_ORB_RADIUS is fully reflected - no player damage at
+     * all, unlike the passive 50% chance below - and unlike that loop,
+     * doesn't stop at the first one: the whole point is nothing gets
+     * through while the orb is up. A shot stays in gs->enemy_shots after
+     * being reflected (see reflect_enemy_shot's own doc comment), so
+     * pr->reflected must be checked here too - otherwise a shot that
+     * lingers inside the radius after bouncing back would get flipped
+     * again next frame, and again the frame after that. */
+    if (gs->player.alive && gs->selected_ship == SHIP_CRUZADER && gs->player.cruzader_orb_timer > 0.0f) {
+        float orb_radius = scaled(gs, CRUZADER_ORB_RADIUS);
+        for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+            Projectile *pr = &gs->enemy_shots[i];
+            if (!pr->alive || pr->inert || pr->reflected) continue;
+            if (!within_radius(pr->x, pr->y, gs->player.x, gs->player.y, orb_radius)) continue;
+            reflect_enemy_shot(pr, CRUZADER_REFLECTED_SHOT_DAMAGE);
+        }
+    }
+
     if (gs->player.alive) {
         for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
             Projectile *pr = &gs->enemy_shots[i];
-            if (!pr->alive || pr->inert) continue; /* inert = fading out after a boss arrived; harmless */
+            /* inert = fading out after a boss arrived; harmless. A shot
+             * already marked reflected must never re-enter this test - it's
+             * now a friendly projectile flying away from the player, not an
+             * incoming threat, even if it's slow enough to still overlap
+             * the player's hitbox for a frame or two right after bouncing
+             * back (see the identical guard in the orb loop above). */
+            if (!pr->alive || pr->inert || pr->reflected) continue;
             float enemy_shot_half_w, enemy_shot_half_h;
             enemy_shot_half_extents(pr, &enemy_shot_half_w, &enemy_shot_half_h);
             if (collision_aabb_overlap(pr->x, pr->y, enemy_shot_half_w, enemy_shot_half_h,
                                         gs->player.x, gs->player.y, player_half_w, player_half_h)) {
-                pr->alive = false;
-                damage_player(gs, events, PLAYER_LIFE_LOSS_PER_HIT);
+                /* Cruzader's passive: 50% chance to bounce the shot back
+                 * (see reflect_enemy_shot) instead of taking a full hit -
+                 * only reached here when the orb above isn't already
+                 * handling every shot in range for free. A reflected shot
+                 * stays alive (it keeps flying, now away from the player)
+                 * so the pass below can still land it on an enemy/boss. */
+                if (gs->selected_ship == SHIP_CRUZADER && frand01() < CRUZADER_PASSIVE_REFLECT_CHANCE) {
+                    reflect_enemy_shot(pr, CRUZADER_REFLECTED_SHOT_DAMAGE);
+                    damage_player(gs, events, PLAYER_LIFE_LOSS_PER_HIT * CRUZADER_PASSIVE_REFLECT_DAMAGE_MULTIPLIER);
+                } else {
+                    pr->alive = false;
+                    damage_player(gs, events, PLAYER_LIFE_LOSS_PER_HIT);
+                }
                 break;
             }
+        }
+    }
+
+    /* Reflected enemy shots (Cruzader's passive/orb, just above) now fly
+     * back toward the enemies instead of the player, in their own
+     * unmodified original design - test them against ordinary enemies and
+     * the boss the same way a player shot would, then consume them on
+     * contact. A separate pass (rather than folded into the player-shot
+     * loops above) since these are never moved out of gs->enemy_shots. */
+    if (gs->selected_ship == SHIP_CRUZADER) {
+        for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+            Projectile *pr = &gs->enemy_shots[i];
+            if (!pr->alive || pr->inert || !pr->reflected) continue;
+            float half_w, half_h;
+            enemy_shot_half_extents(pr, &half_w, &half_h);
+
+            bool consumed = false;
+            for (int j = 0; j < MAX_ENEMIES; j++) {
+                Enemy *e = &gs->enemies[j];
+                if (!e->alive) continue;
+                if (collision_aabb_overlap(pr->x, pr->y, half_w, half_h, e->x, e->y, e->size / 2.0f,
+                                            e->size / 2.0f)) {
+                    destroy_enemy_for_score(gs, events, e);
+                    consumed = true;
+                    break;
+                }
+            }
+            if (!consumed && gs->boss.alive) {
+                float boss_half = gs->boss.size / 2.0f;
+                if (collision_aabb_overlap(pr->x, pr->y, half_w, half_h, gs->boss.x, gs->boss.y, boss_half,
+                                            boss_half)) {
+                    damage_boss(gs, events, pr->damage);
+                    consumed = true;
+                }
+            }
+            if (consumed) pr->alive = false;
         }
     }
 
@@ -1958,7 +2259,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
              * shot-to-detonate sweep), so this is purely a bonus against
              * anything else caught in the blast radius, on top of the
              * boss's own damage_boss hit above. */
-            if (pr->kind == PROJECTILE_KIND_POWER) {
+            if (pr->kind == PROJECTILE_KIND_POWER || pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET) {
                 trigger_power_cannon_explosion(gs, events, pr->x, pr->y, pr->style_ship);
             }
             break;
@@ -1979,8 +2280,13 @@ static void check_collisions(GameState *gs, EventQueue *events) {
          * those immunity rules itself.
          *
          * Re-check gs->boss.alive since the laser loop above may have
-         * just defeated it this same frame. */
-        if (gs->boss.alive && gs->player.alive) {
+         * just defeated it this same frame. Cruzader's deflector orb blocks
+         * this whole consequence block entirely while active (not just
+         * kill_player) - the ring simply does nothing that frame, boss
+         * keeps chasing, no free kill either. Outside the orb window, a
+         * boss ring touch is fatal to Cruzader same as any other ship. */
+        bool cruzader_orb_blocks_ring = gs->selected_ship == SHIP_CRUZADER && gs->player.cruzader_orb_timer > 0.0f;
+        if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring) {
             float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
             float player_radius = fmaxf(player_half_w, player_half_h);
             if (within_radius(gs->player.x, gs->player.y, gs->boss.x, gs->boss.y, ring_radius + player_radius)) {
