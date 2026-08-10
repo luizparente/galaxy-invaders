@@ -11,7 +11,9 @@
 #include "adapters/cruzader_rocket_sprite.h"
 #include "adapters/enemy_sprites.h"
 #include "adapters/menu_ship_sprite.h"
+#include "adapters/menu_ship_silhouette.h"
 #include "adapters/menu_ship_c24_sprite.h"
+#include "adapters/menu_ship_c24_silhouette.h"
 #include "adapters/menu_planet_sprites.h"
 #include "domain/constants.h"
 #include "usecases/ship.h"
@@ -36,10 +38,15 @@ typedef struct SdlRendererCtx {
      * textures above: its grid is far too big to blit one gp_fill_rect per
      * pixel every frame. */
     SDL_Texture *menu_ship_texture;
+    /* The fully-filled black silhouette drawn behind menu_ship_texture at
+     * the exact same destination rect (adapters/menu_ship_silhouette) -
+     * see draw_menu_ship_with_silhouette's own doc comment. */
+    SDL_Texture *menu_ship_silhouette_texture;
     /* C-24's own decorative hero ship, mirrored onto the main menu's
      * left-hand side (adapters/menu_ship_c24_sprite) - same single-texture
      * rationale as menu_ship_texture above. */
     SDL_Texture *menu_ship_c24_texture;
+    SDL_Texture *menu_ship_c24_silhouette_texture;
     /* The 4 decorative menu planets (adapters/menu_planet_sprites), same
      * one-texture-per-design technique as enemy_textures/boss_textures. */
     SDL_Texture *planet_textures[MENU_PLANET_COUNT];
@@ -1265,6 +1272,23 @@ static void draw_sparkle(SdlRendererCtx *ctx, float x, float y, float size, Colo
  * bottom-right corner - a single large textured blit, the same technique
  * draw_sprite uses for enemies/the boss, just from its own dedicated
  * texture instead of a shared per-kind array since there's only one. */
+/* Shared by both menu hero ships below: their own dedicated silhouette
+ * texture (adapters/menu_ship_silhouette / menu_ship_c24_silhouette) drawn
+ * first at the exact same destination rect as the real ship, then the real
+ * full-color ship on top - the two share the exact same W/H (the
+ * silhouette's own outward dilation is already baked into its own pixel
+ * data, unlike a naive scaled-up copy of the ship's own texture, which
+ * would leave every gap/hole in the ship's own alpha - the cockpit glass,
+ * the thin gaps between wings/guns/flame and the hull - unfilled), so no
+ * extra scaling math is needed here: the silhouette's own edge simply
+ * peeks out past the ship's own edge on every side, reading as a discrete
+ * solid black outline/halo against the starfield. */
+static void draw_menu_ship_with_silhouette(SdlRendererCtx *ctx, SDL_Texture *silhouette_tex, SDL_Texture *tex,
+                                            SDL_FRect dst) {
+    SDL_RenderCopyF(ctx->renderer, silhouette_tex, NULL, &dst);
+    SDL_RenderCopyF(ctx->renderer, tex, NULL, &dst);
+}
+
 static void draw_menu_ship(SdlRendererCtx *ctx, const GameState *gs) {
     float w = (float)gs->screen_w, h = (float)gs->screen_h, s = gs->scale;
     float margin = 14.0f * s;
@@ -1273,13 +1297,13 @@ static void draw_menu_ship(SdlRendererCtx *ctx, const GameState *gs) {
     float dst_h = dst_w * (float)MENU_SHIP_SPRITE_H / (float)MENU_SHIP_SPRITE_W;
 
     SDL_FRect dst = {w - margin - dst_w, h - margin - dst_h, dst_w, dst_h};
-    SDL_RenderCopyF(ctx->renderer, ctx->menu_ship_texture, NULL, &dst);
+    draw_menu_ship_with_silhouette(ctx, ctx->menu_ship_silhouette_texture, ctx->menu_ship_texture, dst);
 }
 
 /* C-24's own decorative hero ship (adapters/menu_ship_c24_sprite), mirrored
- * onto the bottom-left corner - same single textured blit as draw_menu_ship
- * above, just anchored left instead of right and sized slightly smaller
- * (0.40 of screen width vs B-20's own 0.46) per spec. */
+ * onto the bottom-left corner - same silhouette-then-ship blit as
+ * draw_menu_ship above, just anchored left instead of right and sized
+ * slightly smaller (0.40 of screen width vs B-20's own 0.46) per spec. */
 static void draw_menu_ship_c24(SdlRendererCtx *ctx, const GameState *gs) {
     float w = (float)gs->screen_w, h = (float)gs->screen_h, s = gs->scale;
     float margin = 14.0f * s;
@@ -1288,7 +1312,7 @@ static void draw_menu_ship_c24(SdlRendererCtx *ctx, const GameState *gs) {
     float dst_h = dst_w * (float)MENU_SHIP_C24_SPRITE_H / (float)MENU_SHIP_C24_SPRITE_W;
 
     SDL_FRect dst = {margin, h - margin - dst_h, dst_w, dst_h};
-    SDL_RenderCopyF(ctx->renderer, ctx->menu_ship_c24_texture, NULL, &dst);
+    draw_menu_ship_with_silhouette(ctx, ctx->menu_ship_c24_silhouette_texture, ctx->menu_ship_c24_texture, dst);
 }
 
 static void draw_menu_decorations(SdlRendererCtx *ctx, const GameState *gs) {
@@ -1672,7 +1696,9 @@ static void sdl_render_destroy(void *self) {
         if (ctx->boss_textures[i]) SDL_DestroyTexture(ctx->boss_textures[i]);
     }
     if (ctx->menu_ship_texture) SDL_DestroyTexture(ctx->menu_ship_texture);
+    if (ctx->menu_ship_silhouette_texture) SDL_DestroyTexture(ctx->menu_ship_silhouette_texture);
     if (ctx->menu_ship_c24_texture) SDL_DestroyTexture(ctx->menu_ship_c24_texture);
+    if (ctx->menu_ship_c24_silhouette_texture) SDL_DestroyTexture(ctx->menu_ship_c24_silhouette_texture);
     for (int i = 0; i < MENU_PLANET_COUNT; i++) {
         if (ctx->planet_textures[i]) SDL_DestroyTexture(ctx->planet_textures[i]);
     }
@@ -1768,6 +1794,21 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
     SDL_SetTextureBlendMode(ctx->menu_ship_texture, SDL_BLENDMODE_BLEND);
     SDL_UpdateTexture(ctx->menu_ship_texture, NULL, kMenuShipSpritePixels, MENU_SHIP_SPRITE_W * (int)sizeof(uint32_t));
 
+    ctx->menu_ship_silhouette_texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888,
+                                                           SDL_TEXTUREACCESS_STATIC, MENU_SHIP_SILHOUETTE_W,
+                                                           MENU_SHIP_SILHOUETTE_H);
+    if (!ctx->menu_ship_silhouette_texture) {
+        fprintf(stderr, "SDL_CreateTexture failed for menu ship silhouette: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(ctx->renderer);
+        SDL_DestroyWindow(ctx->window);
+        free(ctx);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return NULL;
+    }
+    SDL_SetTextureBlendMode(ctx->menu_ship_silhouette_texture, SDL_BLENDMODE_BLEND);
+    SDL_UpdateTexture(ctx->menu_ship_silhouette_texture, NULL, kMenuShipSilhouettePixels,
+                       MENU_SHIP_SILHOUETTE_W * (int)sizeof(uint32_t));
+
     ctx->menu_ship_c24_texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC,
                                                     MENU_SHIP_C24_SPRITE_W, MENU_SHIP_C24_SPRITE_H);
     if (!ctx->menu_ship_c24_texture) {
@@ -1781,6 +1822,21 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
     SDL_SetTextureBlendMode(ctx->menu_ship_c24_texture, SDL_BLENDMODE_BLEND);
     SDL_UpdateTexture(ctx->menu_ship_c24_texture, NULL, kMenuShipC24SpritePixels,
                        MENU_SHIP_C24_SPRITE_W * (int)sizeof(uint32_t));
+
+    ctx->menu_ship_c24_silhouette_texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888,
+                                                               SDL_TEXTUREACCESS_STATIC, MENU_SHIP_C24_SILHOUETTE_W,
+                                                               MENU_SHIP_C24_SILHOUETTE_H);
+    if (!ctx->menu_ship_c24_silhouette_texture) {
+        fprintf(stderr, "SDL_CreateTexture failed for menu C-24 ship silhouette: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(ctx->renderer);
+        SDL_DestroyWindow(ctx->window);
+        free(ctx);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return NULL;
+    }
+    SDL_SetTextureBlendMode(ctx->menu_ship_c24_silhouette_texture, SDL_BLENDMODE_BLEND);
+    SDL_UpdateTexture(ctx->menu_ship_c24_silhouette_texture, NULL, kMenuShipC24SilhouettePixels,
+                       MENU_SHIP_C24_SILHOUETTE_W * (int)sizeof(uint32_t));
 
     for (int i = 0; i < MENU_PLANET_COUNT; i++) {
         const MenuPlanetSprite *sprite = &kMenuPlanetSprites[i];
