@@ -14,6 +14,7 @@
 #include "adapters/menu_ship_silhouette.h"
 #include "adapters/menu_ship_c24_sprite.h"
 #include "adapters/menu_ship_c24_silhouette.h"
+#include "adapters/menu_logo_sprite.h"
 #include "adapters/menu_planet_sprites.h"
 #include "domain/constants.h"
 #include "usecases/ship.h"
@@ -47,6 +48,13 @@ typedef struct SdlRendererCtx {
      * rationale as menu_ship_texture above. */
     SDL_Texture *menu_ship_c24_texture;
     SDL_Texture *menu_ship_c24_silhouette_texture;
+    /* The "GALAXY INVADERS" neon logo at the top of the main menu
+     * (adapters/menu_logo_sprite) - a glow/bloom image, not flat pixel art
+     * like every other embedded sprite here, so its own alpha is derived
+     * from brightness rather than a flood-filled cutout (see that header's
+     * own doc comment) - drawn with a single textured blit, same rationale
+     * as the hero ship textures above. */
+    SDL_Texture *menu_logo_texture;
     /* The 4 decorative menu planets (adapters/menu_planet_sprites), same
      * one-texture-per-design technique as enemy_textures/boss_textures. */
     SDL_Texture *planet_textures[MENU_PLANET_COUNT];
@@ -1315,6 +1323,28 @@ static void draw_menu_ship_c24(SdlRendererCtx *ctx, const GameState *gs) {
     draw_menu_ship_with_silhouette(ctx, ctx->menu_ship_c24_silhouette_texture, ctx->menu_ship_c24_texture, dst);
 }
 
+/* The "GALAXY INVADERS" neon logo (adapters/menu_logo_sprite), replacing
+ * the two lines of procedurally-drawn neon pixel-font text this menu used
+ * to show - centered horizontally near the top, at most 1/3 of its own
+ * first-pass size (0.90 of screen width down to 0.30), and drawn before
+ * (so layered behind) both hero ships in draw_menu_decorations below. */
+static void draw_menu_logo(SdlRendererCtx *ctx, const GameState *gs) {
+    float w = (float)gs->screen_w;
+
+    float dst_w = w * 0.36f; /* +20% over the previous 0.30 */
+    float dst_h = dst_w * (float)MENU_LOGO_SPRITE_H / (float)MENU_LOGO_SPRITE_W;
+
+    /* Net "0.5 inch" down from its original position (was 1.5" down,
+     * brought back up 0.75", then up another 0.25"), taken at a standard
+     * 96 DPI (48px) - there's no real physical unit in a pixel-art canvas
+     * like this one, so this is the closest sane reading, scaled the same
+     * way every other menu offset here is. */
+    float y = (float)gs->screen_h * 0.02f + 48.0f * gs->scale;
+
+    SDL_FRect dst = {(w - dst_w) / 2.0f, y, dst_w, dst_h};
+    SDL_RenderCopyF(ctx->renderer, ctx->menu_logo_texture, NULL, &dst);
+}
+
 static void draw_menu_decorations(SdlRendererCtx *ctx, const GameState *gs) {
     float w = (float)gs->screen_w, h = (float)gs->screen_h, s = gs->scale;
 
@@ -1342,32 +1372,13 @@ static void draw_menu_decorations(SdlRendererCtx *ctx, const GameState *gs) {
     draw_sparkle(ctx, w * 0.55f, h * 0.90f, 6.0f * s, kWhite);
     draw_sparkle(ctx, w * 0.93f, h * 0.85f, 5.0f * s, kSparklePink);
 
+    draw_menu_logo(ctx, gs);
     draw_menu_ship(ctx, gs);
     draw_menu_ship_c24(ctx, gs);
 }
 
 static void draw_menu_screen(SdlRendererCtx *ctx, const GameState *gs) {
     draw_menu_decorations(ctx, gs);
-
-    float title_size = 9.0f * gs->scale;
-    float title_w1 = pf_text_width("GALAXY", title_size);
-    float title_w2 = pf_text_width("INVADERS", title_size);
-    float y1 = (float)gs->screen_h * 0.12f;
-    float y2 = y1 + 78.0f * gs->scale;
-
-    static const Color kMagentaGlow = {255, 40, 190, 255};
-    static const Color kMagentaEdge = {255, 140, 235, 255};
-    static const Color kMagentaFill = {110, 15, 85, 255};
-    static const Color kMagentaShadow = {70, 8, 55, 255};
-    static const Color kGreenGlow = {60, 255, 90, 255};
-    static const Color kGreenEdge = {180, 255, 190, 255};
-    static const Color kGreenFill = {15, 95, 35, 255};
-    static const Color kGreenShadow = {8, 55, 18, 255};
-
-    pf_draw_text_neon(ctx->renderer, ((float)gs->screen_w - title_w1) / 2.0f, y1, title_size,
-                       kMagentaGlow, kMagentaEdge, kMagentaFill, kMagentaShadow, "GALAXY");
-    pf_draw_text_neon(ctx->renderer, ((float)gs->screen_w - title_w2) / 2.0f, y2, title_size,
-                       kGreenGlow, kGreenEdge, kGreenFill, kGreenShadow, "INVADERS");
 
     bool blink_on = fmodf(gs->menu_blink_timer, 1.0f) < 0.5f;
     if (blink_on) {
@@ -1699,6 +1710,7 @@ static void sdl_render_destroy(void *self) {
     if (ctx->menu_ship_silhouette_texture) SDL_DestroyTexture(ctx->menu_ship_silhouette_texture);
     if (ctx->menu_ship_c24_texture) SDL_DestroyTexture(ctx->menu_ship_c24_texture);
     if (ctx->menu_ship_c24_silhouette_texture) SDL_DestroyTexture(ctx->menu_ship_c24_silhouette_texture);
+    if (ctx->menu_logo_texture) SDL_DestroyTexture(ctx->menu_logo_texture);
     for (int i = 0; i < MENU_PLANET_COUNT; i++) {
         if (ctx->planet_textures[i]) SDL_DestroyTexture(ctx->planet_textures[i]);
     }
@@ -1837,6 +1849,19 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
     SDL_SetTextureBlendMode(ctx->menu_ship_c24_silhouette_texture, SDL_BLENDMODE_BLEND);
     SDL_UpdateTexture(ctx->menu_ship_c24_silhouette_texture, NULL, kMenuShipC24SilhouettePixels,
                        MENU_SHIP_C24_SILHOUETTE_W * (int)sizeof(uint32_t));
+
+    ctx->menu_logo_texture = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC,
+                                                MENU_LOGO_SPRITE_W, MENU_LOGO_SPRITE_H);
+    if (!ctx->menu_logo_texture) {
+        fprintf(stderr, "SDL_CreateTexture failed for menu logo: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(ctx->renderer);
+        SDL_DestroyWindow(ctx->window);
+        free(ctx);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return NULL;
+    }
+    SDL_SetTextureBlendMode(ctx->menu_logo_texture, SDL_BLENDMODE_BLEND);
+    SDL_UpdateTexture(ctx->menu_logo_texture, NULL, kMenuLogoSpritePixels, MENU_LOGO_SPRITE_W * (int)sizeof(uint32_t));
 
     for (int i = 0; i < MENU_PLANET_COUNT; i++) {
         const MenuPlanetSprite *sprite = &kMenuPlanetSprites[i];
