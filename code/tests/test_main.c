@@ -128,6 +128,26 @@ static void start_game_as_twins(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_TWINS);
 }
 
+/* Same as start_game_as_twins, but navigates one slot further right to
+ * SHIP_ANTARTICA, for Antartica/Frosty's own weapon/life tests below. */
+static void start_game_as_antartica(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &right, 0.016f, events); /* SHIP_MOTHERSHIP -> SHIP_SHINE */
+    game_update(gs, &right, 0.016f, events); /* SHIP_SHINE -> SHIP_CRUZADER */
+    game_update(gs, &right, 0.016f, events); /* SHIP_CRUZADER -> SHIP_TWINS */
+    game_update(gs, &right, 0.016f, events); /* SHIP_TWINS -> SHIP_ANTARTICA */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_ANTARTICA);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -266,7 +286,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_TWINS); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_ANTARTICA); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -2964,6 +2984,118 @@ static void test_twins_super_beam_sweeps_both_twins_columns(void) {
     printf("test_twins_super_beam_sweeps_both_twins_columns OK\n");
 }
 
+/* Regression coverage for a real bug: the power orb's own super beam swept
+ * BOTH Antartica's and Frosty's columns using Antartica's own shared p->y
+ * as the "enemy must be above this" cutoff for both, even though Frosty can
+ * be at a very different height than Antartica (independent WASD/arrow
+ * control - see update_player's own SHIP_ANTARTICA branch). An enemy level
+ * with Frosty's own actual y, but below Antartica's own y, would wrongly
+ * survive under both columns. update_super_beam now reads each origin's own
+ * y (see player_beam_origins in usecases/game_logic.c) instead of a single
+ * shared one - draw_super_beam (adapters/sdl_renderer.c) got the same fix,
+ * unverified here since these tests never touch the renderer. */
+static void test_antartica_super_beam_columns_use_each_bodys_own_y(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_antartica(&gs, &events);
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+
+    /* Antartica moves well up the screen; Frosty stays much lower. */
+    gs.player.frosty_x = gs.player.x;
+    gs.player.frosty_y = gs.player.y - 50.0f;
+    gs.player.y -= 200.0f;
+
+    /* This enemy sits between the two: above Frosty's own y, but below
+     * Antartica's - the old bug (a single shared p->y, Antartica's own)
+     * would skip it under both columns. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.frosty_x;
+    gs.enemies[0].y = gs.player.frosty_y - 30.0f;
+    gs.enemies[0].size = 10.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.enemies[0].alive);
+    printf("test_antartica_super_beam_columns_use_each_bodys_own_y OK\n");
+}
+
+/* Regression coverage for a real bug: once Antartica died (Frosty alone
+ * surviving), gs.player.x/y stayed frozen at Antartica's own last position
+ * forever - nothing fed Frosty's own independent position back into the
+ * single shared x/y field every ship-agnostic single-position consumer
+ * reads as "the player" (the boss's own chase target in update_boss, the
+ * power orb's own super beam origin). That made the boss keep closing in on
+ * the spot Antartica died at, never Frosty, even though Frosty was the one
+ * actually still flying. update_player's own SHIP_ANTARTICA branch now
+ * mirrors p->x/p->y onto Frosty's own position every frame once Antartica
+ * is dead (same "keep the shared position live for whoever's actually
+ * still relevant" idea as kill_twin's own control-transfer step) - this
+ * asserts both that mirroring and that the boss actually closes in on
+ * Frosty's real position, not Antartica's stale one, same proven pattern as
+ * test_boss_always_advances_toward_stationary_player above. */
+static void test_antartica_boss_chases_frosty_after_antartica_dies(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_antartica(&gs, &events);
+
+    for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.boss.alive);
+
+    float antartica_death_x = gs.player.x;
+    float antartica_death_y = gs.player.y;
+
+    /* Kill Antartica herself via plain enemy contact - Frosty survives,
+     * same "one can die while the other keeps going" rule as The Twins. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.player.antartica_alive);
+    assert(gs.player.frosty_alive);
+    assert(gs.player.alive);
+
+    /* Move Frosty well clear of where Antartica died, then let
+     * update_player's own mirroring pick it up on the next frame. */
+    gs.player.frosty_x = antartica_death_x + 150.0f;
+    gs.player.frosty_y = antartica_death_y;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(fabsf(gs.player.x - gs.player.frosty_x) < 0.001f);
+    assert(fabsf(gs.player.y - gs.player.frosty_y) < 0.001f);
+
+    /* Position the boss a safe distance from Frosty - well outside its own
+     * menace ring (whose radius depends on the boss's own randomly-rolled
+     * size, see BOSS_MENACE_RING_RATIO - spawn_boss doesn't fix it, so it
+     * can't be hardcoded here the way test_boss_always_advances_toward_
+     * stationary_player's own 100px gap does) plus comfortably more than
+     * the boss could ever close over the 20 frames below
+     * (BOSS_SPEED_MULTIPLIER * PLAYER_SPEED * 20 * 0.05, well under 80px) -
+     * so ring contact (which would end the run and freeze both positions,
+     * reading as "stopped closing in" below) can never happen here
+     * regardless of the random roll. */
+    float ring_radius = gs.boss.size * BOSS_MENACE_RING_RATIO;
+    float frosty_radius = fmaxf(PLAYER_WIDTH, PLAYER_HEIGHT) * ANTARTICA_FROSTY_SIZE_MULTIPLIER / 2.0f;
+    float start_distance = ring_radius + frosty_radius + 80.0f;
+    gs.boss.x = gs.player.frosty_x;
+    gs.boss.y = gs.player.frosty_y - start_distance;
+
+    float prev_dist = start_distance;
+    bool ever_failed_to_close_in = false;
+    for (int i = 0; i < 20; i++) {
+        game_update(&gs, &none, 0.05f, &events);
+        float dx = gs.player.frosty_x - gs.boss.x;
+        float dy = gs.player.frosty_y - gs.boss.y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist >= prev_dist - 0.001f) ever_failed_to_close_in = true;
+        prev_dist = dist;
+    }
+    assert(!ever_failed_to_close_in);
+    printf("test_antartica_boss_chases_frosty_after_antartica_dies OK\n");
+}
+
 /* All 4 arrows navigate the ship-select grid, not just left/right: up/down
  * step by a full SHIP_SELECT_GRID_COLS-wide row, clamped at the last real
  * ship (SHIP_COUNT - 1) rather than wrapping into one of the locked
@@ -3287,6 +3419,8 @@ int main(void) {
     test_twins_enemy_contact_zeroes_dead_twins_life();
     test_twins_orb_capture_heals_survivor_not_dead_twin();
     test_twins_super_beam_sweeps_both_twins_columns();
+    test_antartica_super_beam_columns_use_each_bodys_own_y();
+    test_antartica_boss_chases_frosty_after_antartica_dies();
     test_ship_select_up_down_navigate_grid_rows();
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();

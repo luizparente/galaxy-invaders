@@ -13,9 +13,9 @@
  * Cruzader) the lowest attack rating - a fair trade for having two bodies
  * to protect instead of one - per each one's own description on the
  * ship-select screen. */
-static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10};
-static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 4};
+static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10, 8};
+static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5, 7};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 4, 7};
 
 /* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
  * this isn't derived from a rating formula, it's spec'd directly (The
@@ -29,7 +29,7 @@ static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 4};
  * renders/collides at the stock size regardless of which ship dispatched
  * it. */
 static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 2.0f, 1.0f, CRUZADER_SIZE_MULTIPLIER,
-                                                        TWINS_SIZE_MULTIPLIER};
+                                                        TWINS_SIZE_MULTIPLIER, 1.0f};
 
 int ship_speed_rating(Ship ship) {
     return kShipSpeedRating[ship];
@@ -117,6 +117,18 @@ static const ShootMode kTwinsShootModeSlots[] = {
     SHOOT_MODE_TWINS_ALTERNATE, SHOOT_MODE_TWINS_MIRROR,
 };
 
+/* Antartica's own moveset - see the SHOOT_MODE_ANTARTICA_* entries' own doc
+ * comments in domain/types.h. Slots 1/2 (keys 2/3) are the odd ones out,
+ * same as Shine/Cruzader's own slot 1: listed here purely so
+ * ship_shoot_mode_slot_count/for_slot and the HUD indicator
+ * (adapters/sdl_renderer.c) know about them at all - neither is ever
+ * actually assigned to Player.shoot_mode (update_shoot_mode_switch
+ * intercepts both before that point). Frosty's own passive snowball fire
+ * has no mode/key of its own at all - it's not part of this table. */
+static const ShootMode kAntarticaShootModeSlots[] = {
+    SHOOT_MODE_ANTARTICA_SHARDS, SHOOT_MODE_ANTARTICA_ICE_STORM, SHOOT_MODE_ANTARTICA_FREEZE_BEAM,
+};
+
 typedef struct ShipShootModeSlots {
     const ShootMode *modes;
     int count;
@@ -129,6 +141,7 @@ static const ShipShootModeSlots kShipShootModeSlots[SHIP_COUNT] = {
     [SHIP_SHINE] = {kShineShootModeSlots, 3},
     [SHIP_CRUZADER] = {kCruzaderShootModeSlots, 3},
     [SHIP_TWINS] = {kTwinsShootModeSlots, 2},
+    [SHIP_ANTARTICA] = {kAntarticaShootModeSlots, 3},
 };
 
 int ship_shoot_mode_slot_count(Ship ship) {

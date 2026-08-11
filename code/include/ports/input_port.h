@@ -15,6 +15,26 @@ typedef struct InputCommand {
     bool move_down;
     bool fire_held;
 
+    /* Pure arrow-key state, with no WASD merged in - unlike move_left/right/
+     * up/down above (which OR in WASD as an alias, for every ship). Only
+     * consumed by SHIP_ANTARTICA's own movement (see update_player in
+     * usecases/game_logic.c), whose sidekick Frosty claims WASD for itself
+     * (see wasd_* below) - every other ship keeps using move_left/right/
+     * up/down exactly as before, completely unaffected by these. */
+    bool arrow_left;
+    bool arrow_right;
+    bool arrow_up;
+    bool arrow_down;
+
+    /* Pure WASD state, with no arrow key merged in - the counterpart to
+     * arrow_* above. Only consumed by SHIP_ANTARTICA's own sidekick Frosty
+     * (see update_player's SHIP_ANTARTICA branch) - unused by every other
+     * ship. */
+    bool wasd_left;
+    bool wasd_right;
+    bool wasd_up;
+    bool wasd_down;
+
     bool confirm_pressed;
     bool back_pressed;
     bool nav_up_pressed;

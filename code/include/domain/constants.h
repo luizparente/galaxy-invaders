@@ -584,6 +584,80 @@
 #define TWINS_BOLT_LENGTH 22.0f
 #define TWINS_BOLT_WIDTH 4.5f
 
+/* --- Antartica's own weapon + Frosty's own passive weapon (see
+ * usecases/ship.c for her 3-slot moveset) - kept fully independent of
+ * every other ship's own constants (SHINE_SHARD_*, SHIP_C24_PROJECTILE_*,
+ * SUPER_BEAM_*), same "kept-independent copies, not shared" precedent as
+ * every other ship's own block above, so retuning Antartica/Frosty can
+ * never silently retune anyone else's numbers. */
+#define ANTARTICA_FROSTY_SIZE_MULTIPLIER 0.75f /* "25% smaller than Antartica" */
+/* Frosty's own starting position (see reset_run in usecases/game_logic.c) is
+ * TWINS_FORMATION_GAP to Antartica's own left - "the same distance between
+ * the two when the game begins" as The Twins' own starting gap, per spec,
+ * reused directly rather than duplicated as an independent copy (an actual
+ * shared starting-distance convention, not a tunable weapon/size number of
+ * Antartica's own that happens to coincide with Twins'). */
+
+/* Mode 1 (default): the same twin-shard pattern as Shine's own mode 1
+ * (SHINE_SHARD_*), just "made of ice" - accent-recolored light blue instead
+ * of Shine's white/grey (see draw_antartica_shard in
+ * adapters/sdl_renderer.c) with "a tad more" white trailing smoke
+ * (ANTARTICA_SHARD_TRAIL_* below, see update_projectile_trails). */
+#define ANTARTICA_SHARD_SPEED PLAYER_PROJECTILE_SPEED
+#define ANTARTICA_SHARD_LENGTH 22.0f
+#define ANTARTICA_SHARD_WIDTH 7.0f
+#define ANTARTICA_SHARDS_FIRE_COOLDOWN 0.18f
+#define ANTARTICA_TWIN_SHARD_OFFSET_X ANTARTICA_SHARD_WIDTH
+#define ANTARTICA_TWIN_SHARD_DAMAGE_MULTIPLIER 0.5f
+/* "A tad more" than every other shot's own PROJECTILE_TRAIL_BASE_SIZE/
+ * PROJECTILE_TRAIL_MAX_ALPHA - a small bump, not the dramatic one Cruzader's
+ * own rockets get (CRUZADER_ROCKET_TRAIL_*). Rendered fixed white
+ * (see update_projectile_trails), not the shard's own light-blue accent
+ * color, per "trailing WHITE smoke" - same "captured, not the projectile's
+ * own color" carve-out precedent as Cruzader's own rocket trail. */
+#define ANTARTICA_SHARD_TRAIL_SIZE_MULTIPLIER 1.25f
+#define ANTARTICA_SHARD_TRAIL_MAX_ALPHA 30
+
+/* Mode 2: Ice Storm - 16 shards (ANTARTICA_ICE_STORM_SHOT_COUNT) spanning
+ * Antartica's own full frontal 180 degrees (ANTARTICA_ICE_STORM_SPREAD_DEG),
+ * evenly spaced, centered straight up - like Shine's own omni burst
+ * (SHOOT_MODE_SHINE_OMNI), never persists as Player.shoot_mode: pressing
+ * key 2 fires the volley directly (see trigger_antartica_ice_storm in
+ * usecases/game_logic.c) and immediately reverts to mode 1, gated on its
+ * own 20s cooldown ("this has a 20 seconds cooldown" per spec, the same
+ * duration as Shine's own SHINE_OMNI_COOLDOWN). Each shard deals a full,
+ * unreduced hit - same precedent as every other multi-shot burst (Shine's
+ * own omni, C-24's own OMNI). */
+#define ANTARTICA_ICE_STORM_SHOT_COUNT 16
+#define ANTARTICA_ICE_STORM_SPREAD_DEG 180.0f
+#define ANTARTICA_ICE_STORM_COOLDOWN 20.0f
+
+/* Mode 3: Super Ice Beam - both Antartica and Frosty fire a continuous
+ * freezing beam, white/light-blue only, the same column-sweep mechanics as
+ * the power orb's own super beam (update_super_beam) but WITHOUT its heal
+ * or invincibility - see update_antartica_freezing_beam in
+ * usecases/game_logic.c. Never persists as Player.shoot_mode, same
+ * "trigger + immediate revert" pattern as Ice Storm above and Cruzader's
+ * own deflector orb - key 3 starts the 5s active window
+ * (antartica_freeze_beam_timer) immediately, and the moment that ends, the
+ * 30s cooldown (antartica_freeze_beam_cooldown_timer) begins. */
+#define ANTARTICA_FREEZE_BEAM_DURATION 5.0f
+#define ANTARTICA_FREEZE_BEAM_COOLDOWN 30.0f
+#define ANTARTICA_FREEZE_BEAM_WIDTH_MULTIPLIER 2.0f
+
+/* Frosty's own passive weapon - "2 shots per second," fires automatically
+ * (see update_frosty_fire), never gated on the fire key or Antartica's own
+ * shoot_mode the way every other ship's own moveset is. Visually "like
+ * C-24's projectiles" (draw_c24_sphere_shot's layered glow/body/hot-core/
+ * glint sphere), just "white and light blue only" instead of hue-cycling
+ * (see draw_frosty_snowball) plus "slightly increased" white trailing
+ * smoke (FROSTY_SNOWBALL_TRAIL_* below). */
+#define FROSTY_SNOWBALL_FIRE_COOLDOWN 0.5f /* 2 shots/sec */
+#define FROSTY_SNOWBALL_SPEED PLAYER_PROJECTILE_SPEED
+#define FROSTY_SNOWBALL_RADIUS 4.0f
+#define FROSTY_SNOWBALL_TRAIL_SIZE_MULTIPLIER 1.3f
+#define FROSTY_SNOWBALL_TRAIL_MAX_ALPHA 32
+
 #define BOSS_SCORE_STEP 500
 #define BOSS_HITS_INCREMENT 50
 /* The boss's own baseline size range, scaled up by BOSS_SIZE_MULTIPLIER -

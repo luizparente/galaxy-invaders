@@ -90,6 +90,22 @@ typedef enum Ship {
     SHIP_SHINE,
     SHIP_CRUZADER,
     SHIP_TWINS,
+    /* Antartica is the other exception to "one Player, one hitbox" besides
+     * SHIP_TWINS - but unlike the Twins, who share a single input-driven
+     * control point, Antartica and her sidekick Frosty are TWO fully
+     * independently controlled bodies at once: arrow keys fly Antartica
+     * herself (Player.x/y, same as every non-Twins ship), WASD flies Frosty
+     * (Player.frosty_x/frosty_y) - see InputCommand's own arrow_* / wasd_*
+     * fields and update_player's own SHIP_ANTARTICA branch in
+     * usecases/game_logic.c. Frosty fires its own passive snowball weapon
+     * automatically (update_frosty_fire) regardless of Antartica's own
+     * shoot_mode/fire key, and each body tracks its own life/alive flag
+     * independently (antartica_alive/antartica_life,
+     * frosty_alive/frosty_life) - the same "one can die while the other
+     * keeps going" rule SHIP_TWINS already has (see kill_antartica_body/
+     * kill_frosty), just with two different weapons instead of one shared
+     * one. */
+    SHIP_ANTARTICA,
     SHIP_COUNT,
 } Ship;
 
@@ -163,6 +179,26 @@ typedef enum ShootMode {
      * above. */
     SHOOT_MODE_TWINS_ALTERNATE, /* mode 1 (default): rigid formation flight */
     SHOOT_MODE_TWINS_MIRROR,    /* mode 2: right twin free-flies, left mirrors it */
+    /* Antartica's own 3-mode kit (see usecases/ship.c) - none of these are
+     * reachable by any other ship. Frosty's own passive snowball fire
+     * (update_frosty_fire) is completely separate from all three - it fires
+     * on its own timer regardless of which of these is active. */
+    SHOOT_MODE_ANTARTICA_SHARDS, /* mode 1 (default): twin ice shards, straight ahead - Shine's own mode 1, recolored */
+    /* Mode 2: like SHOOT_MODE_SHINE_OMNI, never actually persists as
+     * Player.shoot_mode - pressing key 2 directly fires a 16-shard fan
+     * across Antartica's own frontal 180 degrees (see
+     * trigger_antartica_ice_storm in usecases/game_logic.c) and immediately
+     * puts shoot_mode back to mode 1, gated on
+     * Player.antartica_ice_storm_cooldown_timer. */
+    SHOOT_MODE_ANTARTICA_ICE_STORM,
+    /* Mode 3: like SHOOT_MODE_CRUZADER_ORB, never actually persists as
+     * Player.shoot_mode - pressing key 3 starts a 5s active window
+     * (Player.antartica_freeze_beam_timer) during which both Antartica and
+     * Frosty fire a continuous beam (see update_antartica_freezing_beam),
+     * then immediately puts shoot_mode back to mode 1. Unlike the power
+     * orb's own super beam, this neither heals nor grants invincibility -
+     * see the timer's own doc comment on Player. */
+    SHOOT_MODE_ANTARTICA_FREEZE_BEAM,
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -243,6 +279,55 @@ typedef struct Player {
     float twins_right_life, twins_left_life;
     bool twins_right_alive, twins_left_alive;
     bool twins_next_shot_is_right;
+
+    /* Antartica's own dual-body state - unused by every other ship. Unlike
+     * The Twins above, x/y remain Antartica's own actual on-screen
+     * position, driven directly by arrow keys alone (see InputCommand's own
+     * arrow_* fields and update_player's SHIP_ANTARTICA branch) exactly
+     * like every non-Twins ship's x/y already are - frosty_x/frosty_y are
+     * Frosty's own actual position, driven independently by WASD alone
+     * (InputCommand's own wasd_* fields). antartica_life/frosty_life and
+     * antartica_alive/frosty_alive are each body's own independent life
+     * pool/status - the same "one can die while the other keeps going" rule
+     * twins_right_life/twins_left_life etc. already establish (see
+     * kill_antartica_body/kill_frosty in usecases/game_logic.c) - Player.life
+     * itself stays unused by SHIP_ANTARTICA, same carve-out as SHIP_TWINS. */
+    float frosty_x, frosty_y;
+    float antartica_life, frosty_life;
+    bool antartica_alive, frosty_alive;
+
+    /* Frosty's own passive weapon (update_frosty_fire) - fires
+     * automatically at FROSTY_SNOWBALL_FIRE_COOLDOWN's flat rate whenever
+     * frosty_alive, completely independent of Antartica's own fire key or
+     * shoot_mode (see update_player_firing). Unused by every other ship. */
+    float frosty_fire_cooldown;
+
+    /* Antartica's own mode 2 (SHOOT_MODE_ANTARTICA_ICE_STORM) cooldown -
+     * same "gates re-trigger only, no lockout phase" role as
+     * shine_omni_cooldown_timer above (see trigger_antartica_ice_storm in
+     * usecases/game_logic.c). Unused by every other ship. */
+    float antartica_ice_storm_cooldown_timer;
+
+    /* Antartica's own mode 3 (SHOOT_MODE_ANTARTICA_FREEZE_BEAM) two-phase
+     * timer - the same duration/cooldown pairing cruzader_orb_timer/
+     * cruzader_orb_cooldown_timer above use: antartica_freeze_beam_timer
+     * counts down the 5s active window (during which
+     * update_antartica_freezing_beam sweeps a column from each of
+     * Antartica/Frosty still alive - see trigger_antartica_freeze_beam),
+     * then antartica_freeze_beam_cooldown_timer starts its own 30s
+     * countdown the instant the window ends. Deliberately never checked by
+     * kill_player/damage_player/kill_antartica_body/damage_antartica_body/
+     * kill_frosty/damage_frosty's own immunity guards - unlike the power
+     * orb's own super_beam_timer, this grants neither invincibility nor a
+     * heal, only the beam sweep itself. antartica_freeze_beam_boss_hit_timer
+     * paces repeat boss damage while in contact, the same role
+     * Boss.beam_contact_timer plays for the power orb's own super beam, kept
+     * as its own separate field so the two beams' boss-contact pacing can
+     * never interfere with each other if both were ever active at once.
+     * Unused by every other ship. */
+    float antartica_freeze_beam_timer;
+    float antartica_freeze_beam_cooldown_timer;
+    float antartica_freeze_beam_boss_hit_timer;
 } Player;
 
 /* A CPU-flown escort dispatched by The Mothership (see
@@ -390,6 +475,13 @@ typedef enum ProjectileKind {
      * trigger_power_cannon_explosion) rather than only harming whatever it
      * directly touched. */
     PROJECTILE_KIND_CRUZADER_ROCKET,
+    /* Frosty's own passive weapon (see update_frosty_fire in
+     * usecases/game_logic.c) - the only thing that distinguishes its shots
+     * from Antartica's own ice shards despite both sharing
+     * Projectile.style_ship == SHIP_ANTARTICA (see draw_frosty_snowball vs
+     * draw_antartica_shard in adapters/sdl_renderer.c, and
+     * player_shot_half_extents' own SHIP_ANTARTICA branch). */
+    PROJECTILE_KIND_FROSTY_SNOWBALL,
 } ProjectileKind;
 
 /* Drives an enemy shot's rendering (adapters/sdl_renderer.c) and hitbox

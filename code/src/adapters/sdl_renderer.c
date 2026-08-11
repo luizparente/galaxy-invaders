@@ -8,6 +8,7 @@
 #include "adapters/graphics_primitives.h"
 #include "adapters/pixel_font.h"
 #include "adapters/ship_sprites.h"
+#include "adapters/frosty_sprite.h"
 #include "adapters/cruzader_rocket_sprite.h"
 #include "adapters/enemy_sprites.h"
 #include "adapters/menu_ship_sprite.h"
@@ -227,6 +228,25 @@ static void draw_player(SdlRendererCtx *ctx, const GameState *gs) {
         }
         if (p->twins_left_alive) {
             draw_ship_sprite(ctx, &kShipSprites[SHIP_TWINS], p->twins_left_x, p->y, w, h, tint);
+        }
+        return;
+    }
+
+    if (gs->selected_ship == SHIP_ANTARTICA) {
+        /* Two independently-positioned blits of two DIFFERENT sprite sheets
+         * - unlike SHIP_TWINS above (same sheet, same size, twice), Frosty
+         * is its own distinct sprite (kFrostySpritePixels, not part of
+         * kShipSprites since it isn't a playable Ship of its own) at
+         * ANTARTICA_FROSTY_SIZE_MULTIPLIER Antartica's own size, each
+         * skipped once that body's own life is spent. */
+        if (p->antartica_alive) {
+            draw_ship_sprite(ctx, &kShipSprites[SHIP_ANTARTICA], p->x, p->y, w, h, tint);
+        }
+        if (p->frosty_alive) {
+            static const ShipSpriteSheet kFrostySpriteSheet = {kFrostySpritePixels, FROSTY_SPRITE_SIZE};
+            float fw = w * ANTARTICA_FROSTY_SIZE_MULTIPLIER;
+            float fh = h * ANTARTICA_FROSTY_SIZE_MULTIPLIER;
+            draw_ship_sprite(ctx, &kFrostySpriteSheet, p->frosty_x, p->frosty_y, fw, fh, tint);
         }
         return;
     }
@@ -611,6 +631,69 @@ static void draw_shine_shard(SdlRendererCtx *ctx, const Projectile *pr, float sc
     gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
 }
 
+/* Antartica's own ice shards (modes 1/2 alike - see Projectile.style_ship) -
+ * "same as Shine's #1, but made of ice, so the accent color is light blue"
+ * per spec: the same layered glow/body/core/glint icicle construction as
+ * draw_shine_shard above (shine_shard_layer, reused as pure geometry -
+ * Shine's own visual language, recolored, not shared state), just
+ * accent-colored light blue instead of Shine's white/grey. Always oriented
+ * along the shot's own actual travel direction - Antartica has no spinning
+ * "spiral" mode of her own, so this never needs draw_shine_shard's own mode
+ * 3 spin branch. */
+static void draw_antartica_shard(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    static const Color kAntarticaWhite = {245, 250, 255, 255};
+    static const Color kAntarticaAccent = {110, 190, 255, 255};
+
+    float half_len = ANTARTICA_SHARD_LENGTH * 0.5f * scale;
+    float half_wid = ANTARTICA_SHARD_WIDTH * 0.5f * scale;
+
+    float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+    float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+    float dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+    float px = -dy, py = dx;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = kAntarticaAccent;
+    glow.a = 70;
+    shine_shard_layer(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.3f, half_len * 0.9f, half_wid * 2.2f, glow);
+
+    shine_shard_layer(ctx->renderer, cx, cy, dx, dy, px, py, half_len, half_len * 0.6f, half_wid, kAntarticaAccent);
+
+    shine_shard_layer(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 0.85f, half_len * 0.4f, half_wid * 0.55f,
+                       kAntarticaWhite);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
+}
+
+/* Frosty's own snowball - "like C-24's projectiles, but the colors are
+ * white and light blue only" per spec: the same layered glow/body/hot-core/
+ * glint sphere as draw_c24_sphere_shot above, just a fixed light-blue base
+ * instead of C-24's own continuously hue-cycling one (no phase_seed/time
+ * input needed here at all). */
+static void draw_frosty_snowball(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    static const Color kFrostyBlue = {120, 195, 255, 255};
+
+    float r = FROSTY_SNOWBALL_RADIUS * scale;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = kFrostyBlue;
+    glow.a = 70;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 2.2f, glow);
+    glow.a = 130;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 1.4f, glow);
+
+    gp_fill_circle(ctx->renderer, cx, cy, r, kFrostyBlue);
+
+    Color hot = lerp_color(kFrostyBlue, kWhite, 0.55f);
+    gp_fill_circle(ctx->renderer, cx, cy, r * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
+}
+
 /* Cruzader's own mode 1 (twin wingtip bolts) - "green with blue accents"
  * per spec: the same layered glow/core/hot/glint capsule_bolt construction
  * draw_enemy_beam uses, oriented along the shot's own (always-straight-up)
@@ -783,6 +866,14 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
             draw_twins_bolt(ctx, pr, scale);
             return;
         }
+        if (pr->style_ship == SHIP_ANTARTICA) {
+            if (pr->kind == PROJECTILE_KIND_FROSTY_SNOWBALL) {
+                draw_frosty_snowball(ctx, pr, scale);
+            } else {
+                draw_antartica_shard(ctx, pr, scale);
+            }
+            return;
+        }
         switch (pr->kind) {
             case PROJECTILE_KIND_RAPID:
                 draw_rapid_shot(ctx, pr, scale);
@@ -891,7 +982,6 @@ static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
     float base_w = PLAYER_PROJECTILE_W * gs->scale * SUPER_BEAM_WIDTH_MULTIPLIER;
     float width_factor = 1.0f + SUPER_BEAM_WIDTH_PULSE_AMOUNT * sinf(gs->time_elapsed * SUPER_BEAM_WIDTH_PULSE_SPEED);
     float beam_w = base_w * width_factor;
-    float top = p->y - PLAYER_HEIGHT * gs->scale / 2.0f;
     float alpha_pulse = 0.75f + 0.25f * sinf(gs->time_elapsed * 18.0f);
 
     float hue = fmodf(gs->time_elapsed * SUPER_BEAM_COLOR_CYCLE_SPEED, 360.0f);
@@ -906,21 +996,70 @@ static void draw_super_beam(SdlRendererCtx *ctx, const GameState *gs) {
     core.a = (unsigned char)(235.0f * alpha_pulse);
 
     /* One column per currently-alive twin (matches update_super_beam's own
-     * player_beam_origin_xs in usecases/game_logic.c exactly, so the beam
+     * player_beam_origins in usecases/game_logic.c exactly, so the beam
      * always looks like it's hitting precisely what it actually hits) -
-     * every other ship still draws its single column at p->x, unchanged. */
-    float origins[2];
+     * every other ship still draws its single column at p->x/p->y,
+     * unchanged. Both x AND y are per-origin (not a single shared y) - The
+     * Twins always share y so that's no different in practice, but
+     * Antartica and Frosty can be at very different heights (independent
+     * WASD/arrow control), so each column has to start from its own actual
+     * body's y, not always Antartica's own. */
+    float origin_x[2], origin_y[2];
     int origin_count = 1;
-    origins[0] = p->x;
+    origin_x[0] = p->x;
+    origin_y[0] = p->y;
     if (gs->selected_ship == SHIP_TWINS) {
         origin_count = 0;
-        if (p->twins_right_alive) origins[origin_count++] = p->twins_right_x;
-        if (p->twins_left_alive) origins[origin_count++] = p->twins_left_x;
+        if (p->twins_right_alive) { origin_x[origin_count] = p->twins_right_x; origin_y[origin_count] = p->y; origin_count++; }
+        if (p->twins_left_alive) { origin_x[origin_count] = p->twins_left_x; origin_y[origin_count] = p->y; origin_count++; }
+    } else if (gs->selected_ship == SHIP_ANTARTICA) {
+        origin_count = 0;
+        if (p->antartica_alive) { origin_x[origin_count] = p->x; origin_y[origin_count] = p->y; origin_count++; }
+        if (p->frosty_alive) { origin_x[origin_count] = p->frosty_x; origin_y[origin_count] = p->frosty_y; origin_count++; }
     }
 
     for (int i = 0; i < origin_count; i++) {
-        gp_fill_rect(ctx->renderer, origins[i] - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
-        gp_fill_rect(ctx->renderer, origins[i] - beam_w / 2.0f, 0.0f, beam_w, top, core);
+        float top = origin_y[i] - PLAYER_HEIGHT * gs->scale / 2.0f;
+        gp_fill_rect(ctx->renderer, origin_x[i] - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
+        gp_fill_rect(ctx->renderer, origin_x[i] - beam_w / 2.0f, 0.0f, beam_w, top, core);
+    }
+}
+
+/* Antartica's own mode 3 (SHOOT_MODE_ANTARTICA_FREEZE_BEAM) - "both
+ * Antartica and Frosty fire a continuous freezing beam... only two colors
+ * are white and light blue" per spec: same layered glow/core column
+ * construction as draw_super_beam above, just a fixed light-blue/white
+ * palette (no hue-cycling) and drawn from each body's own actual y (not a
+ * single shared p->y the way draw_super_beam's own Twins/Antartica origins
+ * are - Antartica and Frosty can be at different heights, see
+ * update_antartica_freezing_beam in usecases/game_logic.c, which sweeps the
+ * same way). */
+static void draw_antartica_freezing_beam(SdlRendererCtx *ctx, const GameState *gs) {
+    const Player *p = &gs->player;
+    if (p->antartica_freeze_beam_timer <= 0.0f || !p->alive) return;
+
+    float base_w = PLAYER_PROJECTILE_W * gs->scale * ANTARTICA_FREEZE_BEAM_WIDTH_MULTIPLIER;
+    float width_factor = 1.0f + SUPER_BEAM_WIDTH_PULSE_AMOUNT * sinf(gs->time_elapsed * SUPER_BEAM_WIDTH_PULSE_SPEED);
+    float beam_w = base_w * width_factor;
+    float alpha_pulse = 0.75f + 0.25f * sinf(gs->time_elapsed * 18.0f);
+
+    static const Color kFreezeBeamAccent = {110, 190, 255, 255};
+    Color glow = lerp_color(kFreezeBeamAccent, kWhite, 0.15f);
+    glow.a = (unsigned char)(70.0f * alpha_pulse);
+    Color core = lerp_color(kFreezeBeamAccent, kWhite, 0.6f);
+    core.a = (unsigned char)(235.0f * alpha_pulse);
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
+    if (p->antartica_alive) {
+        float top = p->y - PLAYER_HEIGHT * gs->scale / 2.0f;
+        gp_fill_rect(ctx->renderer, p->x - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
+        gp_fill_rect(ctx->renderer, p->x - beam_w / 2.0f, 0.0f, beam_w, top, core);
+    }
+    if (p->frosty_alive) {
+        float top = p->frosty_y - PLAYER_HEIGHT * gs->scale * ANTARTICA_FROSTY_SIZE_MULTIPLIER / 2.0f;
+        gp_fill_rect(ctx->renderer, p->frosty_x - beam_w * 1.2f, 0.0f, beam_w * 2.4f, top, glow);
+        gp_fill_rect(ctx->renderer, p->frosty_x - beam_w / 2.0f, 0.0f, beam_w, top, core);
     }
 }
 
@@ -1012,6 +1151,7 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) draw_projectile(ctx, gs, &gs->enemy_shots[i], false);
     for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) draw_trail_particle(ctx, &gs->trail_particles[i]);
     draw_super_beam(ctx, gs);
+    draw_antartica_freezing_beam(ctx, gs);
     for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) draw_child(ctx, gs, &gs->children[i]);
     draw_cruzader_orb(ctx, gs);
     draw_player(ctx, gs);
@@ -1078,6 +1218,20 @@ static void draw_twins_life_bars(SdlRendererCtx *ctx, const GameState *gs) {
     draw_one_life_bar(ctx, gs->scale, margin, margin + h + gap, w, h, gs->player.twins_left_life, "L");
 }
 
+/* Antartica's own dual life bars - same "one can die while the other keeps
+ * going" rationale as draw_twins_life_bars above, just "A"/"F" prefixes for
+ * Antartica/Frosty instead of "R"/"L". A dead body's own life is already
+ * clamped to 0 by kill_antartica_body/kill_frosty, so its bar simply renders
+ * empty/red - no separate "dead" state needed. */
+static void draw_antartica_life_bars(SdlRendererCtx *ctx, const GameState *gs) {
+    float margin = 12.0f * gs->scale;
+    float w = 130.0f * gs->scale;
+    float h = 16.0f * gs->scale;
+    float gap = 4.0f * gs->scale;
+    draw_one_life_bar(ctx, gs->scale, margin, margin, w, h, gs->player.antartica_life, "A");
+    draw_one_life_bar(ctx, gs->scale, margin, margin + h + gap, w, h, gs->player.frosty_life, "F");
+}
+
 /* Top-center life bar for the boss fight: same grey-outline/red-fill
  * language as the player's life bar (draw_life_bar), with a "BOSS" label
  * centered underneath so it doesn't get read as a second player bar. Kept
@@ -1134,6 +1288,7 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
     "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
     "SHARDS", "OMNI", "SPIRAL", "TWIN", "ORB", "ROCKETS", "ALTERNATE", "MIRROR",
+    "ICE SHARDS", "ICE STORM", "FREEZE BEAM",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -1172,7 +1327,11 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
                             (slot_mode == SHOOT_MODE_SHINE_OMNI && p->shine_omni_cooldown_timer > 0.0f) ||
                             (slot_mode == SHOOT_MODE_CRUZADER_ORB && p->cruzader_orb_cooldown_timer > 0.0f) ||
                             (slot_mode == SHOOT_MODE_TWINS_MIRROR &&
-                             !(p->twins_right_alive && p->twins_left_alive));
+                             !(p->twins_right_alive && p->twins_left_alive)) ||
+                            (slot_mode == SHOOT_MODE_ANTARTICA_ICE_STORM &&
+                             p->antartica_ice_storm_cooldown_timer > 0.0f) ||
+                            (slot_mode == SHOOT_MODE_ANTARTICA_FREEZE_BEAM &&
+                             p->antartica_freeze_beam_cooldown_timer > 0.0f);
 
         Color outline = active ? kGreen : (cooling_down ? kRed : kYellow);
         gp_fill_rect(ctx->renderer, x, y0, box, box, outline);
@@ -1220,6 +1379,8 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
 static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
     if (gs->selected_ship == SHIP_TWINS) {
         draw_twins_life_bars(ctx, gs);
+    } else if (gs->selected_ship == SHIP_ANTARTICA) {
+        draw_antartica_life_bars(ctx, gs);
     } else {
         draw_life_bar(ctx, gs);
     }
@@ -1246,6 +1407,16 @@ static void draw_hud(SdlRendererCtx *ctx, const GameState *gs) {
                      margin + score_line_height + margin * 0.4f, beam_size, c, beam_buf);
     }
 
+    if (gs->selected_ship == SHIP_ANTARTICA && gs->player.antartica_freeze_beam_timer > 0.0f) {
+        char beam_buf[24];
+        snprintf(beam_buf, sizeof(beam_buf), "FREEZE BEAM %.1fs", (double)gs->player.antartica_freeze_beam_timer);
+        float beam_size = 2.2f * gs->scale;
+        float beam_w = pf_text_width(beam_buf, beam_size);
+        static const Color kFreezeBeamHudColor = {150, 210, 255, 255};
+        float score_line_height = 7.0f * size; /* the pixel font is 7 dots tall */
+        pf_draw_text(ctx->renderer, (float)gs->screen_w - beam_w - margin,
+                     margin + score_line_height + margin * 0.4f, beam_size, kFreezeBeamHudColor, beam_buf);
+    }
 }
 
 static void draw_centered(SdlRendererCtx *ctx, const GameState *gs, const char *text, float y, float size, Color c) {
@@ -1473,7 +1644,7 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
 }
 
 static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE", "CRUZADER",
-                                                     "THE TWINS"};
+                                                     "THE TWINS", "ANTARTICA"};
 
 /* Ad copy for the ship-select screen's description panel - written from
  * the same capsule descriptions each ship was specced with ("versatile
@@ -1503,6 +1674,9 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "FOR EVIL.",
     "INSEPARABLE BROTHERS IN ARMS, THE TWINS ARE TRUE SPACE GLADIATORS. "
     "THEIR FIGHT NEVER STOPS, AS THE EVIL NEVER SLEEPS.",
+    "ANTARTICA COMMANDS THE COLD OF DEEP SPACE ITSELF, NEVER FLYING "
+    "WITHOUT HER LOYAL SIDEKICK FROSTY BY HER SIDE. EACH ONE ANSWERS TO "
+    "ITS OWN CONTROLS, FREEZING ANYTHING FOOLISH ENOUGH TO CROSS THEM.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};

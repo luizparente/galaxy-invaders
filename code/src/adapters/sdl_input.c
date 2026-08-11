@@ -49,6 +49,19 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     out->move_down = down;
     out->fire_held = fire;
 
+    /* Pure arrow/WASD state, with no merging - see InputCommand's own
+     * arrow_* / wasd_* doc comment. Only ever consumed by SHIP_ANTARTICA's
+     * own movement; every other ship keeps reading move_left/right/up/down
+     * above, unaffected. */
+    out->arrow_left = ks[SDL_SCANCODE_LEFT];
+    out->arrow_right = ks[SDL_SCANCODE_RIGHT];
+    out->arrow_up = ks[SDL_SCANCODE_UP];
+    out->arrow_down = ks[SDL_SCANCODE_DOWN];
+    out->wasd_left = ks[SDL_SCANCODE_A];
+    out->wasd_right = ks[SDL_SCANCODE_D];
+    out->wasd_up = ks[SDL_SCANCODE_W];
+    out->wasd_down = ks[SDL_SCANCODE_S];
+
     out->confirm_pressed = confirm && !ctx->prev_confirm;
     out->back_pressed = back && !ctx->prev_back;
     out->nav_up_pressed = up && !ctx->prev_up;

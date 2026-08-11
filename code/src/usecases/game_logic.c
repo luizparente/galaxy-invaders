@@ -116,6 +116,26 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
         *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
         return;
     }
+    /* Antartica's own shots: Frosty's own snowball (PROJECTILE_KIND_FROSTY_SNOWBALL)
+     * is a sphere, same round-hitbox construction as C-24's own sphere shots
+     * above; Antartica's own ice shards (every other kind she fires) use the
+     * same oriented-bounding-box construction as Shine/Cruzader/Twins above. */
+    if (pr->style_ship == SHIP_ANTARTICA) {
+        if (pr->kind == PROJECTILE_KIND_FROSTY_SNOWBALL) {
+            float r = scaled(gs, FROSTY_SNOWBALL_RADIUS);
+            *half_w = r;
+            *half_h = r;
+            return;
+        }
+        float length = scaled(gs, ANTARTICA_SHARD_LENGTH);
+        float width = scaled(gs, ANTARTICA_SHARD_WIDTH);
+        float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
+        float dx = speed > 0.0f ? pr->vx / speed : 0.0f;
+        float dy = speed > 0.0f ? pr->vy / speed : -1.0f;
+        *half_w = fabsf(dx) * length / 2.0f + fabsf(dy) * width / 2.0f;
+        *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -725,6 +745,18 @@ static void reset_run(GameState *gs) {
     gs->player.twins_left_x = gs->player.x - scaled(gs, TWINS_FORMATION_GAP) / 2.0f;
     gs->player.twins_mirror_center_x = gs->player.x;
 
+    gs->player.antartica_life = PLAYER_LIFE_MAX;
+    gs->player.frosty_life = PLAYER_LIFE_MAX;
+    gs->player.antartica_alive = true;
+    gs->player.frosty_alive = true;
+    gs->player.frosty_fire_cooldown = 0.0f;
+    gs->player.antartica_ice_storm_cooldown_timer = 0.0f;
+    gs->player.antartica_freeze_beam_timer = 0.0f;
+    gs->player.antartica_freeze_beam_cooldown_timer = 0.0f;
+    gs->player.antartica_freeze_beam_boss_hit_timer = 0.0f;
+    gs->player.frosty_x = gs->player.x - scaled(gs, TWINS_FORMATION_GAP);
+    gs->player.frosty_y = gs->player.y;
+
     gs->score = 0;
     gs->time_elapsed = 0.0f;
     gs->spawn_timer = 0.5f;
@@ -878,6 +910,11 @@ static void kill_player(GameState *gs, EventQueue *events) {
      * only other place these get cleared. */
     gs->player.twins_right_alive = false;
     gs->player.twins_left_alive = false;
+    /* Harmless no-op for every ship but SHIP_ANTARTICA - see
+     * kill_antartica_body/kill_frosty, the only other places these get
+     * cleared. */
+    gs->player.antartica_alive = false;
+    gs->player.frosty_alive = false;
     spawn_explosion(gs, gs->player.x, gs->player.y, scaled(gs, PLAYER_WIDTH));
     event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
     gs->last_game_score = gs->score;
@@ -991,6 +1028,90 @@ static void damage_twin(GameState *gs, EventQueue *events, bool right, float amo
     }
 }
 
+/* Antartica's own per-body death (Antartica herself, as opposed to Frosty -
+ * see kill_frosty below) - modeled on kill_twin, but the two Antartica
+ * bodies never share a control point or a weapon the way the Twins do:
+ * Frosty keeps flying (its own independent WASD control) and firing (its
+ * own autonomous snowballs, see update_frosty_fire) even after Antartica
+ * herself dies here, and Antartica's own 3-mode arsenal simply goes silent
+ * once she's the one who died (see the p->antartica_alive guards in
+ * update_antartica_shards/trigger_antartica_ice_storm/
+ * trigger_antartica_freeze_beam). Only once BOTH are gone does the whole
+ * Player die via kill_player - same "both down" rule as the Twins. */
+static void kill_antartica_body(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!p->antartica_alive) return;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+
+    p->antartica_alive = false;
+    p->antartica_life = 0.0f;
+    spawn_explosion(gs, p->x, p->y, scaled(gs, PLAYER_WIDTH) * ship_size_multiplier(SHIP_ANTARTICA));
+    event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
+
+    if (!p->antartica_alive && !p->frosty_alive) {
+        kill_player(gs, events);
+    }
+}
+
+/* Antartica's own per-body damage_player counterpart - same immunity guards
+ * and ship_damage_taken_multiplier scaling (keyed on SHIP_ANTARTICA's own
+ * Strength rating for both bodies alike, same "one ship-level rating shared
+ * by both hitboxes" precedent SHIP_TWINS already sets) as damage_twin, just
+ * against antartica_life instead of Player.life (unused by SHIP_ANTARTICA -
+ * see the Player struct's own doc comment). */
+static void damage_antartica_body(GameState *gs, EventQueue *events, float amount) {
+    Player *p = &gs->player;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+    if (!p->antartica_alive) return;
+
+    p->antartica_life -= amount * ship_damage_taken_multiplier(SHIP_ANTARTICA);
+    if (p->antartica_life <= 0.0f) {
+        p->antartica_life = 0.0f;
+        kill_antartica_body(gs, events);
+    }
+}
+
+/* Frosty's own death - the counterpart to kill_antartica_body above.
+ * Antartica's own 3-mode arsenal is entirely unaffected by Frosty dying
+ * (she keeps flying and firing on her own); only Frosty's own autonomous
+ * snowball fire stops (see update_frosty_fire's own p->frosty_alive
+ * guard). */
+static void kill_frosty(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!p->frosty_alive) return;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+
+    p->frosty_alive = false;
+    p->frosty_life = 0.0f;
+    spawn_explosion(gs, p->frosty_x, p->frosty_y,
+                     scaled(gs, PLAYER_WIDTH) * ship_size_multiplier(SHIP_ANTARTICA) * ANTARTICA_FROSTY_SIZE_MULTIPLIER);
+    event_queue_push_sfx(events, SFX_PLAYER_DESTROYED);
+
+    if (!p->antartica_alive && !p->frosty_alive) {
+        kill_player(gs, events);
+    }
+}
+
+static void damage_frosty(GameState *gs, EventQueue *events, float amount) {
+    Player *p = &gs->player;
+    if (!p->alive) return;
+    if (p->super_beam_timer > 0.0f) return;
+    if (p->god_mode) return;
+    if (!p->frosty_alive) return;
+
+    p->frosty_life -= amount * ship_damage_taken_multiplier(SHIP_ANTARTICA);
+    if (p->frosty_life <= 0.0f) {
+        p->frosty_life = 0.0f;
+        kill_frosty(gs, events);
+    }
+}
+
 /* Shine's own mode 2 (SHOOT_MODE_SHINE_OMNI): fires SHINE_OMNI_SHOT_COUNT
  * shards in every direction at once, gated on Player.shine_omni_cooldown_timer
  * (decremented unconditionally in update_player_firing, the same pattern
@@ -1035,6 +1156,55 @@ static void trigger_cruzader_orb(GameState *gs, EventQueue *events) {
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
+/* Antartica's own mode 2 (SHOOT_MODE_ANTARTICA_ICE_STORM): like
+ * trigger_shine_omni_burst above, fires ANTARTICA_ICE_STORM_SHOT_COUNT
+ * shards evenly spanning her own frontal ANTARTICA_ICE_STORM_SPREAD_DEG
+ * degrees (centered straight up) all at once, gated on
+ * Player.antartica_ice_storm_cooldown_timer, and never actually assigns its
+ * own ShootMode to p->shoot_mode - intercepted directly from
+ * update_shoot_mode_switch below and immediately leaves shoot_mode at mode 1
+ * (SHOOT_MODE_ANTARTICA_SHARDS). Only Antartica herself fires this - Frosty
+ * plays no part in it (contrast the freezing beam below). A no-op while
+ * Antartica herself is dead or the burst is already on cooldown, same
+ * "silently does nothing" convention every other mode's own switch already
+ * follows when it's not actually available. */
+static void trigger_antartica_ice_storm(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!p->antartica_alive) return;
+    if (p->antartica_ice_storm_cooldown_timer > 0.0f) return;
+
+    float speed = scaled(gs, ANTARTICA_SHARD_SPEED);
+    float step_deg = ANTARTICA_ICE_STORM_SPREAD_DEG / (float)(ANTARTICA_ICE_STORM_SHOT_COUNT - 1);
+    float start_deg = -ANTARTICA_ICE_STORM_SPREAD_DEG / 2.0f;
+    for (int k = 0; k < ANTARTICA_ICE_STORM_SHOT_COUNT; k++) {
+        float angle = deg_to_rad(start_deg + step_deg * (float)k);
+        float dx = sinf(angle), dy = -cosf(angle);
+        spawn_player_shot(gs, p->x, p->y, dx * speed, dy * speed, PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE);
+    }
+    p->antartica_ice_storm_cooldown_timer = ANTARTICA_ICE_STORM_COOLDOWN;
+    p->shoot_mode = ship_shoot_mode_for_slot(SHIP_ANTARTICA, 0);
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Antartica's own mode 3 (SHOOT_MODE_ANTARTICA_FREEZE_BEAM): like
+ * trigger_cruzader_orb above, starts a 5s active window
+ * (antartica_freeze_beam_timer, see update_antartica_freezing_beam for the
+ * actual beam sweep) and never actually assigns its own ShootMode to
+ * p->shoot_mode - intercepted directly from update_shoot_mode_switch below
+ * and immediately leaves shoot_mode at mode 1 (SHOOT_MODE_ANTARTICA_SHARDS).
+ * Gated on Antartica herself being alive (same as Ice Storm above) - if
+ * she's the one who died, only Frosty's own passive snowball fire remains,
+ * her own 3-mode arsenal (freezing beam included) goes silent. */
+static void trigger_antartica_freeze_beam(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!p->antartica_alive) return;
+    if (p->antartica_freeze_beam_timer > 0.0f || p->antartica_freeze_beam_cooldown_timer > 0.0f) return;
+
+    p->antartica_freeze_beam_timer = ANTARTICA_FREEZE_BEAM_DURATION;
+    p->shoot_mode = ship_shoot_mode_for_slot(SHIP_ANTARTICA, 0);
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
 /* Mode switching (1-5 number keys) is locked out for the whole duration of
  * a rapid-fire burst - the player is committed to that automatic volley
  * (see update_rapid_fire). Once the burst ends, update_rapid_fire itself
@@ -1065,6 +1235,14 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
     }
     if (requested == SHOOT_MODE_CRUZADER_ORB) {
         trigger_cruzader_orb(gs, events);
+        return;
+    }
+    if (requested == SHOOT_MODE_ANTARTICA_ICE_STORM) {
+        trigger_antartica_ice_storm(gs, events);
+        return;
+    }
+    if (requested == SHOOT_MODE_ANTARTICA_FREEZE_BEAM) {
+        trigger_antartica_freeze_beam(gs, events);
         return;
     }
     if (requested == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) return;
@@ -1281,6 +1459,49 @@ static void update_shine_shards(GameState *gs, const InputCommand *input, EventQ
     spawn_player_shot(gs, p->x - offset, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
     spawn_player_shot(gs, p->x + offset, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
     p->fire_cooldown = SHINE_SHARDS_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Antartica's own mode 1 (default): the same twin-shard pattern as
+ * update_shine_shards above (same spacing/damage-halving construction),
+ * just her own kept-independent ANTARTICA_* constants and style_ship (see
+ * draw_antartica_shard in adapters/sdl_renderer.c for the ice recolor).
+ * Gated on Antartica herself being alive - if she's the one who died, her
+ * own 3-mode arsenal goes silent (Frosty's own passive fire is unaffected,
+ * see update_frosty_fire below). */
+static void update_antartica_shards(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!p->antartica_alive) return;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float offset = scaled(gs, ANTARTICA_TWIN_SHARD_OFFSET_X);
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float vy = -scaled(gs, ANTARTICA_SHARD_SPEED);
+    float damage = BASE_PLAYER_DAMAGE * ANTARTICA_TWIN_SHARD_DAMAGE_MULTIPLIER;
+    spawn_player_shot(gs, p->x - offset, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
+    spawn_player_shot(gs, p->x + offset, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, damage);
+    p->fire_cooldown = ANTARTICA_SHARDS_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Frosty's own passive weapon - fires automatically at
+ * FROSTY_SNOWBALL_FIRE_COOLDOWN's flat rate ("2 shots per second" per spec)
+ * whenever alive, completely independent of Antartica's own fire key or
+ * shoot_mode (see update_player_firing, which calls this unconditionally
+ * once past the gates every other ship's own fire dispatch respects -
+ * the power orb's own super beam and Antartica's own freezing beam both
+ * pause it, same as everything else). Snowballs, not shards - see
+ * PROJECTILE_KIND_FROSTY_SNOWBALL/draw_frosty_snowball. */
+static void update_frosty_fire(GameState *gs, float dt, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->frosty_fire_cooldown > 0.0f) p->frosty_fire_cooldown -= dt;
+    if (!p->frosty_alive) return;
+    if (p->frosty_fire_cooldown > 0.0f) return;
+
+    float y = p->frosty_y - scaled(gs, PLAYER_HEIGHT) * ANTARTICA_FROSTY_SIZE_MULTIPLIER / 2.0f;
+    spawn_player_shot(gs, p->frosty_x, y, 0.0f, -scaled(gs, FROSTY_SNOWBALL_SPEED),
+                       PROJECTILE_KIND_FROSTY_SNOWBALL, false, BASE_PLAYER_DAMAGE);
+    p->frosty_fire_cooldown = FROSTY_SNOWBALL_FIRE_COOLDOWN;
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
@@ -1652,11 +1873,44 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         p->cruzader_orb_cooldown_timer -= dt;
         if (p->cruzader_orb_cooldown_timer < 0.0f) p->cruzader_orb_cooldown_timer = 0.0f;
     }
+    /* antartica_ice_storm_cooldown_timer ticks the same unconditional way as
+     * shine_omni_cooldown_timer above - unused by every other ship, so this
+     * is a harmless no-op for them. antartica_freeze_beam_timer/cooldown
+     * tick the same two-phase way cruzader_orb_timer/cooldown do just
+     * above, for the same reason (the beam stays active while shoot_mode
+     * has already reverted to mode 1 - see trigger_antartica_freeze_beam). */
+    if (p->antartica_ice_storm_cooldown_timer > 0.0f) {
+        p->antartica_ice_storm_cooldown_timer -= dt;
+        if (p->antartica_ice_storm_cooldown_timer < 0.0f) p->antartica_ice_storm_cooldown_timer = 0.0f;
+    }
+    if (p->antartica_freeze_beam_timer > 0.0f) {
+        p->antartica_freeze_beam_timer -= dt;
+        if (p->antartica_freeze_beam_timer <= 0.0f) {
+            p->antartica_freeze_beam_timer = 0.0f;
+            p->antartica_freeze_beam_cooldown_timer = ANTARTICA_FREEZE_BEAM_COOLDOWN;
+        }
+    } else if (p->antartica_freeze_beam_cooldown_timer > 0.0f) {
+        p->antartica_freeze_beam_cooldown_timer -= dt;
+        if (p->antartica_freeze_beam_cooldown_timer < 0.0f) p->antartica_freeze_beam_cooldown_timer = 0.0f;
+    }
 
     /* While the super beam is active it replaces every shooting mode
      * entirely - see update_super_beam, which fires automatically every
      * frame on its own. */
     if (p->super_beam_timer > 0.0f) return;
+
+    /* Antartica's own freezing beam (mode 3) replaces her own shard fire the
+     * same way the super beam replaces every mode above, for as long as it
+     * stays active (see update_antartica_freezing_beam, called separately
+     * from update_running - the actual sweep runs regardless of this early
+     * return). Frosty's own passive snowball fire pauses too while either
+     * beam is up (it's busy emitting the freezing beam alongside Antartica
+     * during that one); otherwise it fires on its own timer regardless of
+     * Antartica's own shoot_mode. */
+    if (gs->selected_ship == SHIP_ANTARTICA) {
+        if (p->antartica_freeze_beam_timer > 0.0f) return;
+        update_frosty_fire(gs, dt, events);
+    }
 
     switch (p->shoot_mode) {
         case SHOOT_MODE_RAPID: update_rapid_fire(gs, input, dt, events); break;
@@ -1672,8 +1926,11 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_CRUZADER_ROCKETS: update_cruzader_rockets(gs, input, events); break;
         case SHOOT_MODE_TWINS_ALTERNATE:
         case SHOOT_MODE_TWINS_MIRROR: update_twins_alternating_fire(gs, input, events); break;
+        case SHOOT_MODE_ANTARTICA_SHARDS: update_antartica_shards(gs, input, events); break;
         case SHOOT_MODE_SHINE_OMNI: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_CRUZADER_ORB: /* never persists as the active mode - see its own doc comment */
+        case SHOOT_MODE_ANTARTICA_ICE_STORM: /* never persists as the active mode - see its own doc comment */
+        case SHOOT_MODE_ANTARTICA_FREEZE_BEAM: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_NORMAL:
         case SHOOT_MODE_COUNT:
         default: update_normal_fire(gs, input, events); break;
@@ -1775,6 +2032,76 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
             if (p->twins_right_alive) p->twins_right_x = p->x;
             if (p->twins_left_alive) p->twins_left_x = p->x;
         }
+    } else if (gs->selected_ship == SHIP_ANTARTICA) {
+        /* Antartica's own sidekick Frosty is independently, fully
+         * controlled by WASD, while arrow keys alone drive Antartica
+         * herself - the one ship in the fleet with two separate,
+         * simultaneously-usable control schemes instead of a single shared
+         * input stream (contrast The Twins above, whose two bodies share
+         * one control point). Each body clamps to the screen and moves on
+         * its own; a dead body's own controls simply stop mattering, since
+         * nothing reads that body's position once its own alive flag is
+         * false - EXCEPT p->x/p->y themselves, kept mirrored onto whoever's
+         * actually still alive below, since those two fields are still what
+         * every ship-agnostic single-position consumer reads as "the
+         * player" (the boss's own chase target in update_boss, the
+         * whole-player death explosion in kill_player). Without this,
+         * killing Antartica alone would freeze p->x/p->y at her own last
+         * position forever - the boss would keep chasing a spot Frosty
+         * isn't anywhere near, and the power orb's own super beam would
+         * keep drawing Frosty's column starting from Antartica's old y
+         * (see player_beam_origins below, which reads Frosty's own
+         * frosty_x/frosty_y directly and so is unaffected by this either
+         * way - this mirroring is for every OTHER generic consumer that
+         * only ever reads gs->player.x/y). Same rationale as kill_twin's
+         * own control-transfer step for a lone surviving twin, just applied
+         * every frame here (via a fallback sync) rather than once at the
+         * moment of death, since Antartica/Frosty don't share one
+         * continuously-driven control point to begin with. */
+        float adx = 0.0f, ady = 0.0f;
+        if (input->arrow_left) adx -= 1.0f;
+        if (input->arrow_right) adx += 1.0f;
+        if (input->arrow_up) ady -= 1.0f;
+        if (input->arrow_down) ady += 1.0f;
+        if (adx != 0.0f && ady != 0.0f) {
+            const float inv_sqrt2 = 0.70710678f;
+            adx *= inv_sqrt2;
+            ady *= inv_sqrt2;
+        }
+        if (p->antartica_alive) {
+            p->x += adx * speed * dt;
+            p->y += ady * speed * dt;
+            if (p->x < half_w) p->x = half_w;
+            if (p->x > (float)gs->screen_w - half_w) p->x = (float)gs->screen_w - half_w;
+            if (p->y < min_y) p->y = min_y;
+            if (p->y > max_y) p->y = max_y;
+        }
+
+        float fdx = 0.0f, fdy = 0.0f;
+        if (input->wasd_left) fdx -= 1.0f;
+        if (input->wasd_right) fdx += 1.0f;
+        if (input->wasd_up) fdy -= 1.0f;
+        if (input->wasd_down) fdy += 1.0f;
+        if (fdx != 0.0f && fdy != 0.0f) {
+            const float inv_sqrt2 = 0.70710678f;
+            fdx *= inv_sqrt2;
+            fdy *= inv_sqrt2;
+        }
+        if (p->frosty_alive) {
+            float frosty_half_w = half_w * ANTARTICA_FROSTY_SIZE_MULTIPLIER;
+            float frosty_min_y = min_y * ANTARTICA_FROSTY_SIZE_MULTIPLIER;
+            p->frosty_x += fdx * speed * dt;
+            p->frosty_y += fdy * speed * dt;
+            if (p->frosty_x < frosty_half_w) p->frosty_x = frosty_half_w;
+            if (p->frosty_x > (float)gs->screen_w - frosty_half_w) p->frosty_x = (float)gs->screen_w - frosty_half_w;
+            if (p->frosty_y < frosty_min_y) p->frosty_y = frosty_min_y;
+            if (p->frosty_y > max_y) p->frosty_y = max_y;
+        }
+
+        if (!p->antartica_alive && p->frosty_alive) {
+            p->x = p->frosty_x;
+            p->y = p->frosty_y;
+        }
     } else {
         p->x += dx * speed * dt;
         p->y += dy * speed * dt;
@@ -1792,22 +2119,36 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
  * to the top of the screen. While active it needs no fire input: it just
  * sweeps every enemy and enemy projectile inside its width off the board,
  * every frame, for its whole duration. */
-/* The super beam's own column origin(s) for this frame: 1 entry (p->x, same
- * as ever) for every ship but SHIP_TWINS, or one per currently-alive twin
- * (1 or 2) for SHIP_TWINS - so the orb's super beam sweeps a column from
- * each twin still standing, not just a single column from whatever p->x
- * happens to mean for the ship's own current flight mode. Every other
- * ship's own single-column behavior is completely unchanged (out[0] = p->x,
- * count 1, identical to reading p->x directly). */
-static int player_beam_origin_xs(const GameState *gs, float out[2]) {
+/* The super beam's own column origin(s) for this frame: 1 entry (p->x/p->y,
+ * same as ever) for every ship but SHIP_TWINS/SHIP_ANTARTICA, or one per
+ * currently-alive body for those two - so the orb's super beam sweeps a
+ * column from each twin (or each of Antartica/Frosty) still standing, not
+ * just a single column from whatever p->x/p->y happens to mean for the
+ * ship's own current flight mode. Both x AND y are per-origin (not a single
+ * shared y) - The Twins always share y so that made no practical
+ * difference, but Antartica and Frosty can be at very different heights
+ * (independent WASD/arrow control - see update_player's own SHIP_ANTARTICA
+ * branch), so each column has to sweep from its own actual body's y, same
+ * "each body has its own beam" construction update_antartica_freezing_beam
+ * already uses. Every other ship's own single-column behavior is completely
+ * unchanged (out_x[0]/out_y[0] = p->x/p->y, count 1, identical to reading
+ * p->x/p->y directly). */
+static int player_beam_origins(const GameState *gs, float out_x[2], float out_y[2]) {
     const Player *p = &gs->player;
     if (gs->selected_ship == SHIP_TWINS) {
         int n = 0;
-        if (p->twins_right_alive) out[n++] = p->twins_right_x;
-        if (p->twins_left_alive) out[n++] = p->twins_left_x;
+        if (p->twins_right_alive) { out_x[n] = p->twins_right_x; out_y[n] = p->y; n++; }
+        if (p->twins_left_alive) { out_x[n] = p->twins_left_x; out_y[n] = p->y; n++; }
         return n;
     }
-    out[0] = p->x;
+    if (gs->selected_ship == SHIP_ANTARTICA) {
+        int n = 0;
+        if (p->antartica_alive) { out_x[n] = p->x; out_y[n] = p->y; n++; }
+        if (p->frosty_alive) { out_x[n] = p->frosty_x; out_y[n] = p->frosty_y; n++; }
+        return n;
+    }
+    out_x[0] = p->x;
+    out_y[0] = p->y;
     return 1;
 }
 
@@ -1826,15 +2167,15 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
     if (!p->alive) return;
 
     float beam_half_w = scaled(gs, PLAYER_PROJECTILE_W) * SUPER_BEAM_WIDTH_MULTIPLIER / 2.0f;
-    float origins[2];
-    int origin_count = player_beam_origin_xs(gs, origins);
+    float origin_x[2], origin_y[2];
+    int origin_count = player_beam_origins(gs, origin_x, origin_y);
 
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
         if (!e->alive) continue;
-        if (e->y >= p->y) continue;
         for (int o = 0; o < origin_count; o++) {
-            if (fabsf(e->x - origins[o]) <= beam_half_w + e->size / 2.0f) {
+            if (e->y >= origin_y[o]) continue;
+            if (fabsf(e->x - origin_x[o]) <= beam_half_w + e->size / 2.0f) {
                 destroy_enemy_for_score(gs, events, e);
                 break;
             }
@@ -1844,11 +2185,11 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
     for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
         Projectile *pr = &gs->enemy_shots[i];
         if (!pr->alive) continue;
-        if (pr->y >= p->y) continue;
         float pr_half_w, pr_half_h;
         enemy_shot_half_extents(pr, &pr_half_w, &pr_half_h);
         for (int o = 0; o < origin_count; o++) {
-            if (fabsf(pr->x - origins[o]) <= beam_half_w + pr_half_w) {
+            if (pr->y >= origin_y[o]) continue;
+            if (fabsf(pr->x - origin_x[o]) <= beam_half_w + pr_half_w) {
                 pr->alive = false;
                 break;
             }
@@ -1857,12 +2198,11 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
 
     if (gs->boss.alive) {
         bool boss_in_beam = false;
-        if (gs->boss.y < p->y) {
-            for (int o = 0; o < origin_count; o++) {
-                if (fabsf(gs->boss.x - origins[o]) <= beam_half_w + gs->boss.size / 2.0f) {
-                    boss_in_beam = true;
-                    break;
-                }
+        for (int o = 0; o < origin_count; o++) {
+            if (gs->boss.y < origin_y[o] &&
+                fabsf(gs->boss.x - origin_x[o]) <= beam_half_w + gs->boss.size / 2.0f) {
+                boss_in_beam = true;
+                break;
             }
         }
         if (boss_in_beam) {
@@ -1872,6 +2212,88 @@ static void update_super_beam(GameState *gs, float dt, EventQueue *events) {
             }
         } else {
             gs->boss.beam_contact_timer = 0.0f;
+        }
+    }
+}
+
+/* Antartica's own mode 3 (SHOOT_MODE_ANTARTICA_FREEZE_BEAM) - "both
+ * Antartica and Frosty fire a continuous freezing beam" per spec: the same
+ * column-sweep mechanics as update_super_beam above, but from up to two
+ * independent origins (each with its OWN y, since - unlike The Twins -
+ * Antartica and Frosty can be at different heights, see update_player's own
+ * SHIP_ANTARTICA branch) and deliberately WITHOUT touching super_beam_timer
+ * or any immunity guard: this beam neither heals nor grants invincibility,
+ * only the sweep itself. antartica_freeze_beam_boss_hit_timer paces repeat
+ * boss damage, the same role Boss.beam_contact_timer plays for the power
+ * orb's own super beam above, kept as its own separate field so the two
+ * beams' boss-contact pacing can never interfere with each other. */
+static void update_antartica_freezing_beam(GameState *gs, float dt, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->antartica_freeze_beam_boss_hit_timer > 0.0f) p->antartica_freeze_beam_boss_hit_timer -= dt;
+
+    if (p->antartica_freeze_beam_timer <= 0.0f) {
+        p->antartica_freeze_beam_boss_hit_timer = 0.0f;
+        return;
+    }
+    if (!p->alive) return;
+
+    float beam_half_w = scaled(gs, PLAYER_PROJECTILE_W) * ANTARTICA_FREEZE_BEAM_WIDTH_MULTIPLIER / 2.0f;
+    float origin_x[2], origin_y[2];
+    int origin_count = 0;
+    if (p->antartica_alive) {
+        origin_x[origin_count] = p->x;
+        origin_y[origin_count] = p->y;
+        origin_count++;
+    }
+    if (p->frosty_alive) {
+        origin_x[origin_count] = p->frosty_x;
+        origin_y[origin_count] = p->frosty_y;
+        origin_count++;
+    }
+    if (origin_count == 0) return;
+
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (!e->alive) continue;
+        for (int o = 0; o < origin_count; o++) {
+            if (e->y >= origin_y[o]) continue;
+            if (fabsf(e->x - origin_x[o]) <= beam_half_w + e->size / 2.0f) {
+                destroy_enemy_for_score(gs, events, e);
+                break;
+            }
+        }
+    }
+
+    for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+        Projectile *pr = &gs->enemy_shots[i];
+        if (!pr->alive) continue;
+        float pr_half_w, pr_half_h;
+        enemy_shot_half_extents(pr, &pr_half_w, &pr_half_h);
+        for (int o = 0; o < origin_count; o++) {
+            if (pr->y >= origin_y[o]) continue;
+            if (fabsf(pr->x - origin_x[o]) <= beam_half_w + pr_half_w) {
+                pr->alive = false;
+                break;
+            }
+        }
+    }
+
+    if (gs->boss.alive) {
+        bool boss_in_beam = false;
+        for (int o = 0; o < origin_count; o++) {
+            if (gs->boss.y < origin_y[o] &&
+                fabsf(gs->boss.x - origin_x[o]) <= beam_half_w + gs->boss.size / 2.0f) {
+                boss_in_beam = true;
+                break;
+            }
+        }
+        if (boss_in_beam) {
+            if (p->antartica_freeze_beam_boss_hit_timer <= 0.0f) {
+                damage_boss(gs, events, BASE_PLAYER_DAMAGE);
+                p->antartica_freeze_beam_boss_hit_timer = BEAM_BOSS_HIT_INTERVAL;
+            }
+        } else {
+            p->antartica_freeze_beam_boss_hit_timer = 0.0f;
         }
     }
 }
@@ -2283,6 +2705,15 @@ static void update_projectile_trails(GameState *gs, float dt) {
                  * ordinary color/cadence/size/alpha untouched. */
                 bool is_cruzader_rocket =
                     pr->style_ship == SHIP_CRUZADER && pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET;
+                /* Antartica's own ice shards get "a tad more" white trailing
+                 * smoke, and Frosty's own snowballs get a "slightly
+                 * increased" white trailing smoke - both scoped to this one
+                 * ship/kind combination only, same "kept independent"
+                 * carve-out precedent as Cruzader's own rocket trail above. */
+                bool is_antartica_shard =
+                    pr->style_ship == SHIP_ANTARTICA && pr->kind != PROJECTILE_KIND_FROSTY_SNOWBALL;
+                bool is_frosty_snowball =
+                    pr->style_ship == SHIP_ANTARTICA && pr->kind == PROJECTILE_KIND_FROSTY_SNOWBALL;
                 pr->trail_emit_timer =
                     is_cruzader_rocket ? CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL : PROJECTILE_TRAIL_SPAWN_INTERVAL;
                 float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
@@ -2293,6 +2724,16 @@ static void update_projectile_trails(GameState *gs, float dt) {
                     spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, kCruzaderRocketSmokeBlue,
                                                      CRUZADER_ROCKET_TRAIL_SIZE_MULTIPLIER,
                                                      CRUZADER_ROCKET_TRAIL_MAX_ALPHA);
+                } else if (is_antartica_shard) {
+                    static const Color kAntarticaSmokeWhite = {255, 255, 255, 255};
+                    spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, kAntarticaSmokeWhite,
+                                                     ANTARTICA_SHARD_TRAIL_SIZE_MULTIPLIER,
+                                                     ANTARTICA_SHARD_TRAIL_MAX_ALPHA);
+                } else if (is_frosty_snowball) {
+                    static const Color kFrostySmokeWhite = {255, 255, 255, 255};
+                    spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, kFrostySmokeWhite,
+                                                     FROSTY_SNOWBALL_TRAIL_SIZE_MULTIPLIER,
+                                                     FROSTY_SNOWBALL_TRAIL_MAX_ALPHA);
                 } else {
                     spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, pr->color, 1.0f,
                                                      PROJECTILE_TRAIL_MAX_ALPHA);
@@ -2330,6 +2771,7 @@ static void update_projectile_trails(GameState *gs, float dt) {
 typedef struct PlayerHitbox {
     float x, y, half_w, half_h;
     bool right; /* only meaningful for SHIP_TWINS */
+    bool is_frosty; /* only meaningful for SHIP_ANTARTICA - false means Antartica herself */
 } PlayerHitbox;
 
 static int player_hitboxes(const GameState *gs, PlayerHitbox out[2]) {
@@ -2339,24 +2781,45 @@ static int player_hitboxes(const GameState *gs, PlayerHitbox out[2]) {
     if (gs->selected_ship == SHIP_TWINS) {
         int n = 0;
         if (gs->player.twins_right_alive) {
-            out[n++] = (PlayerHitbox){gs->player.twins_right_x, gs->player.y, half_w, half_h, true};
+            out[n++] = (PlayerHitbox){gs->player.twins_right_x, gs->player.y, half_w, half_h, true, false};
         }
         if (gs->player.twins_left_alive) {
-            out[n++] = (PlayerHitbox){gs->player.twins_left_x, gs->player.y, half_w, half_h, false};
+            out[n++] = (PlayerHitbox){gs->player.twins_left_x, gs->player.y, half_w, half_h, false, false};
         }
         return n;
     }
-    out[0] = (PlayerHitbox){gs->player.x, gs->player.y, half_w, half_h, false};
+    /* SHIP_ANTARTICA's own two independent bodies - same "one entry per
+     * currently-alive body" convention as SHIP_TWINS above, just at two
+     * different positions/sizes instead of one shared position (Frosty is
+     * ANTARTICA_FROSTY_SIZE_MULTIPLIER smaller, per spec). */
+    if (gs->selected_ship == SHIP_ANTARTICA) {
+        int n = 0;
+        if (gs->player.antartica_alive) {
+            out[n++] = (PlayerHitbox){gs->player.x, gs->player.y, half_w, half_h, false, false};
+        }
+        if (gs->player.frosty_alive) {
+            out[n++] = (PlayerHitbox){gs->player.frosty_x, gs->player.frosty_y,
+                                       half_w * ANTARTICA_FROSTY_SIZE_MULTIPLIER,
+                                       half_h * ANTARTICA_FROSTY_SIZE_MULTIPLIER, false, true};
+        }
+        return n;
+    }
+    out[0] = (PlayerHitbox){gs->player.x, gs->player.y, half_w, half_h, false, false};
     return 1;
 }
 
 /* Routes to kill_twin/damage_twin for SHIP_TWINS (using PlayerHitbox.right
- * to say which twin), or straight to kill_player/damage_player otherwise -
- * so every non-Twins call site is functionally identical to calling
+ * to say which twin), kill_antartica_body/kill_frosty (or their damage_
+ * counterparts) for SHIP_ANTARTICA (using PlayerHitbox.is_frosty to say
+ * which body), or straight to kill_player/damage_player otherwise - so
+ * every other ship's own call site is functionally identical to calling
  * kill_player/damage_player directly, just through one extra layer. */
 static void kill_player_hitbox(GameState *gs, EventQueue *events, const PlayerHitbox *hb) {
     if (gs->selected_ship == SHIP_TWINS) {
         kill_twin(gs, events, hb->right);
+    } else if (gs->selected_ship == SHIP_ANTARTICA) {
+        if (hb->is_frosty) kill_frosty(gs, events);
+        else kill_antartica_body(gs, events);
     } else {
         kill_player(gs, events);
     }
@@ -2365,6 +2828,9 @@ static void kill_player_hitbox(GameState *gs, EventQueue *events, const PlayerHi
 static void damage_player_hitbox(GameState *gs, EventQueue *events, const PlayerHitbox *hb, float amount) {
     if (gs->selected_ship == SHIP_TWINS) {
         damage_twin(gs, events, hb->right, amount);
+    } else if (gs->selected_ship == SHIP_ANTARTICA) {
+        if (hb->is_frosty) damage_frosty(gs, events, amount);
+        else damage_antartica_body(gs, events, amount);
     } else {
         damage_player(gs, events, amount);
     }
@@ -2723,6 +3189,12 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                      * later orb capture. */
                     if (gs->player.twins_right_alive) gs->player.twins_right_life = PLAYER_LIFE_MAX;
                     if (gs->player.twins_left_alive) gs->player.twins_left_life = PLAYER_LIFE_MAX;
+                } else if (gs->selected_ship == SHIP_ANTARTICA) {
+                    /* Same "only heals whoever's still alive" rule as
+                     * SHIP_TWINS above - restores both Antartica's and
+                     * Frosty's health independently. */
+                    if (gs->player.antartica_alive) gs->player.antartica_life = PLAYER_LIFE_MAX;
+                    if (gs->player.frosty_alive) gs->player.frosty_life = PLAYER_LIFE_MAX;
                 } else {
                     gs->player.life = PLAYER_LIFE_MAX;
                 }
@@ -2753,6 +3225,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     update_projectiles(gs, dt);
     update_projectile_trails(gs, dt);
     update_super_beam(gs, dt, events);
+    update_antartica_freezing_beam(gs, dt, events);
     update_explosions(gs, dt);
     check_collisions(gs, events);
 }
