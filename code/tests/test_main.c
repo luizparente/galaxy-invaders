@@ -2984,6 +2984,38 @@ static void test_twins_super_beam_sweeps_both_twins_columns(void) {
     printf("test_twins_super_beam_sweeps_both_twins_columns OK\n");
 }
 
+/* Regression coverage for a real bug: the boss's own menace ring used to
+ * call kill_player directly on any touch, unconditionally killing the WHOLE
+ * player - for SHIP_TWINS that meant touching the ring with just one twin
+ * took the other, untouched twin down too. The ring's own consequence block
+ * now routes through kill_player_hitbox (the same dispatcher every other
+ * hazard in check_collisions already uses), so only the twin that actually
+ * touched it dies - the boss's own detonation stays unconditional either
+ * way (same "avoid an invincible-player stalemate" rationale as
+ * test_boss_ring_contact_kills_boss_but_spares_invincible_player above). */
+static void test_twins_boss_ring_kills_only_the_touched_twin(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_twins(&gs, &events);
+
+    for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.boss.alive);
+
+    gs.boss.x = gs.player.twins_right_x;
+    gs.boss.y = gs.player.y;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    /* The boss still dies (unconditional detonation), but only the right
+     * twin - the one actually touched - dies with it. */
+    assert(!gs.boss.alive);
+    assert(!gs.player.twins_right_alive);
+    assert(gs.player.twins_left_alive);
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    printf("test_twins_boss_ring_kills_only_the_touched_twin OK\n");
+}
+
 /* Regression coverage for a real bug: the power orb's own super beam swept
  * BOTH Antartica's and Frosty's columns using Antartica's own shared p->y
  * as the "enemy must be above this" cutoff for both, even though Frosty can
@@ -3094,6 +3126,38 @@ static void test_antartica_boss_chases_frosty_after_antartica_dies(void) {
     }
     assert(!ever_failed_to_close_in);
     printf("test_antartica_boss_chases_frosty_after_antartica_dies OK\n");
+}
+
+/* Regression coverage for the same real bug as
+ * test_twins_boss_ring_kills_only_the_touched_twin above, just for
+ * SHIP_ANTARTICA: the boss's own menace ring used to call kill_player
+ * directly on any touch, so touching it with only Frosty took Antartica
+ * down too, even though she was nowhere near it. */
+static void test_antartica_boss_ring_kills_only_the_touched_body(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_antartica(&gs, &events);
+
+    for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.boss.alive);
+
+    /* Move Frosty well clear of Antartica so only Frosty's own hitbox is
+     * anywhere near the boss. */
+    gs.player.frosty_x = gs.player.x + 200.0f;
+    gs.player.frosty_y = gs.player.y;
+    gs.boss.x = gs.player.frosty_x;
+    gs.boss.y = gs.player.frosty_y;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    /* The boss still dies (unconditional detonation), but only Frosty - the
+     * one actually touched - dies with it; Antartica, untouched, survives. */
+    assert(!gs.boss.alive);
+    assert(!gs.player.frosty_alive);
+    assert(gs.player.antartica_alive);
+    assert(gs.player.alive);
+    assert(gs.state == STATE_GAME);
+    printf("test_antartica_boss_ring_kills_only_the_touched_body OK\n");
 }
 
 /* All 4 arrows navigate the ship-select grid, not just left/right: up/down
@@ -3419,8 +3483,10 @@ int main(void) {
     test_twins_enemy_contact_zeroes_dead_twins_life();
     test_twins_orb_capture_heals_survivor_not_dead_twin();
     test_twins_super_beam_sweeps_both_twins_columns();
+    test_twins_boss_ring_kills_only_the_touched_twin();
     test_antartica_super_beam_columns_use_each_bodys_own_y();
     test_antartica_boss_chases_frosty_after_antartica_dies();
+    test_antartica_boss_ring_kills_only_the_touched_body();
     test_ship_select_up_down_navigate_grid_rows();
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();

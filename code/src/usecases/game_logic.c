@@ -3091,11 +3091,18 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         bool cruzader_orb_blocks_ring = gs->selected_ship == SHIP_CRUZADER && gs->player.cruzader_orb_timer > 0.0f;
         if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring) {
             float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
-            /* Fatal to the whole player on any touch, same as every other
-             * ship - not per-twin like an ordinary enemy shot/contact hit
-             * (see PlayerHitbox's own doc comment): this hazard already
-             * ends the run outright for everyone else, so it's simply
-             * checked against both of Twins' own hitboxes for detection. */
+            /* Fatal to whichever body actually touched it - kill_player_hitbox
+             * (same dispatcher every other hazard in this function already
+             * uses) routes to kill_twin/kill_antartica_body/kill_frosty for
+             * SHIP_TWINS/SHIP_ANTARTICA, so touching the ring with only one
+             * of a pair's two bodies no longer takes the other down with it;
+             * the survivor keeps flying, same "one can die while the other
+             * keeps going" rule every other hazard already respects (see
+             * PlayerHitbox's own doc comment). Every other ship's own single
+             * hitbox still routes straight to kill_player, unchanged. The
+             * boss's own detonation just below stays unconditional either
+             * way - still checked against every currently-alive body's own
+             * hitbox for detection. */
             PlayerHitbox hbs[2];
             int hb_count = player_hitboxes(gs, hbs);
             for (int h = 0; h < hb_count; h++) {
@@ -3104,7 +3111,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                     spawn_explosion(gs, gs->boss.x, gs->boss.y, gs->boss.size * 1.4f);
                     end_boss_encounter(gs);
                     event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
-                    kill_player(gs, events);
+                    kill_player_hitbox(gs, events, &hbs[h]);
                     break;
                 }
             }
