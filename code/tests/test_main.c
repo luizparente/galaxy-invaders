@@ -2604,7 +2604,7 @@ static void test_cruzader_orb_blocks_boss_ring_without_free_kill(void) {
 static void test_twins_ratings_and_moveset(void) {
     assert(ship_speed_rating(SHIP_TWINS) == 10);
     assert(ship_strength_rating(SHIP_TWINS) == 5);
-    assert(ship_attack_rating(SHIP_TWINS) == 4);
+    assert(ship_attack_rating(SHIP_TWINS) == 3);
     assert(fabsf(ship_size_multiplier(SHIP_TWINS) - 1.25f) < 0.001f); /* 25% bigger than B-20 */
 
     /* The single fastest ship in the fleet (10 > B-20's own 7). */

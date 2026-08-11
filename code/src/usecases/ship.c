@@ -9,13 +9,13 @@
  * most plating of all for a speed edge over B-20 itself; Cruzader trades
  * some of B-20's own speed for the heaviest plating short of The
  * Mothership itself; The Twins are the single fastest ship in the fleet,
- * even ahead of Shine, at the cost of below-average plating and (tied with
- * Cruzader) the lowest attack rating - a fair trade for having two bodies
- * to protect instead of one - per each one's own description on the
+ * even ahead of Shine, at the cost of below-average plating and the lowest
+ * attack rating in the fleet - a fair trade for having two bodies to
+ * protect instead of one - per each one's own description on the
  * ship-select screen. */
 static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10, 8};
 static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5, 7};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 4, 7};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7};
 
 /* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
  * this isn't derived from a rating formula, it's spec'd directly (The
