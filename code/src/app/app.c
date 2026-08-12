@@ -64,7 +64,7 @@ void app_run(App *app) {
         game_update(&gs, &input, (float)dt, &events);
 
         float difficulty01 = difficulty_normalized(gs.time_elapsed);
-        app->audio->update(app->audio->self, (float)dt, gs.state == STATE_PAUSE, difficulty01);
+        app->audio->update(app->audio->self, (float)dt, gs.state == STATE_PAUSE, difficulty01, gs.boss.alive);
         for (int i = 0; i < events.count; i++) {
             if (events.items[i].type == EVENT_PLAY_SFX) {
                 app->audio->play_sfx(app->audio->self, events.items[i].sfx);

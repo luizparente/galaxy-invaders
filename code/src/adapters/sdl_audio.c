@@ -9,8 +9,12 @@
 #define SAMPLE_RATE 44100
 #define NUM_VOICES 20
 
-/* --- Song timing: 140bpm, 16th-note step sequencer, 64-bar arrangement. --- */
+/* --- Song timing: 140bpm, 16th-note step sequencer, 64-bar arrangement.
+ * The boss theme shares the same grid (16th-note steps, 2-bar phrases,
+ * 64-bar arrangement) but runs at 180bpm, so both arrangements share
+ * STEPS_PER_BAR / MOTIF_BARS / MOTIF_STEPS / SONG_TOTAL_BARS / TOTAL_STEPS. --- */
 #define BPM 140.0
+#define BOSS_BPM 180.0
 #define STEPS_PER_BAR 16
 #define MOTIF_BARS 2
 #define MOTIF_STEPS (STEPS_PER_BAR * MOTIF_BARS) /* 32: each pattern is a 2-bar phrase that loops within its section. */
@@ -64,6 +68,7 @@ typedef struct SdlAudioCtx {
     /* Shared with the game-update thread; guarded by SDL_Lock/UnlockAudioDevice. */
     bool paused;
     float difficulty01;
+    bool boss_active;
 
     /* Audio-thread-owned sequencer state. */
     double music_time;
@@ -97,14 +102,22 @@ typedef struct SdlAudioCtx {
 #define REST 0.0
 /* Bass register. */
 #define N_E1 41.20
+#define N_F1 43.65
 #define N_FS1 46.25
 #define N_G1 49.00
 #define N_A1 55.00
+#define N_AS1 58.27
 #define N_B1 61.74
+#define N_CS2 69.30
 #define N_D2 73.42
 /* Guitar register. */
 #define N_E2 82.41
+#define N_F2 87.31
+#define N_FS2 92.50
+#define N_G2 98.00
+#define N_AS2 116.54
 #define N_B2 123.47
+#define N_CS3 138.59
 #define N_D3 146.83
 #define N_E3 164.81
 #define N_FS3 185.00
@@ -120,6 +133,7 @@ typedef struct SdlAudioCtx {
 #define N_D5 587.33
 #define N_E5 659.25
 #define N_G5 783.99
+#define N_A5 880.00
 
 /* ---- INTRO: sparse stab building into the main gallop. ---- */
 static const double guitar_intro[MOTIF_STEPS] = {
@@ -311,6 +325,211 @@ static const SongSection kSong[] = {
 };
 #define SONG_NUM_SECTIONS (int)(sizeof(kSong) / sizeof(kSong[0]))
 
+/* =========================================================================
+ * BOSS THEME: 180bpm thrash metal, same 16th-note/2-bar-phrase grid as the
+ * main song. 9 sections x (4|8 bars) = 64 bars, then loops for as long as
+ * the boss stays on screen. Built from the E blues-scale/tritone vocabulary
+ * (E-Bb "devil's interval", chromatic chugs, galloped 8th-16th-16ths) that
+ * powers thrash riffing (Metallica/Slayer). ---------------------------- */
+
+/* ---- BOSS_INTRO: dread tritone stabs building into the gallop. ---- */
+static const double guitar_boss_intro[MOTIF_STEPS] = {
+    N_E2,0,0,0,     N_AS2,0,0,0,   N_E2,0,0,0,   N_AS2,0,0,N_E2,
+    N_E2,0,N_E2,0,  N_E2,0,N_E2,N_E2, N_E2,N_E2,N_E2,N_E2, N_E2,N_E2,N_E2,N_E2,
+};
+static const double bass_boss_intro[MOTIF_STEPS] = {
+    N_E1,0,0,0,     N_AS1,0,0,0,   N_E1,0,0,0,   N_AS1,0,0,N_E1,
+    N_E1,0,N_E1,0,  N_E1,0,N_E1,N_E1, N_E1,N_E1,N_E1,N_E1, N_E1,N_E1,N_E1,N_E1,
+};
+static const double lead_boss_intro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,N_E5,N_G5,
+};
+static const unsigned char kick_boss_intro[MOTIF_STEPS] = {
+    1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,1,
+    1,0,1,0, 1,0,1,1, 1,1,1,1, 1,1,1,1,
+};
+static const unsigned char snare_boss_intro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0,
+};
+static const unsigned char hihat_boss_intro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char crash_boss_intro[MOTIF_STEPS] = { 1,0,0,0 };
+
+/* ---- BOSS_RIFFA: driving thrash gallop, chromatic walk-up tag. ---- */
+static const double guitar_boss_riffA[MOTIF_STEPS] = {
+    N_E2,0,N_E2,N_E2, 0,N_E2,0,N_E2, N_E2,0,N_E2,N_E2, N_F2,0,N_FS2,N_G2,
+    N_E2,0,N_E2,N_E2, 0,N_E2,0,N_E2, N_E2,0,N_E2,N_E2, N_AS2,0,N_E2,0,
+};
+static const double bass_boss_riffA[MOTIF_STEPS] = {
+    N_E1,0,N_E1,N_E1, 0,N_E1,0,N_E1, N_E1,0,N_E1,N_E1, N_F1,0,N_FS1,N_G1,
+    N_E1,0,N_E1,N_E1, 0,N_E1,0,N_E1, N_E1,0,N_E1,N_E1, N_AS1,0,N_E1,0,
+};
+static const double lead_boss_riffA[MOTIF_STEPS] = {0};
+static const unsigned char kick_boss_riffA[MOTIF_STEPS] = {
+    1,0,1,1, 0,1,0,1, 1,0,1,1, 1,0,1,1,
+    1,0,1,1, 0,1,0,1, 1,0,1,1, 1,0,1,0,
+};
+static const unsigned char snare_boss_riffA[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_boss_riffA[MOTIF_STEPS] = {
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+};
+static const unsigned char crash_boss_riffA[MOTIF_STEPS] = { 1,0,0,0 };
+
+/* ---- BOSS_RIFFB: the tritone ("devil's interval") hook, sequenced up a
+ * minor third for the second bar. ---- */
+static const double guitar_boss_riffB[MOTIF_STEPS] = {
+    N_E2,0,0,N_E2,   N_AS2,0,0,N_AS2, N_E2,0,0,N_E2,   N_AS2,0,N_AS2,0,
+    N_G2,0,0,N_G2,   N_CS3,0,0,N_CS3, N_G2,0,0,N_G2,   N_CS3,0,N_CS3,N_CS3,
+};
+static const double bass_boss_riffB[MOTIF_STEPS] = {
+    N_E1,0,0,N_E1,   N_AS1,0,0,N_AS1, N_E1,0,0,N_E1,   N_AS1,0,N_AS1,0,
+    N_G1,0,0,N_G1,   N_CS2,0,0,N_CS2, N_G1,0,0,N_G1,   N_CS2,0,N_CS2,N_CS2,
+};
+static const double lead_boss_riffB[MOTIF_STEPS] = {0};
+static const unsigned char kick_boss_riffB[MOTIF_STEPS] = {
+    1,0,0,1, 1,0,0,1, 1,0,0,1, 1,0,1,0,
+    1,0,0,1, 1,0,0,1, 1,0,0,1, 1,0,1,1,
+};
+static const unsigned char snare_boss_riffB[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_boss_riffB[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char crash_boss_riffB[MOTIF_STEPS] = {
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+};
+
+/* ---- BOSS_SOLO: pedal-tone chug under a shredded scalar lead run. ---- */
+static const double guitar_boss_solo[MOTIF_STEPS] = {
+    N_E2,0,0,0, N_E2,0,0,0, N_E2,0,0,0, N_E2,0,0,0,
+    N_E2,0,0,0, N_E2,0,0,0, N_E2,0,0,0, N_E2,0,0,0,
+};
+static const double bass_boss_solo[MOTIF_STEPS] = {
+    N_E1,0,0,0, N_E1,0,0,0, N_E1,0,0,0, N_E1,0,0,0,
+    N_E1,0,0,0, N_E1,0,0,0, N_E1,0,0,0, N_E1,0,0,0,
+};
+static const double lead_boss_solo[MOTIF_STEPS] = {
+    N_E4,N_FS4,N_G4,N_A4, N_B4,N_C5,N_D5,N_E5, N_G5,N_E5,N_D5,N_C5, N_B4,N_A4,N_G4,N_FS4,
+    N_G4,N_A4,N_B4,N_C5,  N_D5,N_E5,N_G5,N_A5, N_G5,N_E5,N_D5,N_C5, N_B4,N_A4,N_G4,N_E4,
+};
+static const unsigned char kick_boss_solo[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+};
+static const unsigned char snare_boss_solo[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+};
+static const unsigned char hihat_boss_solo[MOTIF_STEPS] = {
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+};
+static const unsigned char crash_boss_solo[MOTIF_STEPS] = { 1,0,0,0 };
+
+/* ---- BOSS_BREAKDOWN: unison stutter chug, near-constant kick. ---- */
+static const double guitar_boss_breakdown[MOTIF_STEPS] = {
+    N_E2,0,0,N_E2, 0,0,N_E2,0,   N_E2,0,0,N_E2, 0,N_E2,0,N_E2,
+    N_E2,0,0,0,    0,0,0,0,      N_E2,N_E2,0,N_E2, 0,N_E2,N_E2,0,
+};
+static const double bass_boss_breakdown[MOTIF_STEPS] = {
+    N_E1,0,0,N_E1, 0,0,N_E1,0,   N_E1,0,0,N_E1, 0,N_E1,0,N_E1,
+    N_E1,0,0,0,    0,0,0,0,      N_E1,N_E1,0,N_E1, 0,N_E1,N_E1,0,
+};
+static const double lead_boss_breakdown[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,N_E5,N_G5,
+};
+static const unsigned char kick_boss_breakdown[MOTIF_STEPS] = {
+    1,0,1,1, 0,1,1,0, 1,0,1,1, 0,1,0,1,
+    1,1,0,1, 1,0,1,1, 1,1,1,0, 1,0,1,1,
+};
+static const unsigned char snare_boss_breakdown[MOTIF_STEPS] = {
+    1,0,0,1, 0,0,1,0, 1,0,0,1, 0,1,0,1,
+    1,0,0,0, 0,0,0,0, 1,1,0,1, 0,1,1,0,
+};
+static const unsigned char hihat_boss_breakdown[MOTIF_STEPS] = {0};
+static const unsigned char crash_boss_breakdown[MOTIF_STEPS] = {
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+};
+
+/* ---- BOSS_OUTRO: full-throttle wall of sound into a final scream. ---- */
+static const double guitar_boss_outro[MOTIF_STEPS] = {
+    N_E2,0,N_E2,N_E2, N_F2,0,N_FS2,N_G2, N_AS2,0,N_AS2,N_AS2, N_CS3,0,N_CS3,N_CS3,
+    N_E2,N_E2,N_E2,N_E2, N_E2,N_E2,N_E2,N_E2, N_E2,N_E2,N_E2,N_E2, N_E2,N_E2,N_E2,N_E2,
+};
+static const double bass_boss_outro[MOTIF_STEPS] = {
+    N_E1,0,N_E1,N_E1, N_F1,0,N_FS1,N_G1, N_AS1,0,N_AS1,N_AS1, N_CS2,0,N_CS2,N_CS2,
+    N_E1,N_E1,N_E1,N_E1, N_E1,N_E1,N_E1,N_E1, N_E1,N_E1,N_E1,N_E1, N_E1,N_E1,N_E1,N_E1,
+};
+static const double lead_boss_outro[MOTIF_STEPS] = {
+    0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    0,0,0,0, 0,0,0,0, 0,0,0,0, N_E5,0,N_G5,N_A5,
+};
+static const unsigned char kick_boss_outro[MOTIF_STEPS] = {
+    1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0,
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+};
+static const unsigned char snare_boss_outro[MOTIF_STEPS] = {
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0,
+    0,0,0,0, 1,0,0,0, 0,0,0,0, 1,1,1,1,
+};
+static const unsigned char hihat_boss_outro[MOTIF_STEPS] = {
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+    1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
+};
+static const unsigned char crash_boss_outro[MOTIF_STEPS] = {
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    1,0,0,0, 0,0,0,0, 0,0,0,0, 1,1,1,1,
+};
+
+static const Pattern kPatternBossIntro = {
+    guitar_boss_intro, bass_boss_intro, lead_boss_intro, kick_boss_intro, snare_boss_intro, hihat_boss_intro, crash_boss_intro,
+};
+static const Pattern kPatternBossRiffA = {
+    guitar_boss_riffA, bass_boss_riffA, lead_boss_riffA, kick_boss_riffA, snare_boss_riffA, hihat_boss_riffA, crash_boss_riffA,
+};
+static const Pattern kPatternBossRiffB = {
+    guitar_boss_riffB, bass_boss_riffB, lead_boss_riffB, kick_boss_riffB, snare_boss_riffB, hihat_boss_riffB, crash_boss_riffB,
+};
+static const Pattern kPatternBossSolo = {
+    guitar_boss_solo, bass_boss_solo, lead_boss_solo, kick_boss_solo, snare_boss_solo, hihat_boss_solo, crash_boss_solo,
+};
+static const Pattern kPatternBossBreakdown = {
+    guitar_boss_breakdown, bass_boss_breakdown, lead_boss_breakdown, kick_boss_breakdown, snare_boss_breakdown, hihat_boss_breakdown, crash_boss_breakdown,
+};
+static const Pattern kPatternBossOutro = {
+    guitar_boss_outro, bass_boss_outro, lead_boss_outro, kick_boss_outro, snare_boss_outro, hihat_boss_outro, crash_boss_outro,
+};
+
+/* Arrangement: dread intro, verse, tritone hook, verse, shred solo, tritone
+ * hook, breakdown, verse, wall-of-sound outro -- 4+8+8+8+8+8+8+8+4 = 64
+ * bars, then loops for as long as the boss stays alive. */
+static const SongSection kBossSong[] = {
+    { &kPatternBossIntro,     4 },
+    { &kPatternBossRiffA,     8 },
+    { &kPatternBossRiffB,     8 },
+    { &kPatternBossRiffA,     8 },
+    { &kPatternBossSolo,      8 },
+    { &kPatternBossRiffB,     8 },
+    { &kPatternBossBreakdown, 8 },
+    { &kPatternBossRiffA,     8 },
+    { &kPatternBossOutro,     4 },
+};
+#define BOSS_SONG_NUM_SECTIONS (int)(sizeof(kBossSong) / sizeof(kBossSong[0]))
+
 static double square_wave(double phase) {
     return phase < 0.5 ? 1.0 : -1.0;
 }
@@ -404,20 +623,24 @@ static float render_voice(Voice *v, double dt) {
 }
 
 /* Advances the sequencer by one 16th-note step: resolves the current song
- * section/pattern, latches the new per-channel target notes, and (unless
+ * section/pattern (regular arrangement, or the boss theme while a boss is
+ * on screen), latches the new per-channel target notes, and (unless
  * paused) fires any drum hits scheduled on this step. */
-static void advance_step(SdlAudioCtx *ctx, int global_step, bool paused) {
+static void advance_step(SdlAudioCtx *ctx, int global_step, bool paused, bool boss_active) {
     int bar = global_step / STEPS_PER_BAR;
     int step_in_bar = global_step % STEPS_PER_BAR;
 
-    const Pattern *pat = kSong[0].pattern;
+    const SongSection *song = boss_active ? kBossSong : kSong;
+    int num_sections = boss_active ? BOSS_SONG_NUM_SECTIONS : SONG_NUM_SECTIONS;
+
+    const Pattern *pat = song[0].pattern;
     int bar_cursor = 0;
-    for (int s = 0; s < SONG_NUM_SECTIONS; s++) {
-        if (bar < bar_cursor + kSong[s].bars) {
-            pat = kSong[s].pattern;
+    for (int s = 0; s < num_sections; s++) {
+        if (bar < bar_cursor + song[s].bars) {
+            pat = song[s].pattern;
             break;
         }
-        bar_cursor += kSong[s].bars;
+        bar_cursor += song[s].bars;
     }
     int bar_in_section = bar - bar_cursor;
     int motif_step = (bar_in_section % MOTIF_BARS) * STEPS_PER_BAR + step_in_bar;
@@ -468,14 +691,15 @@ static void audio_callback(void *userdata, Uint8 *stream, int len) {
 
     bool paused = ctx->paused;
     float difficulty01 = ctx->difficulty01;
-    double step_duration = 60.0 / BPM / 4.0; /* sixteenth notes */
+    bool boss_active = ctx->boss_active;
+    double step_duration = 60.0 / (boss_active ? BOSS_BPM : BPM) / 4.0; /* sixteenth notes */
     float energy_gain = 1.0f + 0.15f * difficulty01;
 
     for (int i = 0; i < frames; i++) {
         int global_step = (int)fmod(ctx->music_time / step_duration, (double)TOTAL_STEPS);
         if (global_step != ctx->last_step_index) {
             ctx->last_step_index = global_step;
-            advance_step(ctx, global_step, paused);
+            advance_step(ctx, global_step, paused, boss_active);
         }
 
         float music_sample = 0.0f;
@@ -539,12 +763,20 @@ static void audio_callback(void *userdata, Uint8 *stream, int len) {
     }
 }
 
-static void sdl_audio_update(void *self, float dt, bool paused, float difficulty01) {
+static void sdl_audio_update(void *self, float dt, bool paused, float difficulty01, bool boss_active) {
     (void)dt;
     SdlAudioCtx *ctx = self;
     SDL_LockAudioDevice(ctx->device);
     ctx->paused = paused;
     ctx->difficulty01 = difficulty01;
+    if (boss_active != ctx->boss_active) {
+        /* Cut cleanly to bar 1 of the new arrangement instead of carrying
+         * over a step index that means something different at the other
+         * song's BPM/section layout. */
+        ctx->boss_active = boss_active;
+        ctx->music_time = 0.0;
+        ctx->last_step_index = -1;
+    }
     SDL_UnlockAudioDevice(ctx->device);
 }
 
