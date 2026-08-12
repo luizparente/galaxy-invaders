@@ -128,6 +128,12 @@ static void roll_enemy_movement_style(GameState *gs, Enemy *e) {
     }
 }
 
+float spawner_boss_dispatch_interval(int boss_count) {
+    float interval = BOSS_DISPATCH_INTERVAL_START - BOSS_DISPATCH_INTERVAL_STEP * (float)(boss_count - 1);
+    if (interval < BOSS_DISPATCH_INTERVAL_MIN) interval = BOSS_DISPATCH_INTERVAL_MIN;
+    return interval;
+}
+
 static void spawn_one_enemy(GameState *gs) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy *e = &gs->enemies[i];
@@ -171,4 +177,62 @@ void spawner_update(GameState *gs, float dt) {
     for (int i = 0; i < burst; i++) {
         spawn_one_enemy(gs);
     }
+}
+
+void spawner_dispatch_enemy_from_boss(GameState *gs) {
+    const Boss *b = &gs->boss;
+
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (e->alive) continue;
+
+        float min_size = ENEMY_MIN_SIZE * gs->scale;
+        float max_size = ENEMY_MAX_SIZE * gs->scale;
+        float size = min_size + frand01() * (max_size - min_size);
+
+        e->alive = true;
+        e->size = size;
+        /* Directly beneath the boss, per spec - same "underneath, never in
+         * front or behind" convention update_mothership_dispatch already
+         * uses for a child's own launch position. */
+        e->x = b->x;
+        e->y = b->y + b->size * 0.5f;
+        e->vx = 0.0f;
+        e->vy = 0.0f;
+        e->kind = spawner_random_enemy_kind();
+        e->color = random_vivid_projectile_color();
+        /* Suppressed until spawner_land_boss_dispatched_enemy rerolls it -
+         * a flying enemy has no business firing on the way to its landing
+         * point. */
+        e->fire_timer = 9999.0f;
+        e->burst_shots_remaining = 0;
+        e->burst_shot_timer = 0.0f;
+        e->wobble_phase = 0.0f; /* meaningless mid-flight; rolled for real on landing */
+        e->orb_kill_pending = false;
+        e->orb_kill_timer = 0.0f;
+        e->trail_emit_timer = frand01() * ENEMY_TRAIL_SPAWN_INTERVAL;
+        /* Not finalized until it lands - see spawner_land_boss_dispatched_enemy. */
+        e->movement_style = ENEMY_MOVEMENT_NORMAL;
+        e->orbit_center_x = 0.0f;
+        e->orbit_center_y = 0.0f;
+        e->erratic_radius = 0.0f;
+
+        e->boss_dispatch_flying = true;
+        float margin = size * 0.5f;
+        e->boss_dispatch_target_x = margin + frand01() * ((float)gs->screen_w - size);
+        e->boss_dispatch_target_y = margin + frand01() * ((float)gs->screen_h - size);
+        return;
+    }
+}
+
+void spawner_land_boss_dispatched_enemy(GameState *gs, Enemy *e) {
+    e->boss_dispatch_flying = false;
+    /* Same formulas spawn_one_enemy uses for a fresh spawn - from this
+     * point on a boss-dispatched enemy is indistinguishable from an
+     * ordinary one. */
+    e->vx = (frand01() - 0.5f) * 20.0f * gs->scale;
+    e->vy = difficulty_enemy_speed(gs->score) * gs->scale * (0.85f + frand01() * 0.3f);
+    e->fire_timer = 0.5f + frand01() * 1.5f;
+    e->wobble_phase = frand01() * 6.2831853f;
+    roll_enemy_movement_style(gs, e);
 }

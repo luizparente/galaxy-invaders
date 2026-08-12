@@ -269,6 +269,13 @@
 
 #define ORB_SCORE_STEP 200
 #define ORB_SPAWN_CHANCE 0.5f
+/* Boss fights replace the score-step mechanic above entirely (see
+ * maybe_trigger_orb_spawn's own boss.alive guard in usecases/game_logic.c)
+ * with a flat chance rolled on every enemy kill instead (see
+ * destroy_enemy_for_score) - a fight's own kill count is small and
+ * unpredictable, so a 200-point step would make orbs either flood in or
+ * never show up depending on how the fight goes. */
+#define BOSS_FIGHT_ORB_SPAWN_CHANCE 0.05f
 #define ORB_SIZE 22.0f
 #define ORB_FALL_SPEED 26.0f
 #define ORB_DRIFT_SPEED 55.0f
@@ -691,6 +698,22 @@
 #define BEAM_BOSS_HIT_INTERVAL 0.5f
 #define ENEMY_FLEE_SPEED_MULTIPLIER 7.0f
 #define ENEMY_SHOT_FADE_DURATION 0.6f
+
+/* How often the boss dispatches a fresh ordinary enemy from directly
+ * beneath itself to a random point on screen (see update_boss_dispatch and
+ * spawner_dispatch_enemy_from_boss) - starts at BOSS_DISPATCH_INTERVAL_START
+ * seconds for the very first encounter (gs->boss_count == 1) and gets
+ * BOSS_DISPATCH_INTERVAL_STEP seconds shorter with every encounter since,
+ * bottoming out at BOSS_DISPATCH_INTERVAL_MIN - see
+ * spawner_boss_dispatch_interval, the single place this formula lives. */
+#define BOSS_DISPATCH_INTERVAL_START 3.0f
+#define BOSS_DISPATCH_INTERVAL_STEP 0.5f
+#define BOSS_DISPATCH_INTERVAL_MIN 1.0f
+/* How fast a dispatched enemy flies from beneath the boss to its landing
+ * point (see the boss_dispatch_flying branch of update_enemy_movement) -
+ * same baseline PLAYER_SPEED precedent MOTHERSHIP_CHILD_LAUNCH_SPEED
+ * already uses for "a freshly dispatched entity's own travel speed." */
+#define BOSS_DISPATCH_ENEMY_FLIGHT_SPEED PLAYER_SPEED
 
 /* --- Erratic enemy movement (see EnemyMovementStyle in domain/types.h and
  * update_enemies in usecases/game_logic.c) - CIRCLE/SPIRAL/SINE/RANDOM

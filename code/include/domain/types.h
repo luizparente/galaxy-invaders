@@ -454,6 +454,18 @@ typedef struct Enemy {
      * see update_enemy_and_boss_trails, the enemy/boss counterpart to the
      * player's own update_player_trail. Purely cosmetic. */
     float trail_emit_timer;
+
+    /* True from the instant a boss dispatches this enemy (see
+     * spawner_dispatch_enemy_from_boss) until it reaches
+     * boss_dispatch_target_x/y, during which update_enemy_movement flies it
+     * in a straight line at BOSS_DISPATCH_ENEMY_FLIGHT_SPEED instead of
+     * running its (not yet rolled) movement_style - false for every
+     * ordinarily-spawned enemy, the default/rest state once a dispatched
+     * one lands (see spawner_land_boss_dispatched_enemy, which is what
+     * finally rolls a real movement_style, same as an ordinary spawn
+     * would've at spawn time). */
+    bool boss_dispatch_flying;
+    float boss_dispatch_target_x, boss_dispatch_target_y;
 } Enemy;
 
 /* Drives the player shot's rendering (adapters/sdl_renderer.c) and, for
@@ -720,6 +732,13 @@ typedef struct Boss {
     /* Counts down to the boss's next engine trail particle emission - see
      * update_enemy_and_boss_trails. Purely cosmetic. */
     float trail_emit_timer;
+
+    /* Counts down to the boss's next enemy dispatch (see
+     * update_boss_dispatch/spawner_dispatch_enemy_from_boss) - reset to
+     * spawner_boss_dispatch_interval(gs->boss_count) both at spawn (see
+     * spawn_boss) and every time it fires, so the interval only ever
+     * changes between encounters, never mid-fight. */
+    float dispatch_timer;
 } Boss;
 
 typedef struct GameState {

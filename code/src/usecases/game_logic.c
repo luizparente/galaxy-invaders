@@ -479,8 +479,14 @@ static void spawn_orb(GameState *gs) {
 
 /* Called right after gs->score changes. Every ORB_SCORE_STEP crossed has a
  * coin-flip chance of dropping a new orb, but only if the last one has
- * already been resolved (captured, shot, or fallen off the bottom). */
+ * already been resolved (captured, shot, or fallen off the bottom).
+ *
+ * Skipped entirely while a boss is alive: a fight's own kill count is too
+ * small and unpredictable to land on round score steps the way a normal
+ * clear does, so boss fights use a flat per-kill chance instead - see
+ * BOSS_FIGHT_ORB_SPAWN_CHANCE in destroy_enemy_for_score below. */
 static void maybe_trigger_orb_spawn(GameState *gs, int old_score, int new_score) {
+    if (gs->boss.alive) return;
     if (gs->orb.alive) return;
     if (new_score / ORB_SCORE_STEP <= old_score / ORB_SCORE_STEP) return;
     if (frand01() < ORB_SPAWN_CHANCE) spawn_orb(gs);
@@ -533,6 +539,9 @@ static void spawn_boss(GameState *gs, EventQueue *events) {
     b->hits_required = BOSS_HITS_INCREMENT * gs->boss_count;
     b->beam_contact_timer = 0.0f;
     b->trail_emit_timer = 0.0f;
+    /* boss_count was just incremented above, so this already reflects the
+     * encounter that's starting - see spawner_boss_dispatch_interval. */
+    b->dispatch_timer = spawner_boss_dispatch_interval(gs->boss_count);
 
     event_queue_push_sfx(events, SFX_BOSS_ARRIVED);
 }
@@ -627,6 +636,13 @@ static void destroy_enemy_for_score(GameState *gs, EventQueue *events, Enemy *e)
     float mult = difficulty_score_multiplier(gs->score);
     apply_score_delta(gs, events, (int)((float)SCORE_PER_KILL * mult));
 
+    /* Boss fights use this flat per-kill chance instead of the score-step
+     * mechanic maybe_trigger_orb_spawn normally drives (skipped entirely
+     * while a boss is alive - see its own guard). */
+    if (gs->boss.alive && !gs->orb.alive && frand01() < BOSS_FIGHT_ORB_SPAWN_CHANCE) {
+        spawn_orb(gs);
+    }
+
     event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
 }
 
@@ -713,6 +729,22 @@ static void update_boss(GameState *gs, float dt) {
         b->x += dx / dist * step;
         b->y += dy / dist * step;
     }
+}
+
+/* Paces the boss's own periodic enemy dispatch (see
+ * spawner_dispatch_enemy_from_boss) - the interval only ever changes
+ * between encounters (spawner_boss_dispatch_interval keyed on
+ * gs->boss_count), never mid-fight, so this just needs to keep resetting
+ * dispatch_timer to whatever it was already set to. */
+static void update_boss_dispatch(GameState *gs, float dt) {
+    Boss *b = &gs->boss;
+    if (!b->alive) return;
+
+    b->dispatch_timer -= dt;
+    if (b->dispatch_timer > 0.0f) return;
+
+    b->dispatch_timer = spawner_boss_dispatch_interval(gs->boss_count);
+    spawner_dispatch_enemy_from_boss(gs);
 }
 
 static void reset_run(GameState *gs) {
@@ -909,9 +941,24 @@ static void update_game_over(GameState *gs, const InputCommand *input, EventQueu
     }
 }
 
+/* Whether the super beam currently shields the player from every death/
+ * damage hazard below (kill_player and its per-ship-part counterparts) -
+ * true outside a boss encounter (its original behavior, unchanged), false
+ * while gs->boss.alive. Capturing the orb mid-fight still grants the full
+ * beam otherwise - offense, healing, the speed boost (see
+ * update_player_firing/update_player) - just never this immunity: a boss
+ * on screen must always be able to end the run via an ordinary enemy or
+ * its own ring, the same way it already ignores god mode's own protection
+ * for nothing (god_mode is untouched by this and still blocks everything
+ * unconditionally, checked as its own separate condition right after every
+ * call to this). */
+static bool super_beam_shields_player(const GameState *gs) {
+    return gs->player.super_beam_timer > 0.0f && !gs->boss.alive;
+}
+
 static void kill_player(GameState *gs, EventQueue *events) {
     if (!gs->player.alive) return;
-    if (gs->player.super_beam_timer > 0.0f) return; /* invincible for the duration of the beam */
+    if (super_beam_shields_player(gs)) return; /* invincible for the duration of the beam, outside a boss fight */
     if (gs->player.god_mode) return; /* invincible until Ctrl+G is pressed again */
     gs->player.alive = false;
     gs->player.life = 0.0f;
@@ -939,7 +986,7 @@ static void kill_player(GameState *gs, EventQueue *events) {
 static void damage_player(GameState *gs, EventQueue *events, float amount) {
     Player *p = &gs->player;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
 
     p->life -= amount * ship_damage_taken_multiplier(gs->selected_ship);
@@ -958,7 +1005,7 @@ static void damage_player(GameState *gs, EventQueue *events, float amount) {
 static void damage_cruzader_on_enemy_contact(GameState *gs, EventQueue *events) {
     Player *p = &gs->player;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
 
     p->life -= CRUZADER_ENEMY_CONTACT_LIFE_LOSS;
@@ -984,7 +1031,7 @@ static void kill_twin(GameState *gs, EventQueue *events, bool right) {
     bool *alive_flag = right ? &p->twins_right_alive : &p->twins_left_alive;
     if (!*alive_flag) return;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
 
     *alive_flag = false;
@@ -1025,7 +1072,7 @@ static void kill_twin(GameState *gs, EventQueue *events, bool right) {
 static void damage_twin(GameState *gs, EventQueue *events, bool right, float amount) {
     Player *p = &gs->player;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
     if (!(right ? p->twins_right_alive : p->twins_left_alive)) return;
 
@@ -1051,7 +1098,7 @@ static void kill_antartica_body(GameState *gs, EventQueue *events) {
     Player *p = &gs->player;
     if (!p->antartica_alive) return;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
 
     p->antartica_alive = false;
@@ -1073,7 +1120,7 @@ static void kill_antartica_body(GameState *gs, EventQueue *events) {
 static void damage_antartica_body(GameState *gs, EventQueue *events, float amount) {
     Player *p = &gs->player;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
     if (!p->antartica_alive) return;
 
@@ -1093,7 +1140,7 @@ static void kill_frosty(GameState *gs, EventQueue *events) {
     Player *p = &gs->player;
     if (!p->frosty_alive) return;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
 
     p->frosty_alive = false;
@@ -1110,7 +1157,7 @@ static void kill_frosty(GameState *gs, EventQueue *events) {
 static void damage_frosty(GameState *gs, EventQueue *events, float amount) {
     Player *p = &gs->player;
     if (!p->alive) return;
-    if (p->super_beam_timer > 0.0f) return;
+    if (super_beam_shields_player(gs)) return;
     if (p->god_mode) return;
     if (!p->frosty_alive) return;
 
@@ -2388,6 +2435,25 @@ static void fire_enemy_shot_style(GameState *gs, Enemy *e, EnemyShootStyle style
  * a NORMAL enemy's raw x/y would, guaranteeing every style still clears
  * the bottom of the screen on its own, no separate despawn logic needed. */
 static void update_enemy_movement(GameState *gs, Enemy *e, float dt) {
+    /* A boss-dispatched enemy ignores its own (not yet rolled)
+     * movement_style entirely until it reaches its landing point - see the
+     * Enemy.boss_dispatch_flying field's own doc comment. */
+    if (e->boss_dispatch_flying) {
+        float dx = e->boss_dispatch_target_x - e->x;
+        float dy = e->boss_dispatch_target_y - e->y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        float step = scaled(gs, BOSS_DISPATCH_ENEMY_FLIGHT_SPEED) * dt;
+        if (dist > step && dist > 0.0001f) {
+            e->x += dx / dist * step;
+            e->y += dy / dist * step;
+        } else {
+            e->x = e->boss_dispatch_target_x;
+            e->y = e->boss_dispatch_target_y;
+            spawner_land_boss_dispatched_enemy(gs, e);
+        }
+        return;
+    }
+
     switch (e->movement_style) {
         case ENEMY_MOVEMENT_CIRCLE:
         case ENEMY_MOVEMENT_SPIRAL: {
@@ -3096,7 +3162,15 @@ static void check_collisions(GameState *gs, EventQueue *events) {
          * this whole consequence block entirely while active (not just
          * kill_player) - the ring simply does nothing that frame, boss
          * keeps chasing, no free kill either. Outside the orb window, a
-         * boss ring touch is fatal to Cruzader same as any other ship. */
+         * boss ring touch is fatal to Cruzader same as any other ship.
+         *
+         * kill_player_hitbox is called before end_boss_encounter, not
+         * after: super_beam_shields_player reads gs->boss.alive to decide
+         * whether the beam's immunity applies (it doesn't during a boss
+         * fight - see that function's own doc comment), so the player's
+         * own death has to be resolved while the boss this ring belongs to
+         * is still (from its perspective) alive, not after end_boss_
+         * encounter has already zeroed the flag out from under it. */
         bool cruzader_orb_blocks_ring = gs->selected_ship == SHIP_CRUZADER && gs->player.cruzader_orb_timer > 0.0f;
         if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring) {
             float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
@@ -3118,9 +3192,9 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                 float player_radius = fmaxf(hbs[h].half_w, hbs[h].half_h);
                 if (within_radius(hbs[h].x, hbs[h].y, gs->boss.x, gs->boss.y, ring_radius + player_radius)) {
                     spawn_explosion(gs, gs->boss.x, gs->boss.y, gs->boss.size * 1.4f);
+                    kill_player_hitbox(gs, events, &hbs[h]);
                     end_boss_encounter(gs);
                     event_queue_push_sfx(events, SFX_BOSS_DEFEATED);
-                    kill_player_hitbox(gs, events, &hbs[h]);
                     break;
                 }
             }
@@ -3236,6 +3310,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     update_enemies(gs, dt);
     update_pending_orb_kills(gs, dt, events);
     update_boss(gs, dt);
+    update_boss_dispatch(gs, dt);
     update_enemy_and_boss_trails(gs, dt);
     update_orb(gs, dt);
     update_projectiles(gs, dt);

@@ -1226,6 +1226,302 @@ static void test_boss_warning_re_arms_for_the_second_encounter(void) {
     printf("test_boss_warning_re_arms_for_the_second_encounter OK\n");
 }
 
+/* Pins spawner_boss_dispatch_interval's exact formula down directly, same
+ * "deterministic formula, not sampled" style as
+ * test_erratic_enemy_chance_scales_with_bosses_defeated does for its own
+ * pure function: 3.0s for the very first encounter, 0.5s shorter per
+ * encounter since, floored at 1.0s. */
+static void test_boss_dispatch_interval_formula(void) {
+    assert(fabsf(spawner_boss_dispatch_interval(1) - 3.0f) < 0.001f);
+    assert(fabsf(spawner_boss_dispatch_interval(2) - 2.5f) < 0.001f);
+    assert(fabsf(spawner_boss_dispatch_interval(3) - 2.0f) < 0.001f);
+    assert(fabsf(spawner_boss_dispatch_interval(4) - 1.5f) < 0.001f);
+    assert(fabsf(spawner_boss_dispatch_interval(5) - 1.0f) < 0.001f);
+    assert(fabsf(spawner_boss_dispatch_interval(6) - 1.0f) < 0.001f); /* floor holds */
+    assert(fabsf(spawner_boss_dispatch_interval(20) - 1.0f) < 0.001f);
+    printf("test_boss_dispatch_interval_formula OK\n");
+}
+
+/* Confirms Boss.dispatch_timer is actually seeded from
+ * spawner_boss_dispatch_interval(gs->boss_count) at spawn, and that the
+ * interval gets shorter each encounter (down to the floor), across a full
+ * run of encounters rather than just checking the pure function in
+ * isolation above. */
+static void test_boss_dispatch_interval_shortens_across_encounters(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    float expected[] = {3.0f, 2.5f, 2.0f, 1.5f, 1.0f, 1.0f};
+    for (int n = 1; n <= 6; n++) {
+        kill_enemies_until_boss_spawns(&gs, &events);
+        assert(gs.boss.alive);
+        assert(gs.boss_count == n);
+        assert(fabsf(gs.boss.dispatch_timer - expected[n - 1]) < 0.001f);
+        defeat_current_boss(&gs, &events);
+    }
+    printf("test_boss_dispatch_interval_shortens_across_encounters OK\n");
+}
+
+/* Once dispatch_timer elapses, spawner_dispatch_enemy_from_boss must put a
+ * brand new alive Enemy directly beneath the boss (its own x, and y at the
+ * boss's own bottom edge), in flight (boss_dispatch_flying) toward a target
+ * point that's actually on screen. */
+static void test_boss_dispatches_enemy_from_beneath_itself_after_interval(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    float interval = spawner_boss_dispatch_interval(gs.boss_count);
+    assert(fabsf(gs.boss.dispatch_timer - interval) < 0.001f);
+
+    /* Clear the arena so the boss's own dispatch is the unambiguous only
+     * possible source of a new alive enemy - ordinary spawns are already
+     * suspended while a boss is alive, but fleeing survivors from before
+     * the boss arrived may not have cleared the bottom of the screen yet. */
+    for (int i = 0; i < MAX_ENEMIES; i++) gs.enemies[i].alive = false;
+
+    InputCommand none = no_input();
+    float dt = 0.05f;
+    float elapsed = 0.0f;
+    while (elapsed + dt < interval) {
+        game_update(&gs, &none, dt, &events);
+        elapsed += dt;
+    }
+    for (int i = 0; i < MAX_ENEMIES; i++) assert(!gs.enemies[i].alive); /* not yet */
+
+    game_update(&gs, &none, dt, &events); /* crosses the interval */
+
+    int idx = -1;
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        if (gs.enemies[i].alive) {
+            assert(idx < 0 && "expected exactly one dispatched enemy");
+            idx = i;
+        }
+    }
+    assert(idx >= 0);
+    Enemy *e = &gs.enemies[idx];
+    assert(e->boss_dispatch_flying);
+    assert(fabsf(e->x - gs.boss.x) < 0.01f);
+    assert(fabsf(e->y - (gs.boss.y + gs.boss.size * 0.5f)) < 0.01f);
+    assert(e->boss_dispatch_target_x >= 0.0f && e->boss_dispatch_target_x <= (float)gs.screen_w);
+    assert(e->boss_dispatch_target_y >= 0.0f && e->boss_dispatch_target_y <= (float)gs.screen_h);
+    /* dispatch_timer immediately re-armed for the next one, same interval
+     * since boss_count hasn't changed. */
+    assert(fabsf(gs.boss.dispatch_timer - interval) < 0.001f);
+    printf("test_boss_dispatches_enemy_from_beneath_itself_after_interval OK\n");
+}
+
+/* Once a dispatched enemy reaches its landing point, it must stop flying
+ * and pick up completely ordinary behavior from there - a real vy, a real
+ * fire_timer, and a movement_style actually rolled (not left at whatever
+ * placeholder spawner_dispatch_enemy_from_boss set). */
+static void test_boss_dispatched_enemy_lands_and_becomes_normal(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    for (int i = 0; i < MAX_ENEMIES; i++) gs.enemies[i].alive = false;
+    gs.boss.dispatch_timer = 0.001f; /* fire on the very next update */
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.01f, &events);
+
+    int idx = -1;
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        if (gs.enemies[i].alive) idx = i;
+    }
+    assert(idx >= 0);
+    assert(gs.enemies[idx].boss_dispatch_flying);
+
+    /* However far the randomly-rolled target is, BOSS_DISPATCH_ENEMY_FLIGHT_
+     * SPEED tightly bounds how long the flight can possibly take - the
+     * target is never farther than one full screen diagonal away. */
+    float max_flight_time = (float)(gs.screen_w + gs.screen_h) / BOSS_DISPATCH_ENEMY_FLIGHT_SPEED + 1.0f;
+    float elapsed = 0.0f;
+    while (elapsed < max_flight_time && gs.enemies[idx].boss_dispatch_flying) {
+        game_update(&gs, &none, 0.05f, &events);
+        elapsed += 0.05f;
+    }
+
+    assert(!gs.enemies[idx].boss_dispatch_flying);
+    assert(gs.enemies[idx].alive);
+    assert(gs.enemies[idx].vy > 0.0f); /* falls like a regular enemy from here on */
+    assert(gs.enemies[idx].fire_timer > 0.0f);
+    assert(gs.enemies[idx].movement_style >= ENEMY_MOVEMENT_NORMAL &&
+           gs.enemies[idx].movement_style <= ENEMY_MOVEMENT_RANDOM);
+    printf("test_boss_dispatched_enemy_lands_and_becomes_normal OK\n");
+}
+
+/* A boss-dispatched enemy is a completely ordinary Enemy entry as far as
+ * combat is concerned - shooting it down (even mid-flight, before it's
+ * "really" landed) must award score exactly like any other kill. */
+static void test_boss_dispatched_enemy_can_be_killed_for_score(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    for (int i = 0; i < MAX_ENEMIES; i++) gs.enemies[i].alive = false;
+    gs.boss.dispatch_timer = 0.001f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.01f, &events);
+
+    int idx = -1;
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        if (gs.enemies[i].alive) idx = i;
+    }
+    assert(idx >= 0);
+
+    /* The boss (and so the enemy it just dispatched) is still off-screen
+     * above y=0 this early into the encounter - move it into clear view
+     * before testing the shot, so the projectile isn't simply culled by
+     * update_projectiles' own off-screen cleanup before check_collisions
+     * ever runs, independent of anything this test actually cares about. */
+    gs.enemies[idx].y = (float)gs.screen_h * 0.5f;
+
+    int score_before = gs.score;
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = gs.enemies[idx].x;
+    gs.player_shots[0].y = gs.enemies[idx].y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.enemies[idx].alive);
+    assert(gs.score > score_before);
+    printf("test_boss_dispatched_enemy_can_be_killed_for_score OK\n");
+}
+
+/* Outside a boss fight, orbs drop via the ORB_SCORE_STEP/ORB_SPAWN_CHANCE
+ * coin-flip (see test_orb_spawn_chance_is_not_always_or_never); during one,
+ * that whole mechanic is skipped and replaced by a flat
+ * BOSS_FIGHT_ORB_SPAWN_CHANCE rolled on every kill instead (see
+ * destroy_enemy_for_score). Sampling-tolerance style matches
+ * test_erratic_enemies_start_appearing_after_first_boss_defeat. */
+static void test_boss_fight_orb_spawn_uses_flat_chance_per_kill(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+
+    int trials = 400;
+    int spawned = 0;
+    for (int i = 0; i < trials; i++) {
+        gs.orb.alive = false; /* isolate each kill's own roll */
+        kill_one_enemy(&gs, &events);
+        if (gs.orb.alive) spawned++;
+    }
+
+    float rate = (float)spawned / (float)trials;
+    assert(rate > 0.01f && rate < 0.12f); /* true rate is 5% */
+    printf("test_boss_fight_orb_spawn_uses_flat_chance_per_kill OK\n");
+}
+
+/* The score-step mechanic must be fully, deterministically disabled while
+ * a boss is alive - not just unlikely to fire. The boss's own defeat bonus
+ * (BOSS_HITS_INCREMENT * BOSS_KILL_SCORE_MULTIPLIER = 200 points for the
+ * first boss) is awarded via apply_score_delta while boss.alive is still
+ * true (see damage_boss), crossing at least one ORB_SCORE_STEP (200)
+ * multiple - if maybe_trigger_orb_spawn's boss.alive guard were missing,
+ * this would have a 50% chance of spawning an orb; with it, it must never
+ * spawn one, on every single run. */
+static void test_boss_fight_never_spawns_orb_via_score_step(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    gs.orb.alive = false;
+    int score_before = gs.score;
+
+    defeat_current_boss(&gs, &events);
+
+    assert(gs.score - score_before >= ORB_SCORE_STEP);
+    assert(!gs.orb.alive);
+    printf("test_boss_fight_never_spawns_orb_via_score_step OK\n");
+}
+
+/* Shooting the power orb (as opposed to capturing it) must never touch the
+ * boss, however close together they happen to be - check_collisions' own
+ * orb-shot sweep only ever iterates gs->enemies (see destroy_enemy_for_score
+ * unaffected, but more directly: the orb-shot block itself), which the boss
+ * simply isn't part of. Positioned away from the boss so the boss's own
+ * separate shot-vs-boss hit test (earlier in check_collisions) can't eat
+ * the same projectile first and produce a false pass. */
+static void test_shooting_power_orb_during_boss_fight_never_damages_boss(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    float hits_before = gs.boss.hits_taken;
+
+    gs.orb.alive = true;
+    gs.orb.x = 30.0f;
+    gs.orb.y = 30.0f;
+    gs.orb.size = 20.0f;
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.orb.x;
+    gs.enemies[0].y = gs.orb.y + 40.0f;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = gs.orb.x;
+    gs.player_shots[0].y = gs.orb.y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.orb.alive);                  /* detonated */
+    assert(gs.enemies[0].orb_kill_pending); /* still works normally otherwise */
+    assert(gs.boss.alive);                  /* boss completely unaffected */
+    assert(gs.boss.hits_taken == hits_before);
+    printf("test_shooting_power_orb_during_boss_fight_never_damages_boss OK\n");
+}
+
+/* super_beam_shields_player's whole point: the immunity a captured orb
+ * grants must not extend to a boss fight for ANY hazard, not just the
+ * boss's own ring (covered separately by
+ * test_boss_ring_contact_kills_boss_and_ignores_super_beam_but_not_god_mode) -
+ * plain enemy contact must be just as fatal. Outside a boss fight this is
+ * completely unchanged, still covered by test_player_invincible_during_
+ * super_beam. */
+static void test_super_beam_does_not_shield_against_ordinary_hazards_during_boss_fight(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    assert(gs.boss.alive);
+    gs.player.super_beam_timer = SUPER_BEAM_DURATION;
+
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.player.alive); /* the beam no longer protects mid-fight */
+    assert(gs.state == STATE_GAME_OVER);
+    printf("test_super_beam_does_not_shield_against_ordinary_hazards_during_boss_fight OK\n");
+}
+
 /* Fires once in the given mode against nothing (so the shot(s) survive to
  * be inspected) and returns a single shot's damage - the first alive one
  * found, which for the two-shot modes (double barrel, side beams) is
@@ -1676,12 +1972,20 @@ static void test_boss_ring_contact_destroys_both_boss_and_player(void) {
     printf("test_boss_ring_contact_destroys_both_boss_and_player OK\n");
 }
 
-/* The boss's detonation on ring contact is unconditional; only the
- * player's death respects invulnerability. Gating the whole interaction
+/* The boss's detonation on ring contact is unconditional; the player's own
+ * death still respects god mode's own unconditional immunity (kept
+ * separate from this change - see super_beam_shields_player's own doc
+ * comment), but NOT the super beam's: capturing the orb during a boss
+ * fight still grants the full beam (offense/healing/speed - see
+ * update_super_beam/the orb-capture block above), just never protection
+ * from the boss itself, so a ring touch is fatal even with an active
+ * beam - only god mode still blocks it. Gating the whole ring interaction
  * on the player being killable used to deadlock the encounter: an
  * invulnerable player would have the boss sit on top of them at zero
- * distance indefinitely with nothing resolving. */
-static void test_boss_ring_contact_kills_boss_but_spares_invincible_player(void) {
+ * distance indefinitely with nothing resolving - so the boss's own
+ * detonation stays unconditional regardless of which immunity (if any)
+ * the player's own death respects. */
+static void test_boss_ring_contact_kills_boss_and_ignores_super_beam_but_not_god_mode(void) {
     GameState gs;
     EventQueue events;
 
@@ -1700,7 +2004,7 @@ static void test_boss_ring_contact_kills_boss_but_spares_invincible_player(void)
     assert(gs.player.alive); /* but god mode still protects the player */
     assert(gs.state == STATE_GAME);
 
-    /* super beam grants the same protection, with the same resolution */
+    /* the super beam grants no such protection during a boss fight */
     start_game(&gs, &events);
     for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
     assert(gs.boss.alive);
@@ -1710,11 +2014,11 @@ static void test_boss_ring_contact_kills_boss_but_spares_invincible_player(void)
 
     game_update(&gs, &none, 0.001f, &events);
 
-    assert(!gs.boss.alive);
-    assert(gs.player.alive);
-    assert(gs.state == STATE_GAME);
+    assert(!gs.boss.alive);   /* boss still always detonates */
+    assert(!gs.player.alive); /* but the beam does not save the player this time */
+    assert(gs.state == STATE_GAME_OVER);
 
-    printf("test_boss_ring_contact_kills_boss_but_spares_invincible_player OK\n");
+    printf("test_boss_ring_contact_kills_boss_and_ignores_super_beam_but_not_god_mode OK\n");
 }
 
 /* Confirms the fatal radius is genuinely tied to BOSS_MENACE_RING_RATIO -
@@ -1756,6 +2060,14 @@ static void test_spawner_suspended_while_boss_alive(void) {
 
     for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
     assert(gs.boss.alive);
+
+    /* This test is scoped to spawner_update's own suspension specifically -
+     * the boss's separate periodic dispatch mechanic (update_boss_dispatch/
+     * spawner_dispatch_enemy_from_boss) is a deliberate, different spawn
+     * path that's supposed to add enemies while a boss is alive, covered by
+     * its own tests below. Push it out of reach so it can't fire during
+     * this test's own 6-second wait and be mistaken for a regression. */
+    gs.boss.dispatch_timer = 9999.0f;
 
     /* Give any fleeing survivors time to clear the bottom of the screen,
      * then confirm nothing new spawns to replace them while the boss is
@@ -3116,7 +3428,8 @@ static void test_twins_super_beam_sweeps_both_twins_columns(void) {
  * hazard in check_collisions already uses), so only the twin that actually
  * touched it dies - the boss's own detonation stays unconditional either
  * way (same "avoid an invincible-player stalemate" rationale as
- * test_boss_ring_contact_kills_boss_but_spares_invincible_player above). */
+ * test_boss_ring_contact_kills_boss_and_ignores_super_beam_but_not_god_mode
+ * above). */
 static void test_twins_boss_ring_kills_only_the_touched_twin(void) {
     GameState gs;
     EventQueue events;
@@ -3559,6 +3872,15 @@ int main(void) {
     test_boss_warning_stays_clear_after_boss_defeat();
     test_boss_warning_stays_clear_after_ring_detonation();
     test_boss_warning_re_arms_for_the_second_encounter();
+    test_boss_dispatch_interval_formula();
+    test_boss_dispatch_interval_shortens_across_encounters();
+    test_boss_dispatches_enemy_from_beneath_itself_after_interval();
+    test_boss_dispatched_enemy_lands_and_becomes_normal();
+    test_boss_dispatched_enemy_can_be_killed_for_score();
+    test_boss_fight_orb_spawn_uses_flat_chance_per_kill();
+    test_boss_fight_never_spawns_orb_via_score_step();
+    test_shooting_power_orb_during_boss_fight_never_damages_boss();
+    test_super_beam_does_not_shield_against_ordinary_hazards_during_boss_fight();
     test_double_barrel_deals_half_the_damage_of_normal_mode();
     test_power_cannon_deals_triple_the_damage_of_normal_mode();
     test_boss_hit_pool_drops_by_the_exact_damage_landed();
@@ -3576,7 +3898,7 @@ int main(void) {
     test_boss_arrival_makes_enemies_flee_and_projectiles_harmless();
     test_boss_defeat_awards_bonus_score();
     test_boss_ring_contact_destroys_both_boss_and_player();
-    test_boss_ring_contact_kills_boss_but_spares_invincible_player();
+    test_boss_ring_contact_kills_boss_and_ignores_super_beam_but_not_god_mode();
     test_boss_ring_radius_matches_menace_ratio();
     test_spawner_suspended_while_boss_alive();
     test_enemy_projectile_slot_reset_after_boss_fade();
