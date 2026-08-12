@@ -64,7 +64,13 @@ void app_run(App *app) {
         game_update(&gs, &input, (float)dt, &events);
 
         float difficulty01 = difficulty_normalized(gs.time_elapsed);
-        app->audio->update(app->audio->self, (float)dt, gs.state == STATE_PAUSE, difficulty01, gs.boss.alive);
+        /* boss.alive OR boss_warning: the boss track starts as soon as
+         * the warning window opens (gs.boss_warning), not only once the
+         * boss actually appears, and keeps playing uninterrupted straight
+         * through boss.alive since the two flags never overlap (see
+         * boss_warning's own comment in domain/types.h). */
+        bool boss_track_active = gs.boss.alive || gs.boss_warning;
+        app->audio->update(app->audio->self, (float)dt, gs.state == STATE_PAUSE, difficulty01, boss_track_active);
         for (int i = 0; i < events.count; i++) {
             if (events.items[i].type == EVENT_PLAY_SFX) {
                 app->audio->play_sfx(app->audio->self, events.items[i].sfx);

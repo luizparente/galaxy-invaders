@@ -780,6 +780,19 @@ typedef struct GameState {
      * so the next arrival always costs a full fresh BOSS_SCORE_STEP. */
     int score_since_last_boss;
 
+    /* True for the BOSS_WARNING_SCORE_GAP point stretch immediately before
+     * a boss arrives, false the instant one actually does - score_since_
+     * last_boss resets to 0 in the very same frame spawn_boss sets
+     * boss.alive true, so this never overlaps with boss.alive - and false
+     * again the instant the boss leaves. Recomputed every frame by
+     * update_boss_warning (usecases/game_logic.c) from score_since_last_
+     * boss/boss.alive rather than stored independently by whichever
+     * mutation site changes those, so it can never drift out of sync with
+     * them. Consumed by the adapters: draw_stars (sdl_renderer.c) fades
+     * the star field red while this is true, and app.c ORs it with
+     * boss.alive when driving audio->update's boss track. */
+    bool boss_warning;
+
     int score;
     int last_game_score;
     float time_elapsed;

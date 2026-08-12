@@ -1102,6 +1102,130 @@ static void kill_enemies_until_boss_spawns(GameState *gs, EventQueue *events) {
     assert(gs->boss.alive);
 }
 
+/* gs->boss_warning drives the red star fade (draw_stars) and the early
+ * boss-track start (app.c) for the BOSS_WARNING_SCORE_GAP-point stretch
+ * right before a boss arrives. During this first encounter the score
+ * multiplier is still exactly 1.0x (score stays under SCORE_MULTIPLIER_STEP
+ * the whole way), so each kill is worth exactly SCORE_PER_KILL and the
+ * 450-point gap boundary lands on the 45th kill precisely. */
+static void test_boss_warning_activates_50_points_before_boss(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    assert(!gs.boss_warning);
+    assert(!gs.boss.alive);
+
+    for (int kill = 0; kill < 44; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.score_since_last_boss == 440);
+    assert(!gs.boss_warning); /* one kill short of the gap */
+
+    kill_one_enemy(&gs, &events); /* 45th kill: crosses into the last 50 points */
+    assert(gs.score_since_last_boss == 450);
+    assert(gs.boss_warning);
+    assert(!gs.boss.alive); /* warning, not arrival, at exactly 450 */
+
+    printf("test_boss_warning_activates_50_points_before_boss OK\n");
+}
+
+/* The warning must hold steady for the whole 450-499 stretch (no
+ * flickering back off mid-gap) and must be false the instant boss.alive
+ * flips true - the two flags never overlap, since score_since_last_boss
+ * resets to 0 in the very same spawn_boss call that sets boss.alive (see
+ * update_boss_warning in usecases/game_logic.c). */
+static void test_boss_warning_holds_through_the_gap_then_hands_off_to_boss_alive(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    for (int kill = 0; kill < 45; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.boss_warning && !gs.boss.alive);
+
+    for (int kill = 45; kill < 49; kill++) {
+        kill_one_enemy(&gs, &events);
+        assert(gs.boss_warning);
+        assert(!gs.boss.alive);
+    }
+    assert(gs.score_since_last_boss == 490);
+
+    kill_one_enemy(&gs, &events); /* 50th kill: the boss actually arrives */
+    assert(gs.boss.alive);
+    assert(!gs.boss_warning);
+    assert(gs.score_since_last_boss == 0);
+
+    printf("test_boss_warning_holds_through_the_gap_then_hands_off_to_boss_alive OK\n");
+}
+
+/* Both ways a boss can go down (shot dead here, or ring-detonated in
+ * test_boss_warning_stays_clear_after_ring_detonation below) end through
+ * the single end_boss_encounter - confirm boss_warning comes back false,
+ * not true, the instant it fires: a freshly zeroed score_since_last_boss
+ * is nowhere near the next warning gap. */
+static void test_boss_warning_stays_clear_after_boss_defeat(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.boss.alive);
+    assert(!gs.boss_warning);
+
+    defeat_current_boss(&gs, &events);
+
+    assert(!gs.boss.alive);
+    assert(!gs.boss_warning);
+    assert(gs.score_since_last_boss == 0);
+    printf("test_boss_warning_stays_clear_after_boss_defeat OK\n");
+}
+
+/* Same check as above, but through the other defeat route: the boss's own
+ * menace ring touching the player (see check_collisions), which detonates
+ * the boss unconditionally even when god mode keeps the player alive. */
+static void test_boss_warning_stays_clear_after_ring_detonation(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    for (int kill = 0; kill < 50; kill++) kill_one_enemy(&gs, &events);
+    assert(gs.boss.alive);
+    gs.player.god_mode = true; /* survive the ring touch so the run keeps going */
+    gs.boss.x = gs.player.x;
+    gs.boss.y = gs.player.y;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!gs.boss.alive);
+    assert(!gs.boss_warning);
+    assert(gs.score_since_last_boss == 0);
+    printf("test_boss_warning_stays_clear_after_ring_detonation OK\n");
+}
+
+/* Confirms the warning re-arms cleanly for a second encounter rather than
+ * only working the first time through a run - deliberately doesn't assume
+ * round-number scoring (the defeat bonus can push gs.score past
+ * SCORE_MULTIPLIER_STEP, making later kills worth more than SCORE_PER_KILL),
+ * so it just drives kills until one of the two flags goes true. */
+static void test_boss_warning_re_arms_for_the_second_encounter(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    kill_enemies_until_boss_spawns(&gs, &events);
+    defeat_current_boss(&gs, &events);
+    assert(!gs.boss.alive);
+    assert(!gs.boss_warning);
+    assert(gs.score_since_last_boss == 0);
+
+    for (int i = 0; i < 300 && !gs.boss_warning && !gs.boss.alive; i++) {
+        kill_one_enemy(&gs, &events);
+    }
+
+    assert(gs.boss_warning);
+    assert(!gs.boss.alive);
+    printf("test_boss_warning_re_arms_for_the_second_encounter OK\n");
+}
+
 /* Fires once in the given mode against nothing (so the shot(s) survive to
  * be inspected) and returns a single shot's damage - the first alive one
  * found, which for the two-shot modes (double barrel, side beams) is
@@ -3430,6 +3554,11 @@ int main(void) {
     test_orb_falls_off_screen_when_uncaptured();
     test_orb_spawn_chance_is_not_always_or_never();
     test_boss_spawns_at_500_points_with_correct_hits_required();
+    test_boss_warning_activates_50_points_before_boss();
+    test_boss_warning_holds_through_the_gap_then_hands_off_to_boss_alive();
+    test_boss_warning_stays_clear_after_boss_defeat();
+    test_boss_warning_stays_clear_after_ring_detonation();
+    test_boss_warning_re_arms_for_the_second_encounter();
     test_double_barrel_deals_half_the_damage_of_normal_mode();
     test_power_cannon_deals_triple_the_damage_of_normal_mode();
     test_boss_hit_pool_drops_by_the_exact_damage_landed();

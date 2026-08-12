@@ -549,6 +549,15 @@ static void maybe_trigger_boss_spawn(GameState *gs, EventQueue *events) {
     spawn_boss(gs, events);
 }
 
+/* Keeps gs->boss_warning (see its own comment in domain/types.h) in sync
+ * every frame, regardless of which path last changed score_since_last_boss
+ * or boss.alive - cheaper and less error-prone than trying to update it
+ * from every one of those mutation sites individually. */
+static void update_boss_warning(GameState *gs) {
+    gs->boss_warning = !gs->boss.alive &&
+                        gs->score_since_last_boss >= BOSS_SCORE_STEP - BOSS_WARNING_SCORE_GAP;
+}
+
 /* The single place gs->score is allowed to change, so every threshold
  * effect tied to score (laser recolor, orb drops, boss arrivals) reacts
  * identically no matter which gameplay path earned the points. */
@@ -3263,6 +3272,13 @@ void game_update(GameState *gs, const InputCommand *input, float dt, EventQueue 
             update_game_over(gs, input, events);
             break;
     }
+
+    /* Runs after the switch above (not before) so it reflects score/boss
+     * changes update_running just made this same frame, instead of
+     * lagging a frame behind - the frame a boss actually spawns must see
+     * boss_warning already false, not still true from the update_running
+     * call that flipped boss.alive. */
+    update_boss_warning(gs);
 
     if (input->quit_requested) gs->quit_requested = true;
 }

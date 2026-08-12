@@ -659,6 +659,17 @@
 #define FROSTY_SNOWBALL_TRAIL_MAX_ALPHA 32
 
 #define BOSS_SCORE_STEP 500
+/* How many points before BOSS_SCORE_STEP the "boss incoming" warning
+ * kicks in - see update_boss_warning in usecases/game_logic.c, which
+ * drives both the red star fade (draw_stars in adapters/sdl_renderer.c)
+ * and the early start of the boss soundtrack (app.c's audio->update
+ * call), both of which last until the boss is actually defeated. */
+#define BOSS_WARNING_SCORE_GAP 50
+/* Radians/sec fed to sinf(gs->time_elapsed * ...) to pulse the warning
+ * star field between white and red - see draw_stars. Distinct from (and
+ * slower than) SUPER_BEAM_WIDTH_PULSE_SPEED, which pulses something
+ * already close-up and urgent rather than a background ambient cue. */
+#define BOSS_WARNING_STAR_PULSE_SPEED 3.0f
 #define BOSS_HITS_INCREMENT 50
 /* The boss's own baseline size range, scaled up by BOSS_SIZE_MULTIPLIER -
  * kept independent of ENEMY_MIN_SIZE/MAX_SIZE (which enemies spawn at)

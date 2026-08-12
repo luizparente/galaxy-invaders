@@ -147,7 +147,20 @@ static void draw_background_smoke(SdlRendererCtx *ctx, const GameState *gs) {
 }
 
 static void draw_stars(SdlRendererCtx *ctx, const GameState *gs) {
-    bool danger = gs->boss.alive;
+    /* red_mix is 0 (plain white) normally, 1 (full red, exactly the old
+     * "danger" look) the instant the boss is actually on screen, and
+     * oscillates between the two on BOSS_WARNING_STAR_PULSE_SPEED during
+     * the gs->boss_warning stretch immediately before it arrives - a
+     * fading warning cue rather than the steady red reserved for the
+     * boss's own presence. */
+    float red_mix;
+    if (gs->boss.alive) {
+        red_mix = 1.0f;
+    } else if (gs->boss_warning) {
+        red_mix = sinf(gs->time_elapsed * BOSS_WARNING_STAR_PULSE_SPEED) * 0.5f + 0.5f;
+    } else {
+        red_mix = 0.0f;
+    }
     for (int i = 0; i < MAX_STARS; i++) {
         const Star *s = &gs->stars[i];
         unsigned char b = s->brightness;
@@ -157,10 +170,11 @@ static void draw_stars(SdlRendererCtx *ctx, const GameState *gs) {
          * visibly smaller, not just a bit darker, is what actually sells
          * "some are faded, some are bright" from normal viewing distance. */
         float dot = (1.2f + (float)b / 255.0f * 2.6f) * gs->scale;
-        /* Same brightness-driven twinkle either way - only the primary
-         * color channel changes, from white to a dark red, while a boss
-         * is on screen. */
-        Color c = danger ? (Color){b, 0, 0, 255} : (Color){b, b, b, 255};
+        /* Same brightness-driven twinkle either way - only the green/blue
+         * channels move, from white (b,b,b) down to dark red (b,0,0), so
+         * the red channel (and therefore the twinkle) never changes. */
+        unsigned char gb = (unsigned char)((float)b * (1.0f - red_mix));
+        Color c = {b, gb, gb, 255};
         gp_fill_rect(ctx->renderer, s->x, s->y, dot, dot, c);
     }
 }
