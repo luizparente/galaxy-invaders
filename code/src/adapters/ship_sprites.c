@@ -7,6 +7,7 @@
 #include "adapters/ship_twins_sprite.h"
 #include "adapters/ship_antartica_sprite.h"
 #include "adapters/ship_buckler_sprite.h"
+#include "adapters/ship_samurai_sprite.h"
 
 const ShipSpriteSheet kShipSprites[SHIP_COUNT] = {
     [SHIP_B20] = {kPlayerSpritePixels, PLAYER_SPRITE_SIZE},
@@ -17,4 +18,5 @@ const ShipSpriteSheet kShipSprites[SHIP_COUNT] = {
     [SHIP_TWINS] = {kShipTwinsSpritePixels, SHIP_TWINS_SPRITE_SIZE},
     [SHIP_ANTARTICA] = {kShipAntarticaSpritePixels, SHIP_ANTARTICA_SPRITE_SIZE},
     [SHIP_BUCKLER] = {kShipBucklerSpritePixels, SHIP_BUCKLER_SPRITE_SIZE},
+    [SHIP_SAMURAI] = {kShipSamuraiSpritePixels, SHIP_SAMURAI_SPRITE_SIZE},
 };

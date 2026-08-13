@@ -504,15 +504,18 @@
  * Kept fully independent of PLAYER_PROJECTILE_W/H/SPEED and the Power
  * Cannon's own constants below, same "kept-independent copies, not shared"
  * precedent as Shine's own block above. */
-#define CRUZADER_SIZE_MULTIPLIER 1.5f /* "50% bigger than B-20" - usecases/ship.c's kShipSizeMultiplier */
+#define CRUZADER_SIZE_MULTIPLIER                                               \
+  1.5f /* "50% bigger than B-20" - usecases/ship.c's kShipSizeMultiplier */
 
 /* Mode 1 (default): B-20's DOUBLE pattern (two wingtip shots), recolored
  * green with blue accents (see draw_cruzader_bolt in
  * adapters/sdl_renderer.c), at 1.5 shots/sec - reuses B-20's own
  * DOUBLE_BARREL_DAMAGE_MULTIPLIER, matching "same as B-20's #4" per spec. */
 #define CRUZADER_TWIN_FIRE_COOLDOWN (1.0f / 1.5f)
-#define CRUZADER_BOLT_LENGTH 26.0f /* oriented bounding box, same construction as Shine's own shard */
-#define CRUZADER_BOLT_WIDTH 4.5f /* 50% slimmer than the original 9.0f - "too thick" per feedback */
+#define CRUZADER_BOLT_LENGTH                                                   \
+  26.0f /* oriented bounding box, same construction as Shine's own shard */
+#define CRUZADER_BOLT_WIDTH                                                    \
+  4.5f /* 50% slimmer than the original 9.0f - "too thick" per feedback */
 
 /* Mode 2: the deflector orb - see SHOOT_MODE_CRUZADER_ORB's own doc comment
  * (domain/types.h) and trigger_cruzader_orb/check_collisions in
@@ -533,9 +536,11 @@
  * explosion of its own. */
 #define CRUZADER_ROCKET_FIRE_COOLDOWN 2.0f
 #define CRUZADER_ROCKET_SPEED (PLAYER_PROJECTILE_SPEED * 0.6f)
-#define CRUZADER_ROCKET_DAMAGE (BASE_PLAYER_DAMAGE * POWER_CANNON_DAMAGE_MULTIPLIER)
+#define CRUZADER_ROCKET_DAMAGE                                                 \
+  (BASE_PLAYER_DAMAGE * POWER_CANNON_DAMAGE_MULTIPLIER)
 #define CRUZADER_ROCKET_LENGTH 24.0f
-#define CRUZADER_ROCKET_WIDTH 5.0f /* 50% slimmer than the original 10.0f - "too thick" per feedback */
+#define CRUZADER_ROCKET_WIDTH                                                  \
+  5.0f /* 50% slimmer than the original 10.0f - "too thick" per feedback */
 /* Denser, more visible, blue-tinted smoke than every other shot's own
  * PROJECTILE_TRAIL_SPAWN_INTERVAL/PROJECTILE_TRAIL_MAX_ALPHA - "increase the
  * visibility of the smoke... make it blue" per feedback, scoped to this one
@@ -543,8 +548,10 @@
  * usecases/game_logic.c) - every other projectile's trail (every other
  * Cruzader mode included) is completely untouched. Color is a plain Color
  * literal, not a #define, next to its two size/cadence siblings here. */
-#define CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL (PROJECTILE_TRAIL_SPAWN_INTERVAL * 0.4f)
-#define CRUZADER_ROCKET_TRAIL_MAX_ALPHA 90 /* ~4.5x PROJECTILE_TRAIL_MAX_ALPHA's 20 */
+#define CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL                                   \
+  (PROJECTILE_TRAIL_SPAWN_INTERVAL * 0.4f)
+#define CRUZADER_ROCKET_TRAIL_MAX_ALPHA                                        \
+  90 /* ~4.5x PROJECTILE_TRAIL_MAX_ALPHA's 20 */
 #define CRUZADER_ROCKET_TRAIL_SIZE_MULTIPLIER 1.6f
 
 /* Passive (always on, no key of its own): a 50% chance to bounce an
@@ -597,7 +604,8 @@
  * SUPER_BEAM_*), same "kept-independent copies, not shared" precedent as
  * every other ship's own block above, so retuning Antartica/Frosty can
  * never silently retune anyone else's numbers. */
-#define ANTARTICA_FROSTY_SIZE_MULTIPLIER 0.75f /* "25% smaller than Antartica" */
+#define ANTARTICA_FROSTY_SIZE_MULTIPLIER                                       \
+  0.75f /* "25% smaller than Antartica" */
 /* Frosty's own starting position (see reset_run in usecases/game_logic.c) is
  * TWINS_FORMATION_GAP to Antartica's own left - "the same distance between
  * the two when the game begins" as The Twins' own starting gap, per spec,
@@ -683,7 +691,8 @@
 /* How far from the ship's own center each cannon's shot spawns - offset
  * along that cannon's own firing direction, so a shot visibly leaves from
  * the rim of the hull rather than its exact center. */
-#define BUCKLER_CANNON_MUZZLE_OFFSET (PLAYER_WIDTH * BUCKLER_SIZE_MULTIPLIER * 0.5f)
+#define BUCKLER_CANNON_MUZZLE_OFFSET                                           \
+  (PLAYER_WIDTH * BUCKLER_SIZE_MULTIPLIER * 0.5f)
 
 /* Spacebar: the protective orb - same defensive behavior/duration/cooldown
  * as Cruzader's own deflector orb (CRUZADER_ORB_DURATION/COOLDOWN), just
@@ -694,6 +703,59 @@
 #define BUCKLER_ORB_DURATION 5.0f
 #define BUCKLER_ORB_COOLDOWN 20.0f
 #define BUCKLER_ORB_RADIUS (PLAYER_WIDTH * BUCKLER_SIZE_MULTIPLIER * 1.4f)
+
+/* --- Samurai's own weapon (see usecases/ship.c for her 3-slot moveset, and
+ * the SHOOT_MODE_SAMURAI_... / PROJECTILE_KIND_SAMURAI_SHURIKEN doc comments
+ * in domain/types.h) - kept fully independent of every other ship's own
+ * constants, same "kept-independent copies, not shared" precedent as every
+ * other ship's own block above. */
+#define SAMURAI_SIZE_MULTIPLIER 1.0f /* same render/hitbox size as B-20 */
+
+/* Every one of Samurai's own shots (modes 1/2 alike) - "shiny white
+ * shurikens" per spec, drawn as a spinning 4-point star (see
+ * draw_samurai_shuriken in adapters/sdl_renderer.c). Speed reuses B-20's own
+ * baseline unscaled. */
+#define SAMURAI_SHURIKEN_SPEED PLAYER_PROJECTILE_SPEED
+#define SAMURAI_SHURIKEN_RADIUS 7.0f
+#define SAMURAI_SHURIKEN_SPIN_SPEED 480.0f /* degrees/sec, purely cosmetic */
+/* "2 pts damage on bosses" - BASE_PLAYER_DAMAGE is worth 1 pt, so this is
+ * exactly double a normal B-20 mode-1 shot's own damage. */
+#define SAMURAI_SHURIKEN_DAMAGE (BASE_PLAYER_DAMAGE * 2.0f)
+
+/* Mode 1 (default): "bursts of 3 shuriken stars" - staggered over time
+ * rather than landing in the same frame, the same ENEMY_SHOOT_TRIBURST
+ * pattern (ENEMY_TRIBURST_SHOT_INTERVAL) reused for the player's own mode 1
+ * (see Player.samurai_burst_shots_remaining/samurai_burst_shot_timer and
+ * update_samurai_shuriken in usecases/game_logic.c): 150ms between each of
+ * the 3 shots within a burst, then a 550ms pause before the next burst can
+ * start - an 850ms full cycle, not the rounder "once per second" a first
+ * pass at this ship used, straight ahead from the nose like B-20's own
+ * mode 1. */
+#define SAMURAI_SHURIKEN_BURST_COUNT 3
+#define SAMURAI_SHURIKEN_SHOT_INTERVAL 0.1f
+#define SAMURAI_SHURIKEN_BURST_COOLDOWN 0.55f
+
+/* Mode 2: the 180-degree sweep - see SHOOT_MODE_SAMURAI_OMNI's own doc
+ * comment in domain/types.h. 8 shots total, "consistent angles of 180/8
+ * degrees" per spec (SAMURAI_OMNI_STEP_DEG), starting from the west and
+ * sweeping toward the east over SAMURAI_OMNI_DURATION seconds, one shot
+ * every SAMURAI_OMNI_SHOT_INTERVAL seconds - not simultaneous like Shine's
+ * own omni burst or C-24's own OMNI mode, the one deliberate difference
+ * "shot one at a time over a 1 second period" asks for. */
+#define SAMURAI_OMNI_SHOT_COUNT 8
+#define SAMURAI_OMNI_STEP_DEG 22.5f /* 180.0f / SAMURAI_OMNI_SHOT_COUNT */
+#define SAMURAI_OMNI_DURATION 1.0f
+#define SAMURAI_OMNI_SHOT_INTERVAL                                             \
+  (SAMURAI_OMNI_DURATION / (float)SAMURAI_OMNI_SHOT_COUNT)
+#define SAMURAI_OMNI_COOLDOWN 20.0f
+
+/* Mode 3: stealth - see SHOOT_MODE_SAMURAI_STEALTH's own doc comment in
+ * domain/types.h. No shot constants of its own - it doesn't fire at all,
+ * only moves faster and becomes untouchable for its own duration. */
+#define SAMURAI_STEALTH_DURATION 3.0f
+#define SAMURAI_STEALTH_COOLDOWN 20.0f
+#define SAMURAI_STEALTH_SPEED_MULTIPLIER 2.0f
+#define SAMURAI_STEALTH_OPACITY 0.5f /* "50% transparency" per spec */
 
 #define BOSS_SCORE_STEP 500
 /* How many points before BOSS_SCORE_STEP the "boss incoming" warning

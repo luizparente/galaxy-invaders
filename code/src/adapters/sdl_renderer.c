@@ -195,9 +195,12 @@ static void draw_scanlines(SdlRendererCtx *ctx, const GameState *gs) {
  * player can fly (draw_player) and for that ship's icon/preview on the
  * ship-select screen (draw_ship_select_screen). god_tint, when non-NULL,
  * blends toward it (see kGodModeTint) - only the live in-game ship ever
- * passes one. */
+ * passes one. opacity multiplies every pixel's own alpha - 1.0f (fully
+ * opaque) everywhere except Samurai's own stealth mode (see draw_player's
+ * own SAMURAI_STEALTH_OPACITY use), which is the only caller that ever
+ * passes anything else. */
 static void draw_ship_sprite(SdlRendererCtx *ctx, const ShipSpriteSheet *sheet, float cx, float cy,
-                              float w, float h, const Color *god_tint) {
+                              float w, float h, const Color *god_tint, float opacity) {
     float cell_w = w / (float)sheet->size;
     float cell_h = h / (float)sheet->size;
     float left = cx - w / 2.0f;
@@ -213,7 +216,7 @@ static void draw_ship_sprite(SdlRendererCtx *ctx, const ShipSpriteSheet *sheet, 
                 (unsigned char)((packed >> 24) & 0xFFu),
                 (unsigned char)((packed >> 16) & 0xFFu),
                 (unsigned char)((packed >> 8) & 0xFFu),
-                a,
+                (unsigned char)((float)a * opacity),
             };
             if (god_tint) c = lerp_color(c, *god_tint, 0.6f);
 
@@ -238,10 +241,10 @@ static void draw_player(SdlRendererCtx *ctx, const GameState *gs) {
          * twin's own life is spent (see the Player struct's own doc
          * comment for twins_right_x/twins_left_x). */
         if (p->twins_right_alive) {
-            draw_ship_sprite(ctx, &kShipSprites[SHIP_TWINS], p->twins_right_x, p->y, w, h, tint);
+            draw_ship_sprite(ctx, &kShipSprites[SHIP_TWINS], p->twins_right_x, p->y, w, h, tint, 1.0f);
         }
         if (p->twins_left_alive) {
-            draw_ship_sprite(ctx, &kShipSprites[SHIP_TWINS], p->twins_left_x, p->y, w, h, tint);
+            draw_ship_sprite(ctx, &kShipSprites[SHIP_TWINS], p->twins_left_x, p->y, w, h, tint, 1.0f);
         }
         return;
     }
@@ -254,18 +257,27 @@ static void draw_player(SdlRendererCtx *ctx, const GameState *gs) {
          * ANTARTICA_FROSTY_SIZE_MULTIPLIER Antartica's own size, each
          * skipped once that body's own life is spent. */
         if (p->antartica_alive) {
-            draw_ship_sprite(ctx, &kShipSprites[SHIP_ANTARTICA], p->x, p->y, w, h, tint);
+            draw_ship_sprite(ctx, &kShipSprites[SHIP_ANTARTICA], p->x, p->y, w, h, tint, 1.0f);
         }
         if (p->frosty_alive) {
             static const ShipSpriteSheet kFrostySpriteSheet = {kFrostySpritePixels, FROSTY_SPRITE_SIZE};
             float fw = w * ANTARTICA_FROSTY_SIZE_MULTIPLIER;
             float fh = h * ANTARTICA_FROSTY_SIZE_MULTIPLIER;
-            draw_ship_sprite(ctx, &kFrostySpriteSheet, p->frosty_x, p->frosty_y, fw, fh, tint);
+            draw_ship_sprite(ctx, &kFrostySpriteSheet, p->frosty_x, p->frosty_y, fw, fh, tint, 1.0f);
         }
         return;
     }
 
-    draw_ship_sprite(ctx, &kShipSprites[gs->selected_ship], p->x, p->y, w, h, tint);
+    /* Samurai's own stealth mode (SHOOT_MODE_SAMURAI_STEALTH): "gains a 50%
+     * transparency visual effect" for the whole active window - see
+     * update_samurai_stealth/samurai_stealth_active in usecases/game_logic.c
+     * for the immunity/speed half of this power, entirely independent of
+     * this opacity value. Every other ship always draws fully opaque. */
+    float opacity = 1.0f;
+    if (gs->selected_ship == SHIP_SAMURAI && p->samurai_stealth_timer > 0.0f) {
+        opacity = SAMURAI_STEALTH_OPACITY;
+    }
+    draw_ship_sprite(ctx, &kShipSprites[gs->selected_ship], p->x, p->y, w, h, tint, opacity);
 }
 
 /* Cruzader's own mode 2 deflector orb (see check_collisions and
@@ -339,7 +351,7 @@ static void draw_child(SdlRendererCtx *ctx, const GameState *gs, const ChildShip
 
     float w = PLAYER_WIDTH * gs->scale;
     float h = PLAYER_HEIGHT * gs->scale;
-    draw_ship_sprite(ctx, &kShipSprites[c->kind], c->x, c->y, w, h, NULL);
+    draw_ship_sprite(ctx, &kShipSprites[c->kind], c->x, c->y, w, h, NULL, 1.0f);
 }
 
 /* Shared by draw_enemy and draw_boss: the boss presents as "a randomly
@@ -641,6 +653,57 @@ static void draw_buckler_cannon_ball(SdlRendererCtx *ctx, const Projectile *pr, 
     Color glint = kBucklerYellow;
     glint.a = 220;
     gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
+}
+
+/* Fills a 4-point star (ninja-star/shuriken silhouette) centered at (cx, cy):
+ * 8 points alternating between outer_r (the tips) and inner_r (the concave
+ * notches between them), starting at angle_rad and spaced pi/4 apart, filled
+ * as a triangle fan from the center - the same "polygon built from raw
+ * trig", no dedicated primitive needed, gp_draw_circle_outline already uses
+ * for a stroked circle. Used only by draw_samurai_shuriken below. */
+static void gp_fill_star4(SDL_Renderer *r, float cx, float cy, float outer_r, float inner_r, float angle_rad,
+                           Color c) {
+    float px[8], py[8];
+    for (int i = 0; i < 8; i++) {
+        float a = angle_rad + (float)i * ((float)M_PI / 4.0f);
+        float rad = (i % 2 == 0) ? outer_r : inner_r;
+        px[i] = cx + cosf(a) * rad;
+        py[i] = cy + sinf(a) * rad;
+    }
+    for (int i = 0; i < 8; i++) {
+        int j = (i + 1) % 8;
+        gp_fill_triangle(r, cx, cy, px[i], py[i], px[j], py[j], c);
+    }
+}
+
+/* Every one of Samurai's own shots (modes 1/2 alike) - "shiny white
+ * shurikens" per spec: a soft white glow behind a bright, slightly
+ * off-white star body and a small hot-white glint at the center, same
+ * layered-glow construction as every other player bolt, just built from
+ * gp_fill_star4 instead of a circle/shard. Spins continuously - angle comes
+ * from GameState.time_elapsed and the shot's own phase_seed, the same
+ * "per-instance seed plus the global clock" convention C-24's own hue-cycle/
+ * Shine's own spiral-shard spin already use, completely independent of the
+ * shot's own actual travel direction. */
+static void draw_samurai_shuriken(SdlRendererCtx *ctx, const Projectile *pr, float scale, float time) {
+    static const Color kShurikenBody = {235, 240, 248, 255};
+
+    float outer = SAMURAI_SHURIKEN_RADIUS * scale;
+    float inner = outer * 0.35f;
+
+    float phase_deg = pr->phase_seed * (180.0f / (float)M_PI);
+    float angle_deg = fmodf(time * SAMURAI_SHURIKEN_SPIN_SPEED + phase_deg, 360.0f);
+    float angle = angle_deg * ((float)M_PI / 180.0f);
+
+    Color glow = kWhite;
+    glow.a = 70;
+    gp_fill_star4(ctx->renderer, pr->x, pr->y, outer * 1.6f, inner * 1.6f, angle, glow);
+
+    gp_fill_star4(ctx->renderer, pr->x, pr->y, outer, inner, angle, kShurikenBody);
+
+    Color glint = kWhite;
+    glint.a = 230;
+    gp_fill_circle(ctx->renderer, pr->x, pr->y, outer * 0.22f, glint);
 }
 
 /* One layer of a Shine shard's icicle silhouette: a pointed front tip and
@@ -955,6 +1018,10 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
         }
         if (pr->style_ship == SHIP_BUCKLER) {
             draw_buckler_cannon_ball(ctx, pr, scale);
+            return;
+        }
+        if (pr->style_ship == SHIP_SAMURAI) {
+            draw_samurai_shuriken(ctx, pr, scale, gs->time_elapsed);
             return;
         }
         switch (pr->kind) {
@@ -1372,7 +1439,7 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
     "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
     "SHARDS", "OMNI", "SPIRAL", "TWIN", "ORB", "ROCKETS", "ALTERNATE", "MIRROR",
-    "ICE SHARDS", "ICE STORM", "FREEZE BEAM", "CANNON",
+    "ICE SHARDS", "ICE STORM", "FREEZE BEAM", "CANNON", "SHURIKEN", "SWEEP", "STEALTH",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -1415,7 +1482,9 @@ static void draw_shoot_mode_indicator(SdlRendererCtx *ctx, const GameState *gs) 
                             (slot_mode == SHOOT_MODE_ANTARTICA_ICE_STORM &&
                              p->antartica_ice_storm_cooldown_timer > 0.0f) ||
                             (slot_mode == SHOOT_MODE_ANTARTICA_FREEZE_BEAM &&
-                             p->antartica_freeze_beam_cooldown_timer > 0.0f);
+                             p->antartica_freeze_beam_cooldown_timer > 0.0f) ||
+                            (slot_mode == SHOOT_MODE_SAMURAI_OMNI && p->samurai_omni_cooldown_timer > 0.0f) ||
+                            (slot_mode == SHOOT_MODE_SAMURAI_STEALTH && p->samurai_stealth_cooldown_timer > 0.0f);
 
         Color outline = active ? kGreen : (cooling_down ? kRed : kYellow);
         gp_fill_rect(ctx->renderer, x, y0, box, box, outline);
@@ -1728,7 +1797,7 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
 }
 
 static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE", "CRUZADER",
-                                                     "THE TWINS", "ANTARTICA", "BUCKLER"};
+                                                     "THE TWINS", "ANTARTICA", "BUCKLER", "SAMURAI"};
 
 /* Ad copy for the ship-select screen's description panel - written from
  * the same capsule descriptions each ship was specced with ("versatile
@@ -1764,6 +1833,8 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "BUCKLER IS A RELENTLESS GALAXY DEFENDER, PROTECTING THE SKIES "
     "AGAINST MALEVOLENT INVADERS. THIS SPACESHIP REWARDS ELITE SHOOTERS "
     "WITH ITS OMNIDIRECTIONAL CANNONS.",
+    "SAMURAI IS A GREAT ANCIENT WARRIOR, MASTER IN THE ART OF WAR. IT IS "
+    "METICULOUSLY BUILT BY THE MOST PRECISE BLADES IN THE UNIVERSE.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};
@@ -1850,7 +1921,7 @@ static void draw_ship_select_screen(SdlRendererCtx *ctx, const GameState *gs) {
         gp_fill_rect(ctx->renderer, cx0 + border_t, cy0 + border_t, cell_size - border_t * 2.0f,
                      cell_size - border_t * 2.0f, kPanelBg);
 
-        draw_ship_sprite(ctx, &kShipSprites[idx], ccx, ccy, cell_size * 0.72f, cell_size * 0.72f, NULL);
+        draw_ship_sprite(ctx, &kShipSprites[idx], ccx, ccy, cell_size * 0.72f, cell_size * 0.72f, NULL, 1.0f);
     }
 
     /* --- Right half: attributes + description for the hovered ship --- */

@@ -146,6 +146,16 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
         *half_h = r;
         return;
     }
+    /* Every one of Samurai's own shuriken (modes 1/2 alike) - a simple
+     * fixed-radius sphere hitbox, same "round despite its pointed silhouette"
+     * convention Buckler's own cannon ball above already uses, needing no
+     * travel-direction math even for mode 2's own fanned-out sweep shots. */
+    if (pr->style_ship == SHIP_SAMURAI) {
+        float r = scaled(gs, SAMURAI_SHURIKEN_RADIUS);
+        *half_w = r;
+        *half_h = r;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -789,6 +799,14 @@ static void reset_run(GameState *gs) {
     gs->player.buckler_active_cannon = 0;
     gs->player.buckler_orb_timer = 0.0f;
     gs->player.buckler_orb_cooldown_timer = 0.0f;
+    gs->player.samurai_burst_shots_remaining = 0;
+    gs->player.samurai_burst_shot_timer = 0.0f;
+    gs->player.samurai_omni_burst_timer = 0.0f;
+    gs->player.samurai_omni_next_shot_index = 0;
+    gs->player.samurai_omni_shot_timer = 0.0f;
+    gs->player.samurai_omni_cooldown_timer = 0.0f;
+    gs->player.samurai_stealth_timer = 0.0f;
+    gs->player.samurai_stealth_cooldown_timer = 0.0f;
     gs->player.trail_emit_timer = 0.0f;
     gs->player.twins_right_life = PLAYER_LIFE_MAX;
     gs->player.twins_left_life = PLAYER_LIFE_MAX;
@@ -967,6 +985,19 @@ static void update_game_over(GameState *gs, const InputCommand *input, EventQueu
  * call to this). */
 static bool super_beam_shields_player(const GameState *gs) {
     return gs->player.super_beam_timer > 0.0f && !gs->boss.alive;
+}
+
+/* Samurai's own mode 3 (SHOOT_MODE_SAMURAI_STEALTH) - true for the whole 3s
+ * active window, during which check_collisions' own SHIP_SAMURAI branches
+ * skip every attack/collision entirely (not just block damage the way
+ * super_beam_shields_player does - "no collision, no deaths on either
+ * side" per spec, so an ordinary enemy touched during stealth must survive
+ * too, unlike every other immunity in the game). Also read by update_player
+ * for the speed bonus. Unlike super_beam_shields_player above, this is
+ * never suspended during a boss fight - stealth's whole point per spec is
+ * unconditional immunity for its duration. */
+static bool samurai_stealth_active(const GameState *gs) {
+    return gs->selected_ship == SHIP_SAMURAI && gs->player.samurai_stealth_timer > 0.0f;
 }
 
 static void kill_player(GameState *gs, EventQueue *events) {
@@ -1352,6 +1383,107 @@ static void update_buckler_cannon_fire(GameState *gs, const InputCommand *input,
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
+/* Samurai's mode 1 (default): "bursts of 3 shuriken stars" - staggered one
+ * at a time, SAMURAI_SHURIKEN_SHOT_INTERVAL (150ms) apart, the same
+ * ENEMY_SHOOT_TRIBURST pattern (see update_enemies) reused for the player's
+ * own fire, straight ahead from the nose like B-20's own mode 1. Each shot
+ * deals SAMURAI_SHURIKEN_DAMAGE (2 pts - "6 total if all 3 in the burst
+ * hit" a boss, per spec). While a burst is already in progress
+ * (samurai_burst_shots_remaining > 0), this fires the next shot in it on
+ * its own timer, completely ignoring fire_held/fire_cooldown - same as an
+ * enemy's own triburst, once started a burst always finishes regardless of
+ * what the trigger is doing. Only once the 3rd shot fires does
+ * fire_cooldown get set (to SAMURAI_SHURIKEN_BURST_COOLDOWN, 550ms), which
+ * is what actually paces one burst to the next while the key stays held. */
+static void update_samurai_shuriken(GameState *gs, const InputCommand *input, float dt, EventQueue *events) {
+    Player *p = &gs->player;
+    float speed = scaled(gs, SAMURAI_SHURIKEN_SPEED);
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+
+    if (p->samurai_burst_shots_remaining > 0) {
+        p->samurai_burst_shot_timer -= dt;
+        if (p->samurai_burst_shot_timer <= 0.0f) {
+            p->samurai_burst_shot_timer = SAMURAI_SHURIKEN_SHOT_INTERVAL;
+            p->samurai_burst_shots_remaining--;
+            spawn_player_shot(gs, p->x, y, 0.0f, -speed, PROJECTILE_KIND_SAMURAI_SHURIKEN, false,
+                               SAMURAI_SHURIKEN_DAMAGE);
+            event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+            if (p->samurai_burst_shots_remaining == 0) {
+                p->fire_cooldown = SAMURAI_SHURIKEN_BURST_COOLDOWN;
+            }
+        }
+        return;
+    }
+
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    spawn_player_shot(gs, p->x, y, 0.0f, -speed, PROJECTILE_KIND_SAMURAI_SHURIKEN, false, SAMURAI_SHURIKEN_DAMAGE);
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+    p->samurai_burst_shots_remaining = SAMURAI_SHURIKEN_BURST_COUNT - 1;
+    p->samurai_burst_shot_timer = SAMURAI_SHURIKEN_SHOT_INTERVAL;
+}
+
+/* Samurai's mode 2: the 180-degree sweep - see SHOOT_MODE_SAMURAI_OMNI's own
+ * doc comment in domain/types.h. Unlike every other special mode in the
+ * game, this one DOES stay Player.shoot_mode for its whole 1s active window
+ * (samurai_omni_burst_timer, started the instant update_shoot_mode_switch
+ * switches into this mode) - called every frame from update_player_firing's
+ * own switch purely because shoot_mode currently equals this value, exactly
+ * the same "called only while selected" convention update_rapid_fire
+ * already uses for B-20's own burst. Fires SAMURAI_OMNI_SHOT_COUNT shots,
+ * one every SAMURAI_OMNI_SHOT_INTERVAL seconds, sweeping from due west
+ * (samurai_omni_next_shot_index 0) toward the east in SAMURAI_OMNI_STEP_DEG
+ * increments. The instant the window ends, shoot_mode reverts to mode 1 and
+ * SAMURAI_OMNI_COOLDOWN's own lockout begins - mirroring
+ * update_rapid_fire's own auto-switch-back-and-cooldown structure exactly,
+ * just with a sweep instead of a straight-up volley. */
+static void update_samurai_omni_fire(GameState *gs, float dt, EventQueue *events) {
+    Player *p = &gs->player;
+
+    p->samurai_omni_burst_timer -= dt;
+    if (p->samurai_omni_burst_timer <= 0.0f) {
+        p->samurai_omni_burst_timer = 0.0f;
+        p->samurai_omni_cooldown_timer = SAMURAI_OMNI_COOLDOWN;
+        p->shoot_mode = ship_shoot_mode_for_slot(gs->selected_ship, 0);
+        return;
+    }
+
+    if (p->samurai_omni_shot_timer > 0.0f) p->samurai_omni_shot_timer -= dt;
+    if (p->samurai_omni_shot_timer <= 0.0f && p->samurai_omni_next_shot_index < SAMURAI_OMNI_SHOT_COUNT) {
+        int i = p->samurai_omni_next_shot_index;
+        float angle = deg_to_rad(-90.0f + (float)i * SAMURAI_OMNI_STEP_DEG);
+        float dx = sinf(angle), dy = -cosf(angle);
+        float speed = scaled(gs, SAMURAI_SHURIKEN_SPEED);
+        spawn_player_shot(gs, p->x, p->y, dx * speed, dy * speed, PROJECTILE_KIND_SAMURAI_SHURIKEN, false,
+                           SAMURAI_SHURIKEN_DAMAGE);
+        p->samurai_omni_next_shot_index++;
+        p->samurai_omni_shot_timer = SAMURAI_OMNI_SHOT_INTERVAL;
+        event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+    }
+}
+
+/* Samurai's mode 3: stealth - see SHOOT_MODE_SAMURAI_STEALTH's own doc
+ * comment in domain/types.h. Same "persists as shoot_mode for its own
+ * active window, called every frame purely because it's currently selected"
+ * shape as update_samurai_omni_fire above, just firing nothing at all - the
+ * 50% transparency (adapters/sdl_renderer.c's own draw_player), the
+ * SAMURAI_STEALTH_SPEED_MULTIPLIER speed bonus (update_player), and the
+ * full attack/collision immunity (check_collisions' own SHIP_SAMURAI
+ * branches) are every bit of this power's real effect, all keyed directly
+ * off Player.samurai_stealth_timer > 0 rather than anything this function
+ * does itself. Reverts to mode 1 and starts SAMURAI_STEALTH_COOLDOWN's own
+ * lockout the instant the window ends, same auto-revert timing as mode 2. */
+static void update_samurai_stealth(GameState *gs, float dt) {
+    Player *p = &gs->player;
+
+    p->samurai_stealth_timer -= dt;
+    if (p->samurai_stealth_timer <= 0.0f) {
+        p->samurai_stealth_timer = 0.0f;
+        p->samurai_stealth_cooldown_timer = SAMURAI_STEALTH_COOLDOWN;
+        p->shoot_mode = ship_shoot_mode_for_slot(gs->selected_ship, 0);
+    }
+}
+
 /* Mode switching (1-5 number keys) is locked out for the whole duration of
  * a rapid-fire burst - the player is committed to that automatic volley
  * (see update_rapid_fire). Once the burst ends, update_rapid_fire itself
@@ -1372,6 +1504,13 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
      * update_buckler_cannon_fire, which reads the same keys' *_held state
      * directly from update_player_firing's own switch instead. */
     if (gs->selected_ship == SHIP_BUCKLER) return;
+
+    /* Samurai's own sweep (mode 2) and stealth (mode 3) lock out mode
+     * switching entirely for their whole active window - the player is
+     * committed, same "can't interrupt an in-progress special" rule
+     * rapid_burst_timer's own guard above already gives B-20's own rapid
+     * fire. */
+    if (p->samurai_omni_burst_timer > 0.0f || p->samurai_stealth_timer > 0.0f) return;
 
     int slot = -1;
     if (input->shoot_mode_1_pressed) slot = 0;
@@ -1399,6 +1538,8 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
         return;
     }
     if (requested == SHOOT_MODE_RAPID && p->rapid_cooldown_timer > 0.0f) return;
+    if (requested == SHOOT_MODE_SAMURAI_OMNI && p->samurai_omni_cooldown_timer > 0.0f) return;
+    if (requested == SHOOT_MODE_SAMURAI_STEALTH && p->samurai_stealth_cooldown_timer > 0.0f) return;
     /* Once one twin is down, mode 2 (mirroring the other twin's own
      * movement) is meaningless - there's nothing left to mirror. Locked
      * out entirely for the rest of the run, same "just a no-op" language
@@ -1435,6 +1576,23 @@ static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, E
     }
 
     p->shoot_mode = requested;
+
+    /* Samurai's own mode 2/3 kick off their active-window state right at
+     * the moment they're actually selected - unlike every "trigger +
+     * immediate revert" mode above, requested == p->shoot_mode now stays
+     * true for the whole window (see update_samurai_omni_fire/
+     * update_samurai_stealth, both dispatched every frame from
+     * update_player_firing's own switch purely because shoot_mode still
+     * equals this value), so this is the one and only place either state
+     * gets initialized. */
+    if (requested == SHOOT_MODE_SAMURAI_OMNI) {
+        p->samurai_omni_burst_timer = SAMURAI_OMNI_DURATION;
+        p->samurai_omni_next_shot_index = 0;
+        p->samurai_omni_shot_timer = 0.0f;
+    } else if (requested == SHOOT_MODE_SAMURAI_STEALTH) {
+        p->samurai_stealth_timer = SAMURAI_STEALTH_DURATION;
+    }
+
     event_queue_push_sfx(events, SFX_MENU_SELECT);
 }
 
@@ -2042,6 +2200,25 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
     if (gs->selected_ship == SHIP_BUCKLER && input->fire_pressed) {
         trigger_buckler_orb(gs, events);
     }
+    /* samurai_omni_cooldown_timer/samurai_stealth_cooldown_timer tick the
+     * same unconditional way as shine_omni_cooldown_timer above - unused by
+     * every other ship. Their own active-window timers (samurai_omni_
+     * burst_timer/samurai_stealth_timer) are NOT ticked here: unlike every
+     * other special mode's own active timer, they only ever count down
+     * while shoot_mode still actually equals that mode (see
+     * update_samurai_omni_fire/update_samurai_stealth, both reached only
+     * through the switch below), since - unlike Cruzader's orb or
+     * Antartica's freeze beam - Samurai's own modes 2/3 stay selected for
+     * their entire window rather than reverting the instant they're
+     * triggered. */
+    if (p->samurai_omni_cooldown_timer > 0.0f) {
+        p->samurai_omni_cooldown_timer -= dt;
+        if (p->samurai_omni_cooldown_timer < 0.0f) p->samurai_omni_cooldown_timer = 0.0f;
+    }
+    if (p->samurai_stealth_cooldown_timer > 0.0f) {
+        p->samurai_stealth_cooldown_timer -= dt;
+        if (p->samurai_stealth_cooldown_timer < 0.0f) p->samurai_stealth_cooldown_timer = 0.0f;
+    }
     /* antartica_ice_storm_cooldown_timer ticks the same unconditional way as
      * shine_omni_cooldown_timer above - unused by every other ship, so this
      * is a harmless no-op for them. antartica_freeze_beam_timer/cooldown
@@ -2097,6 +2274,9 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_TWINS_MIRROR: update_twins_alternating_fire(gs, input, events); break;
         case SHOOT_MODE_ANTARTICA_SHARDS: update_antartica_shards(gs, input, events); break;
         case SHOOT_MODE_BUCKLER_CANNON: update_buckler_cannon_fire(gs, input, events); break;
+        case SHOOT_MODE_SAMURAI_SHURIKEN: update_samurai_shuriken(gs, input, dt, events); break;
+        case SHOOT_MODE_SAMURAI_OMNI: update_samurai_omni_fire(gs, dt, events); break;
+        case SHOOT_MODE_SAMURAI_STEALTH: update_samurai_stealth(gs, dt); break;
         case SHOOT_MODE_SHINE_OMNI: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_CRUZADER_ORB: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_ANTARTICA_ICE_STORM: /* never persists as the active mode - see its own doc comment */
@@ -2135,6 +2315,7 @@ static void update_player(GameState *gs, const InputCommand *input, float dt, Ev
 
     float speed = scaled(gs, PLAYER_SPEED) * ship_speed_multiplier(gs->selected_ship);
     if (p->super_beam_timer > 0.0f) speed *= SUPER_BEAM_SPEED_MULTIPLIER;
+    if (samurai_stealth_active(gs)) speed *= SAMURAI_STEALTH_SPEED_MULTIPLIER;
 
     float size_mult = ship_size_multiplier(gs->selected_ship);
     float half_w = scaled(gs, PLAYER_WIDTH) * size_mult / 2.0f;
@@ -3061,8 +3242,13 @@ static void check_collisions(GameState *gs, EventQueue *events) {
      * instant kill_player (see damage_cruzader_on_enemy_contact's own doc
      * comment). Contact with the boss's own danger ring stays fatal (see
      * the ring-touch block further down) - this carve-out is scoped to
-     * ordinary enemies only, per spec. */
-    if (gs->player.alive) {
+     * ordinary enemies only, per spec.
+     *
+     * Samurai's own stealth (mode 3) skips this whole block entirely while
+     * active - "no collision, no deaths on either side" per spec, so unlike
+     * Cruzader's own carve-out above (which still kills the enemy), the
+     * touched enemy must survive too, not just the player. */
+    if (gs->player.alive && !samurai_stealth_active(gs)) {
         PlayerHitbox hbs[2];
         int hb_count = player_hitboxes(gs, hbs);
         for (int h = 0; h < hb_count; h++) {
@@ -3140,7 +3326,10 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         }
     }
 
-    if (gs->player.alive) {
+    /* Samurai's own stealth: "projectiles fly right through it" - every
+     * enemy shot simply keeps flying, untouched (not even consumed), while
+     * active. */
+    if (gs->player.alive && !samurai_stealth_active(gs)) {
         PlayerHitbox hbs[2];
         int hb_count = player_hitboxes(gs, hbs);
         for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
@@ -3306,7 +3495,12 @@ static void check_collisions(GameState *gs, EventQueue *events) {
          * own doc comment just above for why this has to stay
          * unconditional too. */
         bool buckler_orb_blocks_ring = gs->selected_ship == SHIP_BUCKLER && gs->player.buckler_orb_timer > 0.0f;
-        if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring && !buckler_orb_blocks_ring) {
+        /* Samurai's own stealth blocks the ring the same unconditional way
+         * Cruzader's/Buckler's own orbs do above - "fly through... bosses
+         * as if they did not exist" per spec. */
+        bool samurai_stealth_blocks_ring = samurai_stealth_active(gs);
+        if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring && !buckler_orb_blocks_ring &&
+            !samurai_stealth_blocks_ring) {
             float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
             /* Fatal to whichever body actually touched it - kill_player_hitbox
              * (same dispatcher every other hazard in this function already

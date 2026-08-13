@@ -169,6 +169,28 @@ static void start_game_as_buckler(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_BUCKLER);
 }
 
+/* Same as start_game_as_buckler, but navigates one slot further right to
+ * SHIP_SAMURAI, for Samurai's own weapon/stealth tests below. */
+static void start_game_as_samurai(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &right, 0.016f, events); /* SHIP_MOTHERSHIP -> SHIP_SHINE */
+    game_update(gs, &right, 0.016f, events); /* SHIP_SHINE -> SHIP_CRUZADER */
+    game_update(gs, &right, 0.016f, events); /* SHIP_CRUZADER -> SHIP_TWINS */
+    game_update(gs, &right, 0.016f, events); /* SHIP_TWINS -> SHIP_ANTARTICA */
+    game_update(gs, &right, 0.016f, events); /* SHIP_ANTARTICA -> SHIP_BUCKLER */
+    game_update(gs, &right, 0.016f, events); /* SHIP_BUCKLER -> SHIP_SAMURAI */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_SAMURAI);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -307,7 +329,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_BUCKLER); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_SAMURAI); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -3794,6 +3816,284 @@ static void test_buckler_orb_blocks_boss_ring_without_free_kill(void) {
     printf("test_buckler_orb_blocks_boss_ring_without_free_kill OK\n");
 }
 
+static void test_samurai_ratings_and_moveset(void) {
+    assert(ship_speed_rating(SHIP_SAMURAI) == 10);
+    assert(ship_strength_rating(SHIP_SAMURAI) == 6);
+    assert(ship_attack_rating(SHIP_SAMURAI) == 6);
+    assert(fabsf(ship_size_multiplier(SHIP_SAMURAI) - 1.0f) < 0.001f); /* same size as B-20 */
+
+    /* Tied with The Twins for the fastest ship in the fleet (10 == 10). */
+    assert(fabsf(ship_speed_multiplier(SHIP_SAMURAI) - ship_speed_multiplier(SHIP_TWINS)) < 0.001f);
+
+    assert(ship_shoot_mode_slot_count(SHIP_SAMURAI) == 3);
+    assert(ship_shoot_mode_for_slot(SHIP_SAMURAI, 0) == SHOOT_MODE_SAMURAI_SHURIKEN);
+    assert(ship_shoot_mode_for_slot(SHIP_SAMURAI, 1) == SHOOT_MODE_SAMURAI_OMNI);
+    assert(ship_shoot_mode_for_slot(SHIP_SAMURAI, 2) == SHOOT_MODE_SAMURAI_STEALTH);
+    printf("test_samurai_ratings_and_moveset OK\n");
+}
+
+/* Mode 1 (default): "bursts of 3 shuriken stars" - staggered one at a time,
+ * SAMURAI_SHURIKEN_SHOT_INTERVAL (150ms) apart, the same
+ * ENEMY_SHOOT_TRIBURST-style pattern as an enemy's own triburst, each at 2x
+ * a normal shot's damage, then a SAMURAI_SHURIKEN_BURST_COOLDOWN (550ms)
+ * pause before the next burst can start. */
+static void test_samurai_shuriken_burst_damage_and_rate(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_samurai(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_SHURIKEN);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+
+    /* Shot 1 fires the instant the key is held. */
+    game_update(&gs, &fire, 0.016f, &events);
+    int found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        assert(gs.player_shots[i].style_ship == SHIP_SAMURAI);
+        assert(gs.player_shots[i].kind == PROJECTILE_KIND_SAMURAI_SHURIKEN);
+        assert(fabsf(gs.player_shots[i].damage - SAMURAI_SHURIKEN_DAMAGE) < 0.001f);
+        assert(fabsf(gs.player_shots[i].damage - BASE_PLAYER_DAMAGE * 2.0f) < 0.001f); /* "2 pts" per spec */
+        assert(fabsf(gs.player_shots[i].x - gs.player.x) < 0.001f); /* straight from the nose */
+        assert(gs.player_shots[i].vy < 0.0f);
+    }
+    assert(found == 1);
+    assert(gs.player.samurai_burst_shots_remaining == 2);
+
+    /* Shot 2 fires SAMURAI_SHURIKEN_SHOT_INTERVAL later - not held-gated,
+     * an in-progress burst always finishes on its own timer. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    InputCommand none = no_input();
+    game_update(&gs, &none, SAMURAI_SHURIKEN_SHOT_INTERVAL, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) found++;
+    }
+    assert(found == 1);
+    assert(gs.player.samurai_burst_shots_remaining == 1);
+    assert(gs.player.fire_cooldown <= 0.0f); /* not yet - burst isn't done */
+
+    /* Shot 3 (the last of the burst) fires another SAMURAI_SHURIKEN_SHOT_
+     * INTERVAL later, and only then does fire_cooldown get set to
+     * SAMURAI_SHURIKEN_BURST_COOLDOWN, pacing the next burst. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    game_update(&gs, &none, SAMURAI_SHURIKEN_SHOT_INTERVAL, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) found++;
+    }
+    assert(found == 1);
+    assert(gs.player.samurai_burst_shots_remaining == 0);
+    assert(fabsf(gs.player.fire_cooldown - SAMURAI_SHURIKEN_BURST_COOLDOWN) < 0.001f);
+    assert(fabsf(SAMURAI_SHURIKEN_BURST_COOLDOWN - 0.55f) < 0.001f);
+    assert(fabsf(SAMURAI_SHURIKEN_SHOT_INTERVAL - 0.15f) < 0.001f);
+
+    /* Holding fire during the cooldown doesn't start a new burst. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    game_update(&gs, &fire, 0.016f, &events);
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) assert(!gs.player_shots[i].alive);
+
+    /* Once the cooldown clears, holding fire starts the next burst. */
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &fire, 0.016f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) found++;
+    }
+    assert(found == 1);
+    assert(gs.player.samurai_burst_shots_remaining == 2);
+
+    printf("test_samurai_shuriken_burst_damage_and_rate OK\n");
+}
+
+/* Mode 2: the 180-degree sweep - unlike every other special mode in the
+ * game, shoot_mode stays SHOOT_MODE_SAMURAI_OMNI for its whole 1s window,
+ * firing one shuriken every 0.125s from due west toward the east, then
+ * auto-reverts to mode 1 and starts a 20s cooldown. Mode-switching is
+ * locked out entirely while the sweep runs. */
+static void test_samurai_omni_sweep_directions_timing_and_cooldown(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_samurai(&gs, &events);
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_OMNI); /* persists, unlike every other special mode */
+    assert(gs.player.samurai_omni_next_shot_index == 1); /* first shot fires the instant the mode is entered */
+
+    int found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        assert(gs.player_shots[i].vx < 0.0f); /* due west, the sweep's own starting direction */
+        assert(fabsf(gs.player_shots[i].vy) < 0.001f);
+    }
+    assert(found == 1);
+
+    /* Mode-switching is locked out entirely while the sweep is running -
+     * pressing key 1 (or key 3) mid-sweep must do nothing. */
+    InputCommand mode1 = no_input();
+    mode1.shoot_mode_1_pressed = true;
+    game_update(&gs, &mode1, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_OMNI);
+
+    /* Advance through the remaining 7 shots, SAMURAI_OMNI_SHOT_INTERVAL
+     * apart, tracking the last one fired - it should read due east-ish
+     * (the sweep's own final increment, +67.5 degrees off due north per the
+     * literal "180/8 degree" step spec, one increment short of full east). */
+    InputCommand none = no_input();
+    float last_vx = -999.0f, last_vy = -999.0f;
+    for (int k = 0; k < 7; k++) {
+        memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+        game_update(&gs, &none, SAMURAI_OMNI_SHOT_INTERVAL, &events);
+        for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+            if (!gs.player_shots[i].alive) continue;
+            last_vx = gs.player_shots[i].vx;
+            last_vy = gs.player_shots[i].vy;
+        }
+    }
+    assert(gs.player.samurai_omni_next_shot_index == SAMURAI_OMNI_SHOT_COUNT);
+    assert(last_vx > 0.0f); /* swept past straight-up into the eastern half */
+    assert(last_vy < 0.0f); /* still angled slightly forward, not yet due east */
+
+    /* All 8 shots are out; force the last sliver of the active window to
+     * elapse (same "set the timer to a hair above 0, then tick" convention
+     * every other timed-power test in this suite already uses) to land the
+     * auto-revert. */
+    gs.player.samurai_omni_burst_timer = 0.001f;
+    game_update(&gs, &none, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_SHURIKEN);
+    assert(gs.player.samurai_omni_burst_timer <= 0.0f);
+    assert(gs.player.samurai_omni_cooldown_timer > 0.0f);
+
+    /* Re-selecting mode 2 during cooldown does nothing. */
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_SHURIKEN);
+
+    /* Free to trigger again once the cooldown clears. */
+    gs.player.samurai_omni_cooldown_timer = 0.0f;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_OMNI);
+
+    printf("test_samurai_omni_sweep_directions_timing_and_cooldown OK\n");
+}
+
+/* Mode 3: stealth - 50% transparency (rendering only, not tested here),
+ * 2x speed, and full attack/collision immunity ("no collision, no deaths on
+ * either side") for 3 seconds, then auto-revert to mode 1 and a 20s
+ * cooldown, same persisted-shoot_mode shape as mode 2 above. */
+static void test_samurai_stealth_immunity_speed_and_cooldown(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_samurai(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_STEALTH);
+    assert(gs.player.samurai_stealth_timer > 0.0f);
+
+    /* Mode-switching is locked out entirely while stealth is active. */
+    InputCommand mode1 = no_input();
+    mode1.shoot_mode_1_pressed = true;
+    game_update(&gs, &mode1, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_STEALTH);
+
+    /* 2x speed: move right for a fixed dt and compare against the expected
+     * doubled-speed displacement. */
+    float x_before = gs.player.x;
+    InputCommand move_right = no_input();
+    move_right.move_right = true;
+    game_update(&gs, &move_right, 0.1f, &events);
+    float expected_dx =
+        PLAYER_SPEED * ship_speed_multiplier(SHIP_SAMURAI) * SAMURAI_STEALTH_SPEED_MULTIPLIER * 0.1f;
+    assert(fabsf((gs.player.x - x_before) - expected_dx) < 0.5f);
+
+    /* An enemy shot overlapping the player's own hitbox simply keeps
+     * flying, untouched - "projectiles fly right through it." */
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.x;
+    gs.enemy_shots[0].y = gs.player.y;
+    gs.enemy_shots[0].vx = 0.0f;
+    gs.enemy_shots[0].vy = 100.0f;
+    gs.enemy_shots[0].enemy_kind = ENEMY_PROJECTILE_BEAM;
+    gs.enemy_shots[0].half_len = 12.0f;
+    gs.enemy_shots[0].half_wid = 3.0f;
+    float life_before = gs.player.life;
+
+    /* An ordinary enemy overlapping the player survives too - "no
+     * collision, no deaths on either side," unlike every other ship's own
+     * always-fatal (or, for Cruzader, enemy-fatal) contact rule. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = gs.player.x;
+    gs.enemies[0].y = gs.player.y;
+    gs.enemies[0].size = 10.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.enemy_shots[0].alive); /* flew straight through, never consumed */
+    assert(fabsf(gs.player.life - life_before) < 0.001f);
+    assert(gs.enemies[0].alive); /* neither side dies */
+    assert(gs.player.alive);
+
+    /* The boss's own danger ring does nothing while stealth is active
+     * either, same unconditional block Cruzader's/Buckler's own orbs use. */
+    gs.boss.alive = true;
+    gs.boss.size = 100.0f;
+    gs.boss.x = gs.player.x;
+    gs.boss.y = gs.player.y;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(gs.player.alive);
+    assert(gs.boss.alive);
+    assert(gs.state == STATE_GAME);
+
+    /* Once stealth itself ends, the boss ring is fatal again immediately -
+     * same "blocks only while its own timer is running" rule Cruzader's/
+     * Buckler's orbs already have. */
+    gs.player.samurai_stealth_timer = 0.0f;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.player.alive);
+
+    printf("test_samurai_stealth_immunity_speed_and_cooldown OK\n");
+}
+
+/* Auto-revert-to-mode-1 and cooldown-start, once the stealth window itself
+ * elapses naturally rather than being force-cleared like the test above. */
+static void test_samurai_stealth_auto_reverts_and_starts_cooldown(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_samurai(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_STEALTH);
+
+    gs.player.samurai_stealth_timer = 0.016f;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_SHURIKEN);
+    assert(gs.player.samurai_stealth_timer <= 0.0f);
+    assert(gs.player.samurai_stealth_cooldown_timer > 0.0f);
+
+    /* Re-selecting mode 3 during cooldown does nothing. */
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_SHURIKEN);
+
+    /* Free to trigger again once the cooldown clears. */
+    gs.player.samurai_stealth_cooldown_timer = 0.0f;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_SAMURAI_STEALTH);
+
+    printf("test_samurai_stealth_auto_reverts_and_starts_cooldown OK\n");
+}
+
 /* All 4 arrows navigate the ship-select grid, not just left/right: up/down
  * step by a full SHIP_SELECT_GRID_COLS-wide row, clamped at the last real
  * ship (SHIP_COUNT - 1) rather than wrapping into one of the locked
@@ -3821,13 +4121,22 @@ static void test_ship_select_up_down_navigate_grid_rows(void) {
     game_update(&gs, &down, 0.016f, &events);
     assert(gs.selected_ship == SHIP_CRUZADER); /* row 0 col 0 -> row 1 col 0, the only slot 4 further down */
 
-    /* Cruzader's row has no slot 4 further down (that would land past
-     * SHIP_COUNT, in locked-placeholder territory) - down is a no-op here. */
+    /* Row 1 col 0 -> row 2 col 0: Samurai, now that she joined the fleet as
+     * the 9th ship, is the sole occupant of row 2 - the first ship whose
+     * own slot actually falls in a third grid row. */
     game_update(&gs, &down, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_CRUZADER);
+    assert(gs.selected_ship == SHIP_SAMURAI);
+
+    /* Samurai's own row (row 2) has no slot further down - down is a no-op
+     * here. */
+    game_update(&gs, &down, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_SAMURAI);
 
     InputCommand up = no_input();
     up.nav_up_pressed = true;
+    game_update(&gs, &up, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_CRUZADER); /* back up to row 1 col 0 */
+
     game_update(&gs, &up, 0.016f, &events);
     assert(gs.selected_ship == SHIP_B20); /* back up to row 0 col 0 */
 
@@ -4139,6 +4448,11 @@ int main(void) {
     test_buckler_cannon_directions_and_first_pressed_wins();
     test_buckler_orb_blocks_shots_and_reverts_with_cooldown();
     test_buckler_orb_blocks_boss_ring_without_free_kill();
+    test_samurai_ratings_and_moveset();
+    test_samurai_shuriken_burst_damage_and_rate();
+    test_samurai_omni_sweep_directions_timing_and_cooldown();
+    test_samurai_stealth_immunity_speed_and_cooldown();
+    test_samurai_stealth_auto_reverts_and_starts_cooldown();
     test_ship_select_up_down_navigate_grid_rows();
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();

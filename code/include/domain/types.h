@@ -115,6 +115,14 @@ typedef enum Ship {
      * reflecting anything back at the enemies the way Cruzader's does (see
      * trigger_buckler_orb's own doc comment). */
     SHIP_BUCKLER,
+    /* Samurai's own 3-mode kit (see usecases/ship.c) is the one other ship
+     * besides Buckler whose keys 2/3 are real, persistent Player.shoot_mode
+     * values that auto-revert to mode 1 only once their own active window
+     * ends (not immediately on keypress, the "trigger + immediate revert"
+     * pattern every other special mode above uses) - see
+     * SHOOT_MODE_SAMURAI_OMNI/SHOOT_MODE_SAMURAI_STEALTH's own doc comments
+     * below. */
+    SHIP_SAMURAI,
     SHIP_COUNT,
 } Ship;
 
@@ -220,6 +228,37 @@ typedef enum ShootMode {
      * BucklerCannon in usecases/game_logic.c) rather than on shoot_mode
      * switching or fire_held the way every other ship's own fire key does. */
     SHOOT_MODE_BUCKLER_CANNON,
+    /* Samurai's own 3-mode kit (see usecases/ship.c) - none of these are
+     * reachable by any other ship. */
+    SHOOT_MODE_SAMURAI_SHURIKEN, /* mode 1 (default): a burst of 3 shuriken, straight ahead */
+    /* Mode 2: unlike every "trigger + immediate revert" mode above
+     * (SHOOT_MODE_SHINE_OMNI, SHOOT_MODE_CRUZADER_ORB, etc.), this DOES
+     * persist as Player.shoot_mode for its whole active window - pressing
+     * key 2 (see update_shoot_mode_switch in usecases/game_logic.c) starts
+     * a 1s sweep (Player.samurai_omni_burst_timer) that fires one shuriken
+     * every SAMURAI_OMNI_SHOT_INTERVAL seconds (Player.samurai_omni_
+     * next_shot_index/samurai_omni_shot_timer track progress), spanning her
+     * own frontal 180 degrees in SAMURAI_OMNI_STEP_DEG increments starting
+     * from the west - only once the whole sweep finishes does shoot_mode
+     * actually revert to mode 1, at the same moment
+     * Player.samurai_omni_cooldown_timer's own 20s lockout begins (see
+     * update_samurai_omni_fire). Mode-switching is locked out entirely
+     * while the sweep is in progress (same rule update_shoot_mode_switch
+     * already gives a B-20-style rapid-fire burst), and re-selecting mode 2
+     * itself stays unavailable for the rest of the cooldown once it ends. */
+    SHOOT_MODE_SAMURAI_OMNI,
+    /* Mode 3: stealth - same "persists until its own window ends, not
+     * intercepted on keypress" shape as mode 2 above, just no firing at all
+     * during the 3s active window (Player.samurai_stealth_timer): the ship
+     * turns 50% transparent, immune to every attack/collision (enemy shots
+     * pass through, ordinary enemies pass through with neither side dying,
+     * the boss ring does nothing - see check_collisions' own SHIP_SAMURAI
+     * branches), and moves at SAMURAI_STEALTH_SPEED_MULTIPLIER the normal
+     * speed (see update_player). Reverts to mode 1 and starts
+     * Player.samurai_stealth_cooldown_timer's own 20s lockout the instant
+     * the window ends (see update_samurai_stealth), same auto-revert timing
+     * as mode 2. */
+    SHOOT_MODE_SAMURAI_STEALTH,
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -369,6 +408,47 @@ typedef struct Player {
      * other ship. */
     float buckler_orb_timer;
     float buckler_orb_cooldown_timer;
+
+    /* Samurai's own mode 1 (SHOOT_MODE_SAMURAI_SHURIKEN) burst state -
+     * unused by every other ship. Same "burst_shots_remaining/
+     * burst_shot_timer" shape as Enemy's own ENEMY_SHOOT_TRIBURST fields
+     * (domain/types.h's own Enemy struct) - samurai_burst_shots_remaining
+     * counts down shots left in the in-progress burst (0 = idle, waiting on
+     * fire_held+fire_cooldown like every other mode 1), samurai_burst_shot_
+     * timer paces the SAMURAI_SHURIKEN_SHOT_INTERVAL gap between each shot
+     * within a burst - see update_samurai_shuriken in usecases/game_logic.c.
+     * fire_cooldown itself (shared with every other ship) gates only when
+     * the NEXT burst is allowed to start, set to SAMURAI_SHURIKEN_BURST_
+     * COOLDOWN the instant the 3rd shot of the current burst fires. */
+    int samurai_burst_shots_remaining;
+    float samurai_burst_shot_timer;
+
+    /* Samurai's own mode 2 (SHOOT_MODE_SAMURAI_OMNI) sweep state - unused
+     * by every other ship. samurai_omni_burst_timer counts down the 1s
+     * active window (see update_samurai_omni_fire in usecases/game_logic.c);
+     * samurai_omni_next_shot_index (0-7) is how many of the 8 sweep shots
+     * have fired so far, and samurai_omni_shot_timer counts down to the
+     * next one (SAMURAI_OMNI_SHOT_INTERVAL apart). The instant
+     * samurai_omni_burst_timer hits 0, samurai_omni_cooldown_timer starts
+     * its own 20s countdown - same mutually-exclusive two-phase pairing as
+     * cruzader_orb_timer/cruzader_orb_cooldown_timer, just gating
+     * re-selection of the mode rather than a passive power. */
+    float samurai_omni_burst_timer;
+    int samurai_omni_next_shot_index;
+    float samurai_omni_shot_timer;
+    float samurai_omni_cooldown_timer;
+
+    /* Samurai's own mode 3 (SHOOT_MODE_SAMURAI_STEALTH) two-phase timer -
+     * same duration/cooldown pairing as samurai_omni_burst_timer/
+     * samurai_omni_cooldown_timer above. samurai_stealth_timer counts down
+     * the 3s active window (during which update_player applies
+     * SAMURAI_STEALTH_SPEED_MULTIPLIER and check_collisions' own
+     * SHIP_SAMURAI branches skip every attack/collision entirely - see
+     * update_samurai_stealth); the instant it expires,
+     * samurai_stealth_cooldown_timer starts its own 20s countdown. Unused
+     * by every other ship. */
+    float samurai_stealth_timer;
+    float samurai_stealth_cooldown_timer;
 } Player;
 
 /* A CPU-flown escort dispatched by The Mothership (see
@@ -543,6 +623,13 @@ typedef enum ProjectileKind {
      * PROJECTILE_KIND_SHINE_SPIRAL/a C-24 sphere shot, not elongated like a
      * beam - see player_shot_half_extents' own SHIP_BUCKLER branch. */
     PROJECTILE_KIND_BUCKLER_ORB,
+    /* Every one of Samurai's own shots (modes 1/2 alike) - a spinning
+     * 4-point shuriken star (see draw_samurai_shuriken in
+     * adapters/sdl_renderer.c). Round like PROJECTILE_KIND_BUCKLER_ORB for
+     * hit-testing purposes (player_shot_half_extents) despite the pointed
+     * silhouette - same "simple fixed-radius sphere, no travel-direction
+     * math needed" convention every other round player shot already uses. */
+    PROJECTILE_KIND_SAMURAI_SHURIKEN,
 } ProjectileKind;
 
 /* Drives an enemy shot's rendering (adapters/sdl_renderer.c) and hitbox
