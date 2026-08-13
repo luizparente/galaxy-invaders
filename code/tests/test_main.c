@@ -148,6 +148,27 @@ static void start_game_as_antartica(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_ANTARTICA);
 }
 
+/* Same as start_game_as_antartica, but navigates one slot further right to
+ * SHIP_BUCKLER, for Buckler's own weapon/orb tests below. */
+static void start_game_as_buckler(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &right, 0.016f, events); /* SHIP_MOTHERSHIP -> SHIP_SHINE */
+    game_update(gs, &right, 0.016f, events); /* SHIP_SHINE -> SHIP_CRUZADER */
+    game_update(gs, &right, 0.016f, events); /* SHIP_CRUZADER -> SHIP_TWINS */
+    game_update(gs, &right, 0.016f, events); /* SHIP_TWINS -> SHIP_ANTARTICA */
+    game_update(gs, &right, 0.016f, events); /* SHIP_ANTARTICA -> SHIP_BUCKLER */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_BUCKLER);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -286,7 +307,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_ANTARTICA); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_BUCKLER); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -3597,6 +3618,182 @@ static void test_antartica_boss_ring_kills_only_the_touched_body(void) {
     printf("test_antartica_boss_ring_kills_only_the_touched_body OK\n");
 }
 
+static void test_buckler_ratings_and_moveset(void) {
+    assert(ship_speed_rating(SHIP_BUCKLER) == 6);
+    assert(ship_strength_rating(SHIP_BUCKLER) == 8);
+    assert(ship_attack_rating(SHIP_BUCKLER) == 6);
+    assert(fabsf(ship_size_multiplier(SHIP_BUCKLER) - 1.0f) < 0.001f); /* same size as B-20 */
+
+    assert(ship_shoot_mode_slot_count(SHIP_BUCKLER) == 1);
+    assert(ship_shoot_mode_for_slot(SHIP_BUCKLER, 0) == SHOOT_MODE_BUCKLER_CANNON);
+    printf("test_buckler_ratings_and_moveset OK\n");
+}
+
+/* Buckler's own (only) mode: keys 1-5 fire from 5 fixed-direction cannons
+ * (west, north-west, north, north-east, east) instead of switching shoot
+ * modes - update_shoot_mode_switch never touches Player.shoot_mode for
+ * SHIP_BUCKLER, so it must stay pinned at SHOOT_MODE_BUCKLER_CANNON even
+ * while every key is pressed. "Only one cannon at a time; if two are
+ * pressed, the one pressed first fires" - holding key 1 then also pressing
+ * key 3 must keep firing west, not switch to north, until key 1 releases. */
+static void test_buckler_cannon_directions_and_first_pressed_wins(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_buckler(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_BUCKLER_CANNON);
+
+    InputCommand west = no_input();
+    west.shoot_mode_1_held = true;
+    game_update(&gs, &west, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_BUCKLER_CANNON); /* never switches */
+    assert(gs.player.buckler_active_cannon == 1);
+
+    int found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        assert(gs.player_shots[i].style_ship == SHIP_BUCKLER);
+        assert(gs.player_shots[i].kind == PROJECTILE_KIND_BUCKLER_ORB);
+        assert(fabsf(gs.player_shots[i].damage - BASE_PLAYER_DAMAGE) < 0.001f);
+        assert(gs.player_shots[i].vx < 0.0f); /* west */
+        assert(fabsf(gs.player_shots[i].vy) < 0.001f);
+    }
+    assert(found == 1);
+    assert(fabsf(gs.player.fire_cooldown - BUCKLER_CANNON_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(BUCKLER_CANNON_FIRE_COOLDOWN - 0.5f) < 0.001f); /* 2 shots/sec */
+
+    /* Key 3 (north) is now held too, but key 1 (west) was pressed first and
+     * is still held - it must keep firing exclusively, no switch to north. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    InputCommand west_and_north = no_input();
+    west_and_north.shoot_mode_1_held = true;
+    west_and_north.shoot_mode_3_held = true;
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &west_and_north, 0.016f, &events);
+    assert(gs.player.buckler_active_cannon == 1);
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        assert(gs.player_shots[i].vx < 0.0f); /* still west, not north */
+        assert(fabsf(gs.player_shots[i].vy) < 0.001f);
+    }
+
+    /* Releasing key 1 hands off to key 3 (still held) - north from here on. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    InputCommand north_only = no_input();
+    north_only.shoot_mode_3_held = true;
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &north_only, 0.016f, &events);
+    assert(gs.player.buckler_active_cannon == 3);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        assert(fabsf(gs.player_shots[i].vx) < 0.001f);
+        assert(gs.player_shots[i].vy < 0.0f); /* north */
+    }
+    assert(found == 1);
+
+    /* No key held at all - no shot, no active cannon. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    InputCommand none = no_input();
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &none, 0.016f, &events);
+    assert(gs.player.buckler_active_cannon == 0);
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) assert(!gs.player_shots[i].alive);
+
+    printf("test_buckler_cannon_directions_and_first_pressed_wins OK\n");
+}
+
+/* Spacebar: the protective orb - same defensive behavior/duration/cooldown
+ * as Cruzader's own deflector orb, just destroying enemy shots in range
+ * outright (no player damage) instead of reflecting them back, and
+ * triggered by the spacebar's own edge instead of a shoot-mode key. */
+static void test_buckler_orb_blocks_shots_and_reverts_with_cooldown(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_buckler(&gs, &events);
+
+    InputCommand fire_press = no_input();
+    fire_press.fire_held = true;
+    fire_press.fire_pressed = true;
+    game_update(&gs, &fire_press, 0.016f, &events);
+
+    assert(gs.player.shoot_mode == SHOOT_MODE_BUCKLER_CANNON); /* never touched */
+    assert(gs.player.buckler_orb_timer > 0.0f);
+
+    /* Holding the spacebar down doesn't re-trigger every frame - only the
+     * edge does, same as Cruzader's own key-2 orb trigger. */
+    float timer_before_retry = gs.player.buckler_orb_timer;
+    InputCommand fire_hold_only = no_input();
+    fire_hold_only.fire_held = true;
+    game_update(&gs, &fire_hold_only, 0.016f, &events);
+    assert(gs.player.buckler_orb_timer < timer_before_retry);
+
+    /* An enemy shot inside the orb radius is destroyed outright - no player
+     * damage, and (unlike Cruzader's own orb) never marked reflected or
+     * left flying back at the enemies. */
+    gs.enemy_shots[0].alive = true;
+    gs.enemy_shots[0].x = gs.player.x;
+    gs.enemy_shots[0].y = gs.player.y - BUCKLER_ORB_RADIUS * 0.9f;
+    gs.enemy_shots[0].vx = 0.0f;
+    gs.enemy_shots[0].vy = 100.0f;
+    gs.enemy_shots[0].enemy_kind = ENEMY_PROJECTILE_BEAM;
+    gs.enemy_shots[0].half_len = 12.0f;
+    gs.enemy_shots[0].half_wid = 3.0f;
+    float life_before = gs.player.life;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.016f, &events);
+
+    assert(!gs.enemy_shots[0].alive); /* destroyed, not reflected */
+    assert(fabsf(gs.player.life - life_before) < 0.001f);
+
+    /* Once the active window fully elapses, the cooldown starts immediately
+     * and pressing the spacebar again does nothing until it too elapses. */
+    gs.player.buckler_orb_timer = 0.016f;
+    game_update(&gs, &none, 0.016f, &events);
+    assert(gs.player.buckler_orb_timer <= 0.0f);
+    assert(gs.player.buckler_orb_cooldown_timer > 0.0f);
+
+    game_update(&gs, &fire_press, 0.016f, &events);
+    assert(gs.player.buckler_orb_timer <= 0.0f); /* not reactivated during cooldown */
+
+    gs.player.buckler_orb_cooldown_timer = 0.0f;
+    game_update(&gs, &fire_press, 0.016f, &events);
+    assert(gs.player.buckler_orb_timer > 0.0f); /* free to trigger again once cooldown clears */
+
+    printf("test_buckler_orb_blocks_shots_and_reverts_with_cooldown OK\n");
+}
+
+static void test_buckler_orb_blocks_boss_ring_without_free_kill(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_buckler(&gs, &events);
+
+    InputCommand fire_press = no_input();
+    fire_press.fire_held = true;
+    fire_press.fire_pressed = true;
+    game_update(&gs, &fire_press, 0.016f, &events);
+    assert(gs.player.buckler_orb_timer > 0.0f);
+
+    gs.boss.alive = true;
+    gs.boss.size = 100.0f;
+    gs.boss.x = gs.player.x;
+    gs.boss.y = gs.player.y;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(gs.player.alive);
+    assert(gs.boss.alive);
+    assert(gs.state == STATE_GAME);
+
+    gs.player.buckler_orb_timer = 0.0f;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!gs.player.alive);
+    printf("test_buckler_orb_blocks_boss_ring_without_free_kill OK\n");
+}
+
 /* All 4 arrows navigate the ship-select grid, not just left/right: up/down
  * step by a full SHIP_SELECT_GRID_COLS-wide row, clamped at the last real
  * ship (SHIP_COUNT - 1) rather than wrapping into one of the locked
@@ -3938,6 +4135,10 @@ int main(void) {
     test_antartica_super_beam_columns_use_each_bodys_own_y();
     test_antartica_boss_chases_frosty_after_antartica_dies();
     test_antartica_boss_ring_kills_only_the_touched_body();
+    test_buckler_ratings_and_moveset();
+    test_buckler_cannon_directions_and_first_pressed_wins();
+    test_buckler_orb_blocks_shots_and_reverts_with_cooldown();
+    test_buckler_orb_blocks_boss_ring_without_free_kill();
     test_ship_select_up_down_navigate_grid_rows();
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();

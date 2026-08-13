@@ -2,20 +2,22 @@
 #include "domain/constants.h"
 
 /* One Speed/Strength/Attack rating per Ship (domain/types.h), ordered to
- * match: B-20, C-24, SHIP_MOTHERSHIP, SHIP_SHINE, SHIP_CRUZADER, SHIP_TWINS.
- * B-20 is the versatile, fast baseline every skilled pilot starts on; C-24
- * trades some of that speed for heavier plating; The Mothership trades the
- * most speed of all for the heaviest plating in the fleet; Shine trades the
- * most plating of all for a speed edge over B-20 itself; Cruzader trades
- * some of B-20's own speed for the heaviest plating short of The
- * Mothership itself; The Twins are the single fastest ship in the fleet,
- * even ahead of Shine, at the cost of below-average plating and the lowest
- * attack rating in the fleet - a fair trade for having two bodies to
- * protect instead of one - per each one's own description on the
- * ship-select screen. */
-static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10, 8};
-static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5, 7};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7};
+ * match: B-20, C-24, SHIP_MOTHERSHIP, SHIP_SHINE, SHIP_CRUZADER, SHIP_TWINS,
+ * SHIP_ANTARTICA, SHIP_BUCKLER. B-20 is the versatile, fast baseline every
+ * skilled pilot starts on; C-24 trades some of that speed for heavier
+ * plating; The Mothership trades the most speed of all for the heaviest
+ * plating in the fleet; Shine trades the most plating of all for a speed
+ * edge over B-20 itself; Cruzader trades some of B-20's own speed for the
+ * heaviest plating short of The Mothership itself; The Twins are the single
+ * fastest ship in the fleet, even ahead of Shine, at the cost of
+ * below-average plating and the lowest attack rating in the fleet - a fair
+ * trade for having two bodies to protect instead of one; Buckler rewards
+ * elite shooters with omnidirectional cannons, at solidly above-average
+ * plating and a middling attack rating - per each one's own description on
+ * the ship-select screen. */
+static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10, 8, 6};
+static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5, 7, 8};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7, 6};
 
 /* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
  * this isn't derived from a rating formula, it's spec'd directly (The
@@ -29,7 +31,7 @@ static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7};
  * renders/collides at the stock size regardless of which ship dispatched
  * it. */
 static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 2.0f, 1.0f, CRUZADER_SIZE_MULTIPLIER,
-                                                        TWINS_SIZE_MULTIPLIER, 1.0f};
+                                                        TWINS_SIZE_MULTIPLIER, 1.0f, BUCKLER_SIZE_MULTIPLIER};
 
 int ship_speed_rating(Ship ship) {
     return kShipSpeedRating[ship];
@@ -129,6 +131,18 @@ static const ShootMode kAntarticaShootModeSlots[] = {
     SHOOT_MODE_ANTARTICA_SHARDS, SHOOT_MODE_ANTARTICA_ICE_STORM, SHOOT_MODE_ANTARTICA_FREEZE_BEAM,
 };
 
+/* Buckler's own moveset: a single slot, unlike every ship above - see
+ * SHOOT_MODE_BUCKLER_CANNON's own doc comment in domain/types.h for why
+ * keys 1-5 don't actually switch through this table the normal way
+ * (update_shoot_mode_switch skips SHIP_BUCKLER entirely; each key instead
+ * picks a firing direction, handled by update_buckler_cannon_fire in
+ * usecases/game_logic.c). Listed here purely so
+ * ship_shoot_mode_slot_count/for_slot stay meaningful for anything that
+ * still asks (e.g. reset_run's own initial shoot_mode assignment). */
+static const ShootMode kBucklerShootModeSlots[] = {
+    SHOOT_MODE_BUCKLER_CANNON,
+};
+
 typedef struct ShipShootModeSlots {
     const ShootMode *modes;
     int count;
@@ -142,6 +156,7 @@ static const ShipShootModeSlots kShipShootModeSlots[SHIP_COUNT] = {
     [SHIP_CRUZADER] = {kCruzaderShootModeSlots, 3},
     [SHIP_TWINS] = {kTwinsShootModeSlots, 2},
     [SHIP_ANTARTICA] = {kAntarticaShootModeSlots, 3},
+    [SHIP_BUCKLER] = {kBucklerShootModeSlots, 1},
 };
 
 int ship_shoot_mode_slot_count(Ship ship) {

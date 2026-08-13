@@ -136,6 +136,16 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
         *half_h = fabsf(dy) * length / 2.0f + fabsf(dx) * width / 2.0f;
         return;
     }
+    /* Buckler's own shot is a round ball fired in any of 5 fixed directions
+     * (see update_buckler_cannon_fire) - a simple fixed-radius sphere hitbox,
+     * same construction as C-24's/Frosty's own round shots above, needing no
+     * travel-direction math since it's never elongated. */
+    if (pr->style_ship == SHIP_BUCKLER) {
+        float r = scaled(gs, BUCKLER_CANNON_PROJECTILE_RADIUS);
+        *half_w = r;
+        *half_h = r;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -776,6 +786,9 @@ static void reset_run(GameState *gs) {
     gs->player.shine_omni_cooldown_timer = 0.0f;
     gs->player.cruzader_orb_timer = 0.0f;
     gs->player.cruzader_orb_cooldown_timer = 0.0f;
+    gs->player.buckler_active_cannon = 0;
+    gs->player.buckler_orb_timer = 0.0f;
+    gs->player.buckler_orb_cooldown_timer = 0.0f;
     gs->player.trail_emit_timer = 0.0f;
     gs->player.twins_right_life = PLAYER_LIFE_MAX;
     gs->player.twins_left_life = PLAYER_LIFE_MAX;
@@ -1261,6 +1274,84 @@ static void trigger_antartica_freeze_beam(GameState *gs, EventQueue *events) {
     event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
+/* Buckler's own spacebar power: the protective orb - same defensive
+ * behavior/duration/cooldown as Cruzader's own deflector orb
+ * (trigger_cruzader_orb above), just triggered by the spacebar's own edge
+ * (input->fire_pressed) instead of a shoot-mode key, and never reflecting
+ * anything back at the enemies (see check_collisions' own SHIP_BUCKLER
+ * branch, which destroys shots in range outright instead of calling
+ * reflect_enemy_shot) - no passive always-on chance either, unlike
+ * Cruzader's own CRUZADER_PASSIVE_REFLECT_CHANCE. Never touches
+ * Player.shoot_mode - Buckler's own SHOOT_MODE_BUCKLER_CANNON never
+ * changes for the whole run, unlike Cruzader's mode 1 revert. A no-op
+ * (no sfx, no state change) while already active or on cooldown, same
+ * "silently does nothing" convention every other unavailable-power press
+ * already follows. */
+static void trigger_buckler_orb(GameState *gs, EventQueue *events) {
+    Player *p = &gs->player;
+    if (p->buckler_orb_timer > 0.0f || p->buckler_orb_cooldown_timer > 0.0f) return;
+
+    p->buckler_orb_timer = BUCKLER_ORB_DURATION;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Buckler's own (only) mode - see SHOOT_MODE_BUCKLER_CANNON's own doc
+ * comment in domain/types.h. Indexed by cannon number (1-5) minus 1: west,
+ * north-west, north, north-east, east - spanning her own frontal 180
+ * degrees, matching kBucklerCannonDirX/Y's own direction below. */
+static const float kBucklerCannonDirX[5] = {-1.0f, -0.70710678f, 0.0f, 0.70710678f, 1.0f};
+static const float kBucklerCannonDirY[5] = {0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f};
+
+/* Buckler's own (only) mode: 5 fixed-direction cannons, one active at a
+ * time - "the player can only shoot one cannon at a time; if two numbers
+ * are pressed, only the one pressed first fires" per spec.
+ * Player.buckler_active_cannon (0 = none, else 1-5) latches onto whichever
+ * key is currently held the instant no cannon is already latched, and
+ * un-latches the moment that same key's own held state goes false - a key
+ * newly pressed while another is already latched is simply never looked at
+ * until the latched one releases, which is what makes "the one pressed
+ * first fires" hold even though this reads held state rather than tracking
+ * press order explicitly. Keys 1-5 here are update_shoot_mode_switch's own
+ * *_pressed edges everywhere else in the game; SHIP_BUCKLER is the one
+ * ship that reads their *_held level state instead, and for firing rather
+ * than mode-switching - see InputCommand's own shoot_mode_N_held doc
+ * comment. */
+static void update_buckler_cannon_fire(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+
+    if (p->buckler_active_cannon != 0) {
+        bool still_held;
+        switch (p->buckler_active_cannon) {
+            case 1: still_held = input->shoot_mode_1_held; break;
+            case 2: still_held = input->shoot_mode_2_held; break;
+            case 3: still_held = input->shoot_mode_3_held; break;
+            case 4: still_held = input->shoot_mode_4_held; break;
+            default: still_held = input->shoot_mode_5_held; break;
+        }
+        if (!still_held) p->buckler_active_cannon = 0;
+    }
+
+    if (p->buckler_active_cannon == 0) {
+        if (input->shoot_mode_1_held) p->buckler_active_cannon = 1;
+        else if (input->shoot_mode_2_held) p->buckler_active_cannon = 2;
+        else if (input->shoot_mode_3_held) p->buckler_active_cannon = 3;
+        else if (input->shoot_mode_4_held) p->buckler_active_cannon = 4;
+        else if (input->shoot_mode_5_held) p->buckler_active_cannon = 5;
+    }
+
+    if (p->buckler_active_cannon == 0) return;
+    if (p->fire_cooldown > 0.0f) return;
+
+    int idx = p->buckler_active_cannon - 1;
+    float dx = kBucklerCannonDirX[idx], dy = kBucklerCannonDirY[idx];
+    float speed = scaled(gs, BUCKLER_CANNON_PROJECTILE_SPEED);
+    float muzzle = scaled(gs, BUCKLER_CANNON_MUZZLE_OFFSET);
+    spawn_player_shot(gs, p->x + dx * muzzle, p->y + dy * muzzle, dx * speed, dy * speed,
+                       PROJECTILE_KIND_BUCKLER_ORB, false, BASE_PLAYER_DAMAGE);
+    p->fire_cooldown = BUCKLER_CANNON_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
 /* Mode switching (1-5 number keys) is locked out for the whole duration of
  * a rapid-fire burst - the player is committed to that automatic volley
  * (see update_rapid_fire). Once the burst ends, update_rapid_fire itself
@@ -1275,6 +1366,12 @@ static void trigger_antartica_freeze_beam(GameState *gs, EventQueue *events) {
 static void update_shoot_mode_switch(GameState *gs, const InputCommand *input, EventQueue *events) {
     Player *p = &gs->player;
     if (p->rapid_burst_timer > 0.0f) return;
+
+    /* Buckler's own keys 1-5 aren't a mode switch at all - see
+     * SHOOT_MODE_BUCKLER_CANNON's own doc comment in domain/types.h and
+     * update_buckler_cannon_fire, which reads the same keys' *_held state
+     * directly from update_player_firing's own switch instead. */
+    if (gs->selected_ship == SHIP_BUCKLER) return;
 
     int slot = -1;
     if (input->shoot_mode_1_pressed) slot = 0;
@@ -1929,6 +2026,22 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         p->cruzader_orb_cooldown_timer -= dt;
         if (p->cruzader_orb_cooldown_timer < 0.0f) p->cruzader_orb_cooldown_timer = 0.0f;
     }
+    /* buckler_orb_timer/buckler_orb_cooldown_timer tick the same
+     * unconditional, two-phase way cruzader_orb_timer/cooldown do just
+     * above - unused by every other ship. */
+    if (p->buckler_orb_timer > 0.0f) {
+        p->buckler_orb_timer -= dt;
+        if (p->buckler_orb_timer <= 0.0f) {
+            p->buckler_orb_timer = 0.0f;
+            p->buckler_orb_cooldown_timer = BUCKLER_ORB_COOLDOWN;
+        }
+    } else if (p->buckler_orb_cooldown_timer > 0.0f) {
+        p->buckler_orb_cooldown_timer -= dt;
+        if (p->buckler_orb_cooldown_timer < 0.0f) p->buckler_orb_cooldown_timer = 0.0f;
+    }
+    if (gs->selected_ship == SHIP_BUCKLER && input->fire_pressed) {
+        trigger_buckler_orb(gs, events);
+    }
     /* antartica_ice_storm_cooldown_timer ticks the same unconditional way as
      * shine_omni_cooldown_timer above - unused by every other ship, so this
      * is a harmless no-op for them. antartica_freeze_beam_timer/cooldown
@@ -1983,6 +2096,7 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_TWINS_ALTERNATE:
         case SHOOT_MODE_TWINS_MIRROR: update_twins_alternating_fire(gs, input, events); break;
         case SHOOT_MODE_ANTARTICA_SHARDS: update_antartica_shards(gs, input, events); break;
+        case SHOOT_MODE_BUCKLER_CANNON: update_buckler_cannon_fire(gs, input, events); break;
         case SHOOT_MODE_SHINE_OMNI: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_CRUZADER_ORB: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_ANTARTICA_ICE_STORM: /* never persists as the active mode - see its own doc comment */
@@ -3011,6 +3125,21 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         }
     }
 
+    /* Buckler's own protective orb: while active, every enemy shot within
+     * BUCKLER_ORB_RADIUS is simply destroyed - no player damage, same as
+     * Cruzader's own deflector orb above, but unlike that one, never
+     * reflected back at the enemies (see BUCKLER_ORB_RADIUS's own doc
+     * comment in domain/constants.h - Buckler's orb is purely defensive). */
+    if (gs->player.alive && gs->selected_ship == SHIP_BUCKLER && gs->player.buckler_orb_timer > 0.0f) {
+        float orb_radius = scaled(gs, BUCKLER_ORB_RADIUS);
+        for (int i = 0; i < MAX_ENEMY_PROJECTILES; i++) {
+            Projectile *pr = &gs->enemy_shots[i];
+            if (!pr->alive || pr->inert) continue;
+            if (!within_radius(pr->x, pr->y, gs->player.x, gs->player.y, orb_radius)) continue;
+            pr->alive = false;
+        }
+    }
+
     if (gs->player.alive) {
         PlayerHitbox hbs[2];
         int hb_count = player_hitboxes(gs, hbs);
@@ -3172,7 +3301,12 @@ static void check_collisions(GameState *gs, EventQueue *events) {
          * is still (from its perspective) alive, not after end_boss_
          * encounter has already zeroed the flag out from under it. */
         bool cruzader_orb_blocks_ring = gs->selected_ship == SHIP_CRUZADER && gs->player.cruzader_orb_timer > 0.0f;
-        if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring) {
+        /* Buckler's own protective orb blocks the ring the same
+         * unconditional way Cruzader's own does above - see that flag's
+         * own doc comment just above for why this has to stay
+         * unconditional too. */
+        bool buckler_orb_blocks_ring = gs->selected_ship == SHIP_BUCKLER && gs->player.buckler_orb_timer > 0.0f;
+        if (gs->boss.alive && gs->player.alive && !cruzader_orb_blocks_ring && !buckler_orb_blocks_ring) {
             float ring_radius = gs->boss.size * BOSS_MENACE_RING_RATIO;
             /* Fatal to whichever body actually touched it - kill_player_hitbox
              * (same dispatcher every other hazard in this function already

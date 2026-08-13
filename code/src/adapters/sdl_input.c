@@ -10,6 +10,7 @@ typedef struct SdlInputCtx {
     bool prev_left;
     bool prev_right;
     bool prev_god_mode_combo;
+    bool prev_fire;
     bool prev_shoot_mode_1;
     bool prev_shoot_mode_2;
     bool prev_shoot_mode_3;
@@ -48,6 +49,7 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     out->move_up = up;
     out->move_down = down;
     out->fire_held = fire;
+    out->fire_pressed = fire && !ctx->prev_fire;
 
     /* Pure arrow/WASD state, with no merging - see InputCommand's own
      * arrow_* / wasd_* doc comment. Only ever consumed by SHIP_ANTARTICA's
@@ -74,6 +76,11 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     out->shoot_mode_3_pressed = shoot_mode_3 && !ctx->prev_shoot_mode_3;
     out->shoot_mode_4_pressed = shoot_mode_4 && !ctx->prev_shoot_mode_4;
     out->shoot_mode_5_pressed = shoot_mode_5 && !ctx->prev_shoot_mode_5;
+    out->shoot_mode_1_held = shoot_mode_1;
+    out->shoot_mode_2_held = shoot_mode_2;
+    out->shoot_mode_3_held = shoot_mode_3;
+    out->shoot_mode_4_held = shoot_mode_4;
+    out->shoot_mode_5_held = shoot_mode_5;
     out->quit_requested = quit;
 
     ctx->prev_confirm = confirm;
@@ -83,6 +90,7 @@ static void sdl_input_poll(void *self, InputCommand *out) {
     ctx->prev_left = left;
     ctx->prev_right = right;
     ctx->prev_god_mode_combo = god_mode_combo;
+    ctx->prev_fire = fire;
     ctx->prev_shoot_mode_1 = shoot_mode_1;
     ctx->prev_shoot_mode_2 = shoot_mode_2;
     ctx->prev_shoot_mode_3 = shoot_mode_3;

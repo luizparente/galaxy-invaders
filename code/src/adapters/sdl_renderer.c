@@ -297,6 +297,39 @@ static void draw_cruzader_orb(SdlRendererCtx *ctx, const GameState *gs) {
     gp_fill_circle(ctx->renderer, p->x, p->y, r * 0.9f, glass);
 }
 
+/* Buckler's own protective orb (see check_collisions and trigger_buckler_orb
+ * in usecases/game_logic.c) - neon green per spec, same
+ * BUCKLER_ORB_DURATION/RADIUS pairing as Cruzader's own CRUZADER_ORB_DURATION/
+ * RADIUS, but a different layering/opacity than draw_cruzader_orb above:
+ * Cruzader's orb is drawn BEFORE his own ship (see the call site in
+ * draw_scene) at a fairly opaque rim, so he simply stands in front of it.
+ * Buckler's orb is drawn AFTER hers instead (see the same call site) and
+ * kept mostly transparent throughout, so her ship stays clearly visible
+ * underneath and the orb reads as an actual glass sphere enclosing her, not
+ * a backdrop - a soft outer glow, a barely-tinted glass fill over the whole
+ * sphere, and a crisp bright rim stroke at the very edge to sell the "glass
+ * sphere" silhouette without the interior itself needing to be opaque. */
+static void draw_buckler_orb(SdlRendererCtx *ctx, const GameState *gs) {
+    const Player *p = &gs->player;
+    if (gs->selected_ship != SHIP_BUCKLER || p->buckler_orb_timer <= 0.0f) return;
+
+    float life = p->buckler_orb_timer / BUCKLER_ORB_DURATION;
+    float fade = life < 0.25f ? life / 0.25f : 1.0f;
+    float r = BUCKLER_ORB_RADIUS * gs->scale;
+
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+
+    Color glow = (Color){80, 255, 140, (unsigned char)(30.0f * fade)};
+    gp_fill_circle(ctx->renderer, p->x, p->y, r * 1.1f, glow);
+
+    Color glass = (Color){60, 255, 120, (unsigned char)(40.0f * fade)};
+    gp_fill_circle(ctx->renderer, p->x, p->y, r, glass);
+
+    Color rim = (Color){150, 255, 190, (unsigned char)(230.0f * fade)};
+    gp_draw_circle_outline(ctx->renderer, p->x, p->y, r, rim);
+    gp_draw_circle_outline(ctx->renderer, p->x, p->y, r - gs->scale, rim);
+}
+
 /* Children always render at the stock size regardless of which ship
  * dispatched them (see ship_size_multiplier's own doc comment) - same blit
  * as draw_player, just never scaled up and never god-mode-tinted (that
@@ -574,6 +607,38 @@ static void draw_c24_sphere_shot(SdlRendererCtx *ctx, const Projectile *pr, floa
     gp_fill_circle(ctx->renderer, cx, cy, r * 0.4f, hot);
 
     Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
+}
+
+/* Buckler's own (only) mode - a round neon-green ball with yellowish
+ * accents, same layered glow/core/hot/glint sphere construction as
+ * draw_c24_sphere_shot above, just fixed-color instead of hue-cycling (no
+ * phase_seed involved) and yellow rather than white for the hot core/glint,
+ * matching "neon green balls with yellowish accents" per spec. Fired from
+ * whichever cannon is active toward that cannon's own fixed direction (see
+ * update_buckler_cannon_fire in usecases/game_logic.c) rather than always
+ * straight up - purely a difference in pr->vx/vy at spawn, this draws the
+ * same regardless of travel direction, same as every other round shot. */
+static void draw_buckler_cannon_ball(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    static const Color kBucklerGreen = {57, 255, 90, 255};
+    static const Color kBucklerYellow = {235, 255, 90, 255};
+
+    float r = BUCKLER_CANNON_PROJECTILE_RADIUS * scale;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = kBucklerGreen;
+    glow.a = 70;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 2.2f, glow);
+    glow.a = 130;
+    gp_fill_circle(ctx->renderer, cx, cy, r * 1.4f, glow);
+
+    gp_fill_circle(ctx->renderer, cx, cy, r, kBucklerGreen);
+
+    Color hot = lerp_color(kBucklerGreen, kBucklerYellow, 0.6f);
+    gp_fill_circle(ctx->renderer, cx, cy, r * 0.4f, hot);
+
+    Color glint = kBucklerYellow;
     glint.a = 220;
     gp_fill_circle(ctx->renderer, cx - r * 0.35f, cy - r * 0.35f, r * 0.2f, glint);
 }
@@ -888,6 +953,10 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
             }
             return;
         }
+        if (pr->style_ship == SHIP_BUCKLER) {
+            draw_buckler_cannon_ball(ctx, pr, scale);
+            return;
+        }
         switch (pr->kind) {
             case PROJECTILE_KIND_RAPID:
                 draw_rapid_shot(ctx, pr, scale);
@@ -1169,6 +1238,7 @@ static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MOTHERSHIP_MAX_CHILDREN; i++) draw_child(ctx, gs, &gs->children[i]);
     draw_cruzader_orb(ctx, gs);
     draw_player(ctx, gs);
+    draw_buckler_orb(ctx, gs);
 }
 
 /* One life bar's worth of drawing, shared by draw_life_bar (a single bar,
@@ -1302,7 +1372,7 @@ static void draw_boss_bar(SdlRendererCtx *ctx, const GameState *gs) {
 static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
     "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
     "SHARDS", "OMNI", "SPIRAL", "TWIN", "ORB", "ROCKETS", "ALTERNATE", "MIRROR",
-    "ICE SHARDS", "ICE STORM", "FREEZE BEAM",
+    "ICE SHARDS", "ICE STORM", "FREEZE BEAM", "CANNON",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -1658,7 +1728,7 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
 }
 
 static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE", "CRUZADER",
-                                                     "THE TWINS", "ANTARTICA"};
+                                                     "THE TWINS", "ANTARTICA", "BUCKLER"};
 
 /* Ad copy for the ship-select screen's description panel - written from
  * the same capsule descriptions each ship was specced with ("versatile
@@ -1691,6 +1761,9 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "ANTARTICA COMMANDS THE COLD OF DEEP SPACE ITSELF, NEVER FLYING "
     "WITHOUT HER LOYAL SIDEKICK FROSTY BY HER SIDE. EACH ONE ANSWERS TO "
     "ITS OWN CONTROLS, FREEZING ANYTHING FOOLISH ENOUGH TO CROSS THEM.",
+    "BUCKLER IS A RELENTLESS GALAXY DEFENDER, PROTECTING THE SKIES "
+    "AGAINST MALEVOLENT INVADERS. THIS SPACESHIP REWARDS ELITE SHOOTERS "
+    "WITH ITS OMNIDIRECTIONAL CANNONS.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};

@@ -665,6 +665,36 @@
 #define FROSTY_SNOWBALL_TRAIL_SIZE_MULTIPLIER 1.3f
 #define FROSTY_SNOWBALL_TRAIL_MAX_ALPHA 32
 
+/* --- Buckler's own weapon (see usecases/ship.c for her single-slot
+ * moveset, and SHOOT_MODE_BUCKLER_CANNON's own doc comment in
+ * domain/types.h) - kept fully independent of every other ship's own
+ * constants, same "kept-independent copies, not shared" precedent as every
+ * other ship's own block above. */
+#define BUCKLER_SIZE_MULTIPLIER 1.0f /* same render/hitbox size as B-20 */
+
+/* The only mode: 5 fixed-direction cannons (west/northwest/north/northeast/
+ * east - see kBucklerCannonDir in usecases/game_logic.c), spanning her own
+ * frontal 180 degrees, one active at a time - "2 shots per second" per
+ * spec while a cannon is held. Speed/damage reuse B-20's own baseline
+ * unscaled - only the direction and the round-ball look are unique to her. */
+#define BUCKLER_CANNON_FIRE_COOLDOWN 0.5f /* 2 shots/sec */
+#define BUCKLER_CANNON_PROJECTILE_SPEED PLAYER_PROJECTILE_SPEED
+#define BUCKLER_CANNON_PROJECTILE_RADIUS 6.0f
+/* How far from the ship's own center each cannon's shot spawns - offset
+ * along that cannon's own firing direction, so a shot visibly leaves from
+ * the rim of the hull rather than its exact center. */
+#define BUCKLER_CANNON_MUZZLE_OFFSET (PLAYER_WIDTH * BUCKLER_SIZE_MULTIPLIER * 0.5f)
+
+/* Spacebar: the protective orb - same defensive behavior/duration/cooldown
+ * as Cruzader's own deflector orb (CRUZADER_ORB_DURATION/COOLDOWN), just
+ * blocking incoming fire outright (see check_collisions' own SHIP_BUCKLER
+ * branch) instead of reflecting it back at the enemies, and with no passive
+ * always-on chance the way Cruzader's own CRUZADER_PASSIVE_REFLECT_CHANCE
+ * is - Buckler's orb is entirely spacebar-gated. */
+#define BUCKLER_ORB_DURATION 5.0f
+#define BUCKLER_ORB_COOLDOWN 20.0f
+#define BUCKLER_ORB_RADIUS (PLAYER_WIDTH * BUCKLER_SIZE_MULTIPLIER * 1.4f)
+
 #define BOSS_SCORE_STEP 500
 /* How many points before BOSS_SCORE_STEP the "boss incoming" warning
  * kicks in - see update_boss_warning in usecases/game_logic.c, which

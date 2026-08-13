@@ -14,6 +14,15 @@ typedef struct InputCommand {
     bool move_up;
     bool move_down;
     bool fire_held;
+    /* Edge-triggered mirror of fire_held above - true only on the frame the
+     * spacebar goes down. Only consumed by SHIP_BUCKLER's own spacebar
+     * power (see trigger_buckler_orb in usecases/game_logic.c), which
+     * triggers once per press rather than continuously while held, the
+     * same "press again after cooldown, holding doesn't auto-refire"
+     * behavior Cruzader's own orb key already has. Unused by every other
+     * ship - every other ship's own spacebar behavior keeps reading
+     * fire_held exactly as before. */
+    bool fire_pressed;
 
     /* Pure arrow-key state, with no WASD merged in - unlike move_left/right/
      * up/down above (which OR in WASD as an alias, for every ship). Only
@@ -54,6 +63,19 @@ typedef struct InputCommand {
     bool shoot_mode_3_pressed;
     bool shoot_mode_4_pressed;
     bool shoot_mode_5_pressed;
+
+    /* Raw level-triggered state of the same 1-5 keys above, true for as long
+     * as each is held down - the *_pressed fields above are edge-triggered
+     * (mode-switch semantics: fire once per key-down), but Buckler's own
+     * moveset (SHOOT_MODE_BUCKLER_CANNON, see update_buckler_cannon_fire in
+     * usecases/game_logic.c) fires continuously from whichever cannon is
+     * held, the same "held = keep firing" semantics fire_held gives every
+     * other ship's own spacebar. Unused by every other ship. */
+    bool shoot_mode_1_held;
+    bool shoot_mode_2_held;
+    bool shoot_mode_3_held;
+    bool shoot_mode_4_held;
+    bool shoot_mode_5_held;
 
     bool quit_requested;
 } InputCommand;

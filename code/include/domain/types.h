@@ -106,6 +106,15 @@ typedef enum Ship {
      * kill_frosty), just with two different weapons instead of one shared
      * one. */
     SHIP_ANTARTICA,
+    /* Buckler is the one ship whose fire key isn't the spacebar at all - see
+     * SHOOT_MODE_BUCKLER_CANNON below and update_buckler_cannon_fire in
+     * usecases/game_logic.c. The spacebar instead triggers her own
+     * protective orb (Player.buckler_orb_timer/buckler_orb_cooldown_timer) -
+     * the same duration/cooldown pairing and incoming-fire-blocking behavior
+     * as Cruzader's own deflector orb (SHOOT_MODE_CRUZADER_ORB), just never
+     * reflecting anything back at the enemies the way Cruzader's does (see
+     * trigger_buckler_orb's own doc comment). */
+    SHIP_BUCKLER,
     SHIP_COUNT,
 } Ship;
 
@@ -199,6 +208,18 @@ typedef enum ShootMode {
      * orb's own super beam, this neither heals nor grants invincibility -
      * see the timer's own doc comment on Player. */
     SHOOT_MODE_ANTARTICA_FREEZE_BEAM,
+    /* Buckler's own (only) mode - see update_buckler_cannon_fire in
+     * usecases/game_logic.c. Unlike every ship above, Buckler's own moveset
+     * table (usecases/ship.c) lists this as its single slot purely so
+     * ship_shoot_mode_slot_count/for_slot stay consistent for the ship-select
+     * screen's own stat readout - the number keys never actually select a
+     * *mode* on Buckler at all (update_shoot_mode_switch skips SHIP_BUCKLER
+     * entirely). Instead each of keys 1-5 fires this exact same mode's
+     * projectile from a different cannon/direction, gated on
+     * Player.buckler_active_cannon (see InputCommand's own held key state and
+     * BucklerCannon in usecases/game_logic.c) rather than on shoot_mode
+     * switching or fire_held the way every other ship's own fire key does. */
+    SHOOT_MODE_BUCKLER_CANNON,
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -328,6 +349,26 @@ typedef struct Player {
     float antartica_freeze_beam_timer;
     float antartica_freeze_beam_cooldown_timer;
     float antartica_freeze_beam_boss_hit_timer;
+
+    /* Buckler's own directional cannon (SHOOT_MODE_BUCKLER_CANNON) - unused
+     * by every other ship. buckler_active_cannon is 0 while no cannon is
+     * firing, or 1-5 (matching InputCommand's own shoot_mode_N_held slot
+     * numbering) for whichever single cannon is currently latched - see
+     * update_buckler_cannon_fire in usecases/game_logic.c for the
+     * "first pressed wins, ties broken by release" rule this implements. */
+    int buckler_active_cannon;
+
+    /* Buckler's own spacebar power - the protective orb. Same two-phase
+     * timer pairing as cruzader_orb_timer/cruzader_orb_cooldown_timer above
+     * (same CRUZADER_ORB_DURATION/CRUZADER_ORB_COOLDOWN constants, see
+     * trigger_buckler_orb in usecases/game_logic.c), just gated on
+     * Player.fire_held (the spacebar) instead of a shoot-mode key, and
+     * blocking incoming fire outright instead of reflecting it back (see
+     * check_collisions' own SHIP_BUCKLER branch) - no passive chance either,
+     * unlike Cruzader's own CRUZADER_PASSIVE_REFLECT_CHANCE. Unused by every
+     * other ship. */
+    float buckler_orb_timer;
+    float buckler_orb_cooldown_timer;
 } Player;
 
 /* A CPU-flown escort dispatched by The Mothership (see
@@ -494,6 +535,14 @@ typedef enum ProjectileKind {
      * draw_antartica_shard in adapters/sdl_renderer.c, and
      * player_shot_half_extents' own SHIP_ANTARTICA branch). */
     PROJECTILE_KIND_FROSTY_SNOWBALL,
+    /* Buckler's own mode (SHOOT_MODE_BUCKLER_CANNON) - a round neon-green
+     * ball with yellowish accents (see draw_buckler_cannon_ball in
+     * adapters/sdl_renderer.c), fired from whichever of her 5 cannons is
+     * currently active (Player.buckler_active_cannon) toward that cannon's
+     * own fixed direction rather than always straight up. Round like
+     * PROJECTILE_KIND_SHINE_SPIRAL/a C-24 sphere shot, not elongated like a
+     * beam - see player_shot_half_extents' own SHIP_BUCKLER branch. */
+    PROJECTILE_KIND_BUCKLER_ORB,
 } ProjectileKind;
 
 /* Drives an enemy shot's rendering (adapters/sdl_renderer.c) and hitbox
