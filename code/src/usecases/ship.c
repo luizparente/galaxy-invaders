@@ -10,18 +10,20 @@
  * speed edge over B-20 itself; Cruzader trades some of B-20's own speed for
  * the heaviest plating short of The Mothership itself; The Twins and
  * Samurai are tied for the fastest ships in the fleet, even ahead of Shine -
- * The Twins at the cost of below-average plating and the lowest attack
- * rating in the fleet (a fair trade for having two bodies to protect
- * instead of one), Samurai at a more middling plating/attack tradeoff
- * instead; Buckler rewards elite shooters with omnidirectional cannons, at
- * solidly above-average plating and a middling attack rating; Ranger, the
- * galaxy's peacekeeper, ties Shine for the thinnest plating in the fleet
+ * The Twins at the cost of below-average plating and an attack rating (5,
+ * bumped up from an original 3) just above Cruzader's own lowest-in-fleet 4
+ * (a fair trade for having two bodies to protect instead of one), Samurai
+ * at a more middling plating/attack tradeoff instead; Buckler rewards elite
+ * shooters with omnidirectional cannons, at solidly above-average plating
+ * and an attack rating (5, down from an original 6) tied with The Twins;
+ * Ranger, the galaxy's peacekeeper, ties Shine for the thinnest plating in
+ * the fleet
  * (Strength 4) for a sharpshooter's Attack rating (9, second only to The
  * Mothership's own 10) - Speed stays tied with B-20's own baseline (7) -
  * per each one's own description on the ship-select screen. */
 static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10, 8, 6, 10, 7};
 static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5, 7, 8, 6, 4};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7, 6, 6, 9};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 5, 7, 5, 6, 9};
 
 /* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
  * this isn't derived from a rating formula, it's spec'd directly (The

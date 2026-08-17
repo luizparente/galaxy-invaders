@@ -3106,7 +3106,7 @@ static void test_cruzader_orb_blocks_boss_ring_without_free_kill(void) {
 static void test_twins_ratings_and_moveset(void) {
     assert(ship_speed_rating(SHIP_TWINS) == 10);
     assert(ship_strength_rating(SHIP_TWINS) == 5);
-    assert(ship_attack_rating(SHIP_TWINS) == 3);
+    assert(ship_attack_rating(SHIP_TWINS) == 5);
     assert(fabsf(ship_size_multiplier(SHIP_TWINS) - 1.25f) < 0.001f); /* 25% bigger than B-20 */
 
     /* The single fastest ship in the fleet (10 > B-20's own 7). */
@@ -3149,7 +3149,7 @@ static void test_twins_alternating_fire(void) {
     assert(fabsf(gs.player_shots[first_idx].damage - BASE_PLAYER_DAMAGE) < 0.001f);
     assert(fabsf(gs.player_shots[first_idx].x - right_x) < 0.001f); /* first shot from the right twin */
     assert(fabsf(gs.player.fire_cooldown - TWINS_ALTERNATE_FIRE_COOLDOWN) < 0.001f);
-    assert(fabsf(TWINS_ALTERNATE_FIRE_COOLDOWN - 0.25f) < 0.001f); /* 4 shots/sec combined */
+    assert(fabsf(TWINS_ALTERNATE_FIRE_COOLDOWN - (0.25f / 1.5f)) < 0.001f); /* 6 shots/sec combined */
 
     gs.player.fire_cooldown = 0.0f;
     game_update(&gs, &fire, 0.016f, &events);
@@ -3666,7 +3666,7 @@ static void test_antartica_boss_ring_kills_only_the_touched_body(void) {
 static void test_buckler_ratings_and_moveset(void) {
     assert(ship_speed_rating(SHIP_BUCKLER) == 6);
     assert(ship_strength_rating(SHIP_BUCKLER) == 8);
-    assert(ship_attack_rating(SHIP_BUCKLER) == 6);
+    assert(ship_attack_rating(SHIP_BUCKLER) == 5);
     assert(fabsf(ship_size_multiplier(SHIP_BUCKLER) - 1.0f) < 0.001f); /* same size as B-20 */
 
     assert(ship_shoot_mode_slot_count(SHIP_BUCKLER) == 1);
@@ -3705,7 +3705,7 @@ static void test_buckler_cannon_directions_and_first_pressed_wins(void) {
     }
     assert(found == 1);
     assert(fabsf(gs.player.fire_cooldown - BUCKLER_CANNON_FIRE_COOLDOWN) < 0.001f);
-    assert(fabsf(BUCKLER_CANNON_FIRE_COOLDOWN - 0.5f) < 0.001f); /* 2 shots/sec */
+    assert(fabsf(BUCKLER_CANNON_FIRE_COOLDOWN - (1.0f / 3.0f)) < 0.001f); /* 3 shots/sec */
 
     /* Key 3 (north) is now held too, but key 1 (west) was pressed first and
      * is still held - it must keep firing exclusively, no switch to north. */

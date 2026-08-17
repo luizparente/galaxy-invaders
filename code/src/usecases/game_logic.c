@@ -1805,7 +1805,7 @@ static void update_double_barrel(GameState *gs, const InputCommand *input, Event
  * flight only, never firing, see update_player's own SHIP_TWINS branch):
  * one shot per activation, alternating muzzle between the two twins' own
  * cached x positions (twins_next_shot_is_right) so together they reach
- * TWINS_ALTERNATE_FIRE_COOLDOWN's combined 4 shots/sec, 2/sec from either
+ * TWINS_ALTERNATE_FIRE_COOLDOWN's combined 6 shots/sec, 3/sec from either
  * twin alone - loosely "C-24's own mode 1" in spirit (a wingtip-style
  * pattern from two source points), but a single alternating shot per
  * activation rather than a simultaneous pair, at Twins' own explicitly

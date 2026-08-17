@@ -606,12 +606,13 @@
  * little faster than the ship's own base PLAYER_SPEED so the reunion
  * reads as snappy rather than sluggish. */
 #define TWINS_FORMATION_REJOIN_SPEED (PLAYER_SPEED * 1.5f)
-/* "Each twin shoots 2 projectiles per second... together 4 total per
- * second" per spec - a flat rate specific to The Twins, not derived from
- * PLAYER_FIRE_COOLDOWN or C-24's own double-barrel cooldown (the mode 1
- * pattern is only reused loosely: one shot per activation, alternating
- * muzzle, not two shots at once - see update_twins_alternating_fire). */
-#define TWINS_ALTERNATE_FIRE_COOLDOWN 0.25f
+/* "Each twin shoots 3 projectiles per second... together 6 total per
+ * second" (the original "2... together 4" spec rate increased 50%) - a flat
+ * rate specific to The Twins, not derived from PLAYER_FIRE_COOLDOWN or
+ * C-24's own double-barrel cooldown (the mode 1 pattern is only reused
+ * loosely: one shot per activation, alternating muzzle, not two shots at
+ * once - see update_twins_alternating_fire). */
+#define TWINS_ALTERNATE_FIRE_COOLDOWN (0.25f / 1.5f)
 #define TWINS_BOLT_LENGTH 22.0f
 #define TWINS_BOLT_WIDTH 4.5f
 
@@ -699,10 +700,10 @@
 
 /* The only mode: 5 fixed-direction cannons (west/northwest/north/northeast/
  * east - see kBucklerCannonDir in usecases/game_logic.c), spanning her own
- * frontal 180 degrees, one active at a time - "2 shots per second" per
+ * frontal 180 degrees, one active at a time - "3 shots per second" per
  * spec while a cannon is held. Speed/damage reuse B-20's own baseline
  * unscaled - only the direction and the round-ball look are unique to her. */
-#define BUCKLER_CANNON_FIRE_COOLDOWN 0.5f /* 2 shots/sec */
+#define BUCKLER_CANNON_FIRE_COOLDOWN (1.0f / 3.0f) /* 3 shots/sec */
 #define BUCKLER_CANNON_PROJECTILE_SPEED PLAYER_PROJECTILE_SPEED
 #define BUCKLER_CANNON_PROJECTILE_RADIUS 6.0f
 /* How far from the ship's own center each cannon's shot spawns - offset
