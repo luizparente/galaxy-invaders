@@ -994,4 +994,73 @@
 #define ERRATIC_ENEMY_RANDOM_RETARGET_MIN 0.35f
 #define ERRATIC_ENEMY_RANDOM_RETARGET_MAX 0.9f
 
+/* --- Asteroid hazard (see Asteroid in domain/types.h, adapters/
+ * asteroid_sprites for the 26 designs across 3 size tiers, and
+ * usecases/spawner.c's spawner_asteroid_spawn_chance/spawner_spawn_asteroid)
+ * - a rotating moon that falls from the top like an enemy, survives a
+ * random handful of player shots, then explodes, killing nearby enemies
+ * and damaging the player if caught in the blast. Unlocked behind the
+ * first boss kill and 10% more likely to spawn (on top of any INSANE-only
+ * base chance below) with every subsequent one, per spec - same
+ * "ERRATIC_ENEMY_CHANCE_PER_BOSS_DEFEAT-shaped ramp, capped at 100%"
+ * precedent as the erratic-movement unlock above. --- */
+/* 3 size tiers (see adapters/asteroid_sprites' own doc comment for why each
+ * tier's native texture resolution differs too) - spawner_spawn_asteroid
+ * picks a tier uniformly at random, then a design uniformly within that
+ * tier, then a concrete on-screen size uniformly within that tier's own
+ * ASTEROID_SIZE_*_MIN/MAX range below - "size selection must be random"
+ * per spec, on top of "keep what you have" for the original 11 (now the
+ * small tier, unchanged). kAsteroidSprites (adapters/asteroid_sprites.c) is
+ * laid out in exactly this order: small first, then medium, then large. */
+#define ASTEROID_SMALL_SPRITE_COUNT 11
+#define ASTEROID_MEDIUM_SPRITE_COUNT 10
+#define ASTEROID_LARGE_SPRITE_COUNT 5
+#define ASTEROID_SPRITE_COUNT \
+  (ASTEROID_SMALL_SPRITE_COUNT + ASTEROID_MEDIUM_SPRITE_COUNT + ASTEROID_LARGE_SPRITE_COUNT)
+/* Small pool relative to MAX_ENEMIES - asteroids are a rare, heavyweight
+ * hazard, never meant to flood the screen the way ordinary enemies do. */
+#define MAX_ASTEROIDS 12
+/* The original small tier's own size, unchanged (a bit bigger than an
+ * ordinary enemy's own PLAYER_WIDTH footprint so it reads as a heavier
+ * hazard), just widened into a small +/- range instead of one fixed value
+ * per "vary the asteroid sizes a bit" feedback. Medium/large each get their
+ * own bigger range in turn - "even bigger than the ones above" per spec -
+ * kept as flat, easily retunable constants like every other Asteroid knob
+ * here, since balancing these is expected to take another pass later. */
+#define ASTEROID_SIZE_SMALL_MIN (PLAYER_WIDTH * 1.4f)
+#define ASTEROID_SIZE_SMALL_MAX (PLAYER_WIDTH * 2.1f)
+#define ASTEROID_SIZE_MEDIUM_MIN (PLAYER_WIDTH * 2.6f)
+#define ASTEROID_SIZE_MEDIUM_MAX (PLAYER_WIDTH * 3.6f)
+#define ASTEROID_SIZE_LARGE_MIN (PLAYER_WIDTH * 4.2f)
+#define ASTEROID_SIZE_LARGE_MAX (PLAYER_WIDTH * 5.5f)
+/* Unscaled design px/sec, rolled once per spawn (see
+ * spawner_spawn_asteroid) - deliberately faster than an ordinary enemy's
+ * own baseline ENEMY_BASE_SPEED (55) right out of the gate, per spec.
+ * Independent of score/difficulty (unlike difficulty_enemy_speed) - kept as
+ * flat, easily retunable constants since balancing this is expected to
+ * take another pass later. */
+#define ASTEROID_SPEED_MIN 70.0f
+#define ASTEROID_SPEED_MAX 100.0f
+/* Degrees/sec, rolled once per spawn - the sign (CW vs CCW) is also
+ * randomized independently for visual variety, so the actual range a given
+ * asteroid's own rotation_speed falls into is +-[MIN, MAX]. */
+#define ASTEROID_ROTATION_SPEED_MIN 30.0f
+#define ASTEROID_ROTATION_SPEED_MAX 180.0f
+/* How many player shots (not damage points - a plain hit count) it takes
+ * to pop a given asteroid, rolled once per spawn uniformly across this
+ * inclusive range. */
+#define ASTEROID_HITS_MIN 5
+#define ASTEROID_HITS_MAX 10
+#define ASTEROID_SPAWN_CHANCE_PER_BOSS_DEFEAT 0.10f
+/* INSANE only: asteroids are live from the very start of the run (0% on
+ * every other difficulty until the first boss falls), at this base chance
+ * per enemy kill - still climbing another ASTEROID_SPAWN_CHANCE_PER_
+ * BOSS_DEFEAT per boss defeated on top, same as every other difficulty. */
+#define ASTEROID_INSANE_BASE_CHANCE 0.20f
+/* Same blast radius as B-20's own mode 3 (power cannon) - see
+ * POWER_CANNON_EXPLOSION_RADIUS_RATIO and trigger_power_cannon_explosion in
+ * usecases/game_logic.c - aliased under its own name so it can be retuned
+ * independently later without touching B-20's own balance. */
+#define ASTEROID_EXPLOSION_RADIUS_RATIO POWER_CANNON_EXPLOSION_RADIUS_RATIO
+
 #endif

@@ -17,6 +17,7 @@
 #include "adapters/menu_ship_c24_silhouette.h"
 #include "adapters/menu_logo_sprite.h"
 #include "adapters/menu_planet_sprites.h"
+#include "adapters/asteroid_sprites.h"
 #include "domain/constants.h"
 #include "usecases/ship.h"
 
@@ -59,6 +60,13 @@ typedef struct SdlRendererCtx {
     /* The 4 decorative menu planets (adapters/menu_planet_sprites), same
      * one-texture-per-design technique as enemy_textures/boss_textures. */
     SDL_Texture *planet_textures[MENU_PLANET_COUNT];
+    /* The 11 asteroid designs (adapters/asteroid_sprites), same
+     * one-texture-per-design technique as enemy_textures/boss_textures -
+     * needed (rather than the player ship's own per-pixel gp_fill_rect
+     * technique) so draw_asteroid can hand each one off to
+     * SDL_RenderCopyExF for real GPU rotation instead of rotating every
+     * pixel by hand. */
+    SDL_Texture *asteroid_textures[ASTEROID_SPRITE_COUNT];
 } SdlRendererCtx;
 
 static const Color kBackground = {8, 8, 26, 255};
@@ -378,6 +386,19 @@ static void draw_sprite(SdlRendererCtx *ctx, SDL_Texture *tex, const EnemySprite
 static void draw_enemy(SdlRendererCtx *ctx, const Enemy *e) {
     if (!e->alive) return;
     draw_sprite(ctx, ctx->enemy_textures[e->kind], &kEnemySprites[e->kind], e->x, e->y, e->size);
+}
+
+/* Same centered destination rect draw_sprite builds (all 11 asteroid
+ * designs share one square 64x64 grid, so no long_side aspect correction is
+ * needed here), but via SDL_RenderCopyExF instead of SDL_RenderCopyF so the
+ * texture rotates about its own center by Asteroid.rotation_deg (updated
+ * continuously in update_asteroids, usecases/game_logic.c) - real GPU
+ * rotation, not a per-pixel transform. */
+static void draw_asteroid(SdlRendererCtx *ctx, const Asteroid *a) {
+    if (!a->alive) return;
+    SDL_FRect dst = {a->x - a->size / 2.0f, a->y - a->size / 2.0f, a->size, a->size};
+    SDL_RenderCopyExF(ctx->renderer, ctx->asteroid_textures[a->sprite_index], NULL, &dst,
+                       (double)a->rotation_deg, NULL, SDL_FLIP_NONE);
 }
 
 static void draw_boss(SdlRendererCtx *ctx, const Boss *b) {
@@ -1459,6 +1480,7 @@ static void draw_projectile_trail_particle(SdlRendererCtx *ctx, const Projectile
 static void draw_gameplay(SdlRendererCtx *ctx, const GameState *gs) {
     for (int i = 0; i < MAX_ENEMY_TRAIL_PARTICLES; i++) draw_enemy_trail_particle(ctx, &gs->enemy_trail_particles[i]);
     for (int i = 0; i < MAX_ENEMIES; i++) draw_enemy(ctx, &gs->enemies[i]);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) draw_asteroid(ctx, &gs->asteroids[i]);
     draw_boss(ctx, &gs->boss);
     draw_orb(ctx, &gs->orb);
     for (int i = 0; i < MAX_EXPLOSIONS; i++) draw_explosion(ctx, &gs->explosions[i]);
@@ -2215,6 +2237,9 @@ static void sdl_render_destroy(void *self) {
     for (int i = 0; i < MENU_PLANET_COUNT; i++) {
         if (ctx->planet_textures[i]) SDL_DestroyTexture(ctx->planet_textures[i]);
     }
+    for (int i = 0; i < ASTEROID_SPRITE_COUNT; i++) {
+        if (ctx->asteroid_textures[i]) SDL_DestroyTexture(ctx->asteroid_textures[i]);
+    }
     if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
     if (ctx->window) SDL_DestroyWindow(ctx->window);
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -2379,6 +2404,23 @@ RendererPort *sdl_renderer_create(const char *title, int fallback_w, int fallbac
         SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
         SDL_UpdateTexture(tex, NULL, sprite->pixels, sprite->grid_w * (int)sizeof(uint32_t));
         ctx->planet_textures[i] = tex;
+    }
+
+    for (int i = 0; i < ASTEROID_SPRITE_COUNT; i++) {
+        const AsteroidSprite *sprite = &kAsteroidSprites[i];
+        SDL_Texture *tex = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC,
+                                              sprite->grid_w, sprite->grid_h);
+        if (!tex) {
+            fprintf(stderr, "SDL_CreateTexture failed for asteroid %d: %s\n", i, SDL_GetError());
+            SDL_DestroyRenderer(ctx->renderer);
+            SDL_DestroyWindow(ctx->window);
+            free(ctx);
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+            return NULL;
+        }
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        SDL_UpdateTexture(tex, NULL, sprite->pixels, sprite->grid_w * (int)sizeof(uint32_t));
+        ctx->asteroid_textures[i] = tex;
     }
 
     /* Every draw call in this file works directly in real screen pixels -

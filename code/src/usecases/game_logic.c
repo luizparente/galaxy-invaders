@@ -692,12 +692,27 @@ static void damage_boss(GameState *gs, EventQueue *events, float damage) {
     }
 }
 
+/* Rolled once per enemy that actually dies through play - see
+ * spawner_asteroid_spawn_chance's own doc comment for the exact formula
+ * (gated behind the first boss defeat on every difficulty but INSANE,
+ * where it's live from the start). Called from every site an enemy dies
+ * for real (destroy_enemy_for_score, update_pending_orb_kills' own kill
+ * branch, and the player-enemy mutual-contact-death branch in
+ * check_collisions) - deliberately not from the plain off-screen despawn in
+ * update_enemies, which isn't a kill at all. */
+static void maybe_spawn_asteroid_on_enemy_kill(GameState *gs) {
+    if (frand01() < spawner_asteroid_spawn_chance(gs->bosses_defeated, gs->selected_difficulty)) {
+        spawner_spawn_asteroid(gs);
+    }
+}
+
 /* Shared by both ways an enemy can be destroyed for points (direct laser
  * hit, and the super beam sweeping over it) so every score-triggered
  * effect stays in sync between the two. */
 static void destroy_enemy_for_score(GameState *gs, EventQueue *events, Enemy *e) {
     e->alive = false;
     spawn_explosion(gs, e->x, e->y, e->size);
+    maybe_spawn_asteroid_on_enemy_kill(gs);
 
     float mult = difficulty_score_multiplier(gs->score);
     apply_score_delta(gs, events, (int)((float)SCORE_PER_KILL * mult));
@@ -816,6 +831,7 @@ static void update_boss_dispatch(GameState *gs, float dt) {
 static void reset_run(GameState *gs) {
     memset(&gs->children, 0, sizeof(gs->children));
     memset(&gs->enemies, 0, sizeof(gs->enemies));
+    memset(&gs->asteroids, 0, sizeof(gs->asteroids));
     memset(&gs->player_shots, 0, sizeof(gs->player_shots));
     memset(&gs->enemy_shots, 0, sizeof(gs->enemy_shots));
     memset(&gs->explosions, 0, sizeof(gs->explosions));
@@ -2964,6 +2980,27 @@ static void update_enemies(GameState *gs, float dt) {
     }
 }
 
+/* Straight fall (no horizontal drift, unlike Enemy's own small vx wobble)
+ * plus a continuous spin about its own center at the per-asteroid
+ * rotation_speed rolled at spawn time (see spawner_spawn_asteroid).
+ * Despawns silently once fully past the bottom edge - same "no explosion,
+ * no penalty" convention update_enemies' own off-screen despawn uses; only
+ * being popped by player fire (see check_collisions) counts as a kill. */
+static void update_asteroids(GameState *gs, float dt) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        Asteroid *a = &gs->asteroids[i];
+        if (!a->alive) continue;
+
+        a->y += a->vy * dt;
+        a->rotation_deg = fmodf(a->rotation_deg + a->rotation_speed * dt, 360.0f);
+        if (a->rotation_deg < 0.0f) a->rotation_deg += 360.0f;
+
+        if (a->y - a->size / 2.0f > (float)gs->screen_h) {
+            a->alive = false;
+        }
+    }
+}
+
 /* Counts down every enemy a shot orb scheduled for a delayed explosion
  * (see check_collisions) and detonates it the moment its own random timer
  * runs out. Never awards score - mirroring the orb's old instant-neutralize
@@ -2983,6 +3020,7 @@ static void update_pending_orb_kills(GameState *gs, float dt, EventQueue *events
         e->orb_kill_pending = false;
         spawn_explosion(gs, e->x, e->y, e->size);
         event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
+        maybe_spawn_asteroid_on_enemy_kill(gs);
     }
 }
 
@@ -3365,6 +3403,40 @@ static void damage_player_hitbox(GameState *gs, EventQueue *events, const Player
     }
 }
 
+/* An asteroid's hits_required is reached - the explosion itself, shared by
+ * whichever shot lands the final hit. Radius mirrors B-20's own mode 3
+ * power cannon (ASTEROID_EXPLOSION_RADIUS_RATIO aliases
+ * POWER_CANNON_EXPLOSION_RADIUS_RATIO - see domain/constants.h), but unlike
+ * trigger_power_cannon_explosion this also reaches the player: enemies
+ * caught in it die outright (destroy_enemy_for_score, same as the power
+ * cannon's own splash), while the player only takes a flat
+ * PLAYER_LIFE_LOSS_PER_HIT life-loss hit per hitbox caught in it - "damage"
+ * rather than an instant kill, per spec, reusing the exact same
+ * damage_player_hitbox path an ordinary enemy shot's own hit already goes
+ * through. */
+static void pop_asteroid(GameState *gs, EventQueue *events, Asteroid *a) {
+    float radius = ASTEROID_EXPLOSION_RADIUS_RATIO * fminf((float)gs->screen_w, (float)gs->screen_h);
+    a->alive = false;
+    spawn_explosion(gs, a->x, a->y, radius);
+    event_queue_push_sfx(events, SFX_ENEMY_DESTROYED);
+
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        Enemy *e = &gs->enemies[i];
+        if (!e->alive) continue;
+        if (!within_radius(a->x, a->y, e->x, e->y, radius)) continue;
+        destroy_enemy_for_score(gs, events, e);
+    }
+
+    if (gs->player.alive && !samurai_stealth_active(gs)) {
+        PlayerHitbox hbs[2];
+        int hb_count = player_hitboxes(gs, hbs);
+        for (int h = 0; h < hb_count; h++) {
+            if (!within_radius(a->x, a->y, hbs[h].x, hbs[h].y, radius)) continue;
+            damage_player_hitbox(gs, events, &hbs[h], PLAYER_LIFE_LOSS_PER_HIT);
+        }
+    }
+}
+
 static void check_collisions(GameState *gs, EventQueue *events) {
     /* Children always collide at the stock (unmultiplied) size - see
      * ship_size_multiplier's own doc comment. */
@@ -3411,6 +3483,43 @@ static void check_collisions(GameState *gs, EventQueue *events) {
         }
     }
 
+    /* Player shots vs. asteroids: every hit counts toward hits_required
+     * regardless of the shot's own damage value - "a random number of
+     * shots", per spec, not a damage pool like the boss's own hits_taken.
+     * PROJECTILE_KIND_POWER/CRUZADER_ROCKET shots still additionally
+     * trigger their existing splash against ordinary enemies on top of
+     * counting as one hit here, same as the enemy loop above. No piercing
+     * carve-out for PROJECTILE_KIND_RANGER_ARC here - an asteroid is a
+     * single many-hit target like the boss, not an ordinary one-hit enemy,
+     * so it's consumed like any other shot. */
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        Projectile *pr = &gs->player_shots[i];
+        if (!pr->alive) continue;
+
+        float shot_half_w, shot_half_h;
+        player_shot_half_extents(gs, pr, &shot_half_w, &shot_half_h);
+
+        for (int j = 0; j < MAX_ASTEROIDS; j++) {
+            Asteroid *a = &gs->asteroids[j];
+            if (!a->alive) continue;
+
+            if (collision_aabb_overlap(pr->x, pr->y, shot_half_w, shot_half_h,
+                                        a->x, a->y, a->size / 2.0f, a->size / 2.0f)) {
+                pr->alive = false;
+                if (pr->kind == PROJECTILE_KIND_POWER || pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET) {
+                    trigger_power_cannon_explosion(gs, events, pr->x, pr->y, pr->style_ship);
+                }
+                a->hits_taken++;
+                if (a->hits_taken >= a->hits_required) {
+                    pop_asteroid(gs, events, a);
+                } else {
+                    event_queue_push_sfx(events, SFX_BOSS_HIT);
+                }
+                break;
+            }
+        }
+    }
+
     /* Cruzader never explodes from touching an ordinary enemy - the enemy
      * still dies (e->alive = false; spawn_explosion, both unconditional
      * below), but takes a flat life-loss penalty instead of the usual
@@ -3434,6 +3543,7 @@ static void check_collisions(GameState *gs, EventQueue *events) {
                                             e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
                     e->alive = false;
                     spawn_explosion(gs, e->x, e->y, e->size);
+                    maybe_spawn_asteroid_on_enemy_kill(gs);
                     if (gs->selected_ship == SHIP_CRUZADER) {
                         damage_cruzader_on_enemy_contact(gs, events);
                     } else {
@@ -3828,6 +3938,7 @@ static void update_running(GameState *gs, const InputCommand *input, float dt, E
     update_player_trail(gs, dt);
     if (!gs->boss.alive) spawner_update(gs, dt); /* no ordinary spawns during a boss fight */
     update_enemies(gs, dt);
+    update_asteroids(gs, dt);
     update_pending_orb_kills(gs, dt, events);
     update_boss(gs, dt);
     update_boss_dispatch(gs, dt);

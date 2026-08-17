@@ -648,6 +648,27 @@ typedef struct Enemy {
     float boss_dispatch_target_x, boss_dispatch_target_y;
 } Enemy;
 
+/* A rotating-moon hazard that falls from the top like an ordinary Enemy
+ * (see update_asteroids in usecases/game_logic.c) but survives a random
+ * handful of player shots (hits_taken/hits_required) before exploding -
+ * the explosion kills nearby enemies and damages the player if caught in
+ * it (see the asteroid-vs-player-shot block in check_collisions). Spawned
+ * by spawner_spawn_asteroid (usecases/spawner.c) with a chance rolled on
+ * every enemy kill (see spawner_asteroid_spawn_chance). No health bar is
+ * ever shown for one - hits_taken/hits_required are collision-only state,
+ * same "no UI, only avoidance/attrition" precedent as Boss's danger ring. */
+typedef struct Asteroid {
+    bool alive;
+    float x, y;
+    float vy; /* falls straight down, no horizontal drift, unlike Enemy's own small vx wobble */
+    float size;
+    float rotation_deg; /* [0, 360), spins continuously about its own center - see draw_asteroid */
+    float rotation_speed; /* degrees/sec, signed (CW vs CCW), rolled once at spawn - see ASTEROID_ROTATION_SPEED_MIN/MAX */
+    int sprite_index; /* index into adapters/asteroid_sprites' kAsteroidSprites, [0, ASTEROID_SPRITE_COUNT), rolled once at spawn */
+    int hits_taken;
+    int hits_required; /* rolled once at spawn, uniformly within [ASTEROID_HITS_MIN, ASTEROID_HITS_MAX] */
+} Asteroid;
+
 /* Drives the player shot's rendering (adapters/sdl_renderer.c) and, for
  * PROJECTILE_KIND_POWER, its explode-on-contact behavior in check_collisions.
  * Unused (left NORMAL) by enemy shots. */
@@ -1007,6 +1028,7 @@ typedef struct GameState {
      * update_mothership_dispatch/update_children in usecases/game_logic.c). */
     ChildShip children[MOTHERSHIP_MAX_CHILDREN];
     Enemy enemies[MAX_ENEMIES];
+    Asteroid asteroids[MAX_ASTEROIDS];
     Projectile player_shots[MAX_PLAYER_PROJECTILES];
     Projectile enemy_shots[MAX_ENEMY_PROJECTILES];
     Explosion explosions[MAX_EXPLOSIONS];

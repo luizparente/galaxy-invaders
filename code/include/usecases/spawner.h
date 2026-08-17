@@ -65,4 +65,28 @@ void spawner_dispatch_enemy_from_boss(GameState *gs);
  * currently boss_dispatch_flying. */
 void spawner_land_boss_dispatched_enemy(GameState *gs, Enemy *e);
 
+/* The odds a given enemy kill brings in a fresh asteroid (see
+ * maybe_spawn_asteroid_on_enemy_kill in usecases/game_logic.c) - 0% on every
+ * difficulty but DIFFICULTY_INSANE until the first boss falls, then
+ * ASTEROID_SPAWN_CHANCE_PER_BOSS_DEFEAT per boss actually defeated so far,
+ * capped at 1.0 (100%); DIFFICULTY_INSANE instead starts at
+ * ASTEROID_INSANE_BASE_CHANCE from bosses_defeated == 0 (no gate at all),
+ * climbing the same per-boss-defeat amount on top. Exposed as its own pure
+ * function so the formula can be pinned down directly in tests, same
+ * reasoning as spawner_erratic_enemy_chance above. */
+float spawner_asteroid_spawn_chance(int bosses_defeated, Difficulty difficulty);
+
+/* Spawns a fresh asteroid into the first free gs->asteroids slot, falling
+ * from a random point along the top edge exactly like spawn_one_enemy's own
+ * x/y roll. Picks a size tier uniformly at random first (small/medium/
+ * large - see roll_asteroid_tier in usecases/spawner.c), which decides both
+ * the on-screen size (rolled within that tier's own ASTEROID_SIZE_*_MIN/MAX
+ * range, domain/constants.h) and which slice of adapters/asteroid_sprites'
+ * kAsteroidSprites sprite_index is picked from; vy/rotation_speed/
+ * hits_required are each rolled independently within their own [MIN, MAX]
+ * constants regardless of tier. A no-op if every slot is
+ * currently occupied, same "best-effort, no queued retry" choice
+ * spawn_one_enemy already makes. */
+void spawner_spawn_asteroid(GameState *gs);
+
 #endif

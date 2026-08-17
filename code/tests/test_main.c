@@ -4870,6 +4870,319 @@ static void test_erratic_enemies_start_appearing_after_first_boss_defeat(void) {
     printf("test_erratic_enemies_start_appearing_after_first_boss_defeat OK\n");
 }
 
+/* Pins down spawner_asteroid_spawn_chance's exact formula: 0% before any
+ * boss defeat on every difficulty but INSANE, then
+ * ASTEROID_SPAWN_CHANCE_PER_BOSS_DEFEAT per boss actually defeated,
+ * capped at 100% - same shape as
+ * test_erratic_enemy_chance_scales_with_bosses_defeated above, plus
+ * INSANE's own unconditional ASTEROID_INSANE_BASE_CHANCE starting point. */
+static void test_asteroid_spawn_chance_scales_with_bosses_defeated(void) {
+    assert(fabsf(spawner_asteroid_spawn_chance(0, DIFFICULTY_NORMAL) - 0.0f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(1, DIFFICULTY_NORMAL) - 0.10f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(2, DIFFICULTY_NORMAL) - 0.20f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(3, DIFFICULTY_NORMAL) - 0.30f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(10, DIFFICULTY_NORMAL) - 1.0f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(50, DIFFICULTY_NORMAL) - 1.0f) < 0.001f);
+
+    /* Every other non-INSANE difficulty follows the same gated formula. */
+    assert(fabsf(spawner_asteroid_spawn_chance(0, DIFFICULTY_BABY) - 0.0f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(1, DIFFICULTY_HARD) - 0.10f) < 0.001f);
+
+    /* INSANE: no gate at all - live from bosses_defeated == 0 at its own
+     * base chance, then the same per-boss-defeat ramp on top. */
+    assert(fabsf(spawner_asteroid_spawn_chance(0, DIFFICULTY_INSANE) - 0.20f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(1, DIFFICULTY_INSANE) - 0.30f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(2, DIFFICULTY_INSANE) - 0.40f) < 0.001f);
+    assert(fabsf(spawner_asteroid_spawn_chance(10, DIFFICULTY_INSANE) - 1.0f) < 0.001f);
+    printf("test_asteroid_spawn_chance_scales_with_bosses_defeated OK\n");
+}
+
+/* No asteroid ever spawns from an enemy kill before the first boss is
+ * defeated on an ordinary difficulty, but INSANE lets them through from the
+ * very start of the run, at roughly its own 20% base chance - sampled
+ * across many independent kills, same "statistical, not exact-formula"
+ * style as test_erratic_enemies_start_appearing_after_first_boss_defeat
+ * (that's what test_asteroid_spawn_chance_scales_with_bosses_defeated above
+ * already pins down exactly). */
+static void test_asteroids_gated_behind_first_boss_except_insane(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+    assert(gs.bosses_defeated == 0);
+    assert(gs.selected_difficulty == DIFFICULTY_NORMAL);
+
+    for (int i = 0; i < 200; i++) {
+        memset(&gs.asteroids, 0, sizeof(gs.asteroids));
+        kill_one_enemy(&gs, &events);
+        for (int j = 0; j < MAX_ASTEROIDS; j++) assert(!gs.asteroids[j].alive);
+    }
+
+    gs.selected_difficulty = DIFFICULTY_INSANE;
+    int spawned = 0, total = 200;
+    for (int i = 0; i < total; i++) {
+        memset(&gs.asteroids, 0, sizeof(gs.asteroids));
+        kill_one_enemy(&gs, &events);
+        for (int j = 0; j < MAX_ASTEROIDS; j++) {
+            if (gs.asteroids[j].alive) {
+                spawned++;
+                break;
+            }
+        }
+    }
+    float observed = (float)spawned / (float)total;
+    assert(observed > 0.08f);
+    assert(observed < 0.35f);
+    printf("test_asteroids_gated_behind_first_boss_except_insane OK\n");
+}
+
+/* spawner_spawn_asteroid rolls vy/rotation_speed/hits_required each within
+ * their own configured [MIN, MAX] range (domain/constants.h) - sampled
+ * across many spawns to confirm every value stays in-bounds and both ends
+ * of each range actually get reached (not silently clamped to one
+ * constant). Run at the DESIGN_W x DESIGN_H baseline (start_game), so
+ * gs.scale is exactly 1.0 and vy can be compared directly against the
+ * unscaled ASTEROID_SPEED_MIN/MAX constants. */
+static void test_asteroid_speed_and_rotation_speed_within_range(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    float min_vy = 1e9f, max_vy = -1e9f;
+    float min_rot = 1e9f, max_rot = -1e9f;
+    bool saw_negative_rotation = false, saw_positive_rotation = false;
+    int min_hits = 1000, max_hits = -1000;
+
+    for (int i = 0; i < 300; i++) {
+        memset(&gs.asteroids, 0, sizeof(gs.asteroids));
+        spawner_spawn_asteroid(&gs);
+        Asteroid *a = &gs.asteroids[0];
+        assert(a->alive);
+        assert(a->vy >= ASTEROID_SPEED_MIN - 0.01f);
+        assert(a->vy <= ASTEROID_SPEED_MAX + 0.01f);
+        assert(fabsf(a->rotation_speed) >= ASTEROID_ROTATION_SPEED_MIN - 0.01f);
+        assert(fabsf(a->rotation_speed) <= ASTEROID_ROTATION_SPEED_MAX + 0.01f);
+        assert(a->hits_required >= ASTEROID_HITS_MIN);
+        assert(a->hits_required <= ASTEROID_HITS_MAX);
+        assert(a->sprite_index >= 0 && a->sprite_index < ASTEROID_SPRITE_COUNT);
+
+        if (a->vy < min_vy) min_vy = a->vy;
+        if (a->vy > max_vy) max_vy = a->vy;
+        if (fabsf(a->rotation_speed) < min_rot) min_rot = fabsf(a->rotation_speed);
+        if (fabsf(a->rotation_speed) > max_rot) max_rot = fabsf(a->rotation_speed);
+        if (a->rotation_speed < 0.0f) saw_negative_rotation = true;
+        if (a->rotation_speed > 0.0f) saw_positive_rotation = true;
+        if (a->hits_required < min_hits) min_hits = a->hits_required;
+        if (a->hits_required > max_hits) max_hits = a->hits_required;
+    }
+
+    /* A wide-enough sample should approach both ends of each range. */
+    assert(min_vy < ASTEROID_SPEED_MIN + (ASTEROID_SPEED_MAX - ASTEROID_SPEED_MIN) * 0.25f);
+    assert(max_vy > ASTEROID_SPEED_MAX - (ASTEROID_SPEED_MAX - ASTEROID_SPEED_MIN) * 0.25f);
+    assert(saw_negative_rotation && saw_positive_rotation);
+    assert(min_hits == ASTEROID_HITS_MIN);
+    assert(max_hits == ASTEROID_HITS_MAX);
+    printf("test_asteroid_speed_and_rotation_speed_within_range OK\n");
+}
+
+/* spawner_spawn_asteroid also rolls a size tier uniformly at random (small/
+ * medium/large - see roll_asteroid_tier in usecases/spawner.c) - "vary the
+ * asteroid sizes" per feedback, on top of the original 11 (now the small
+ * tier, kept exactly as before). Confirms every sample's sprite_index falls
+ * in the tier its own on-screen size implies (kAsteroidSprites is laid out
+ * small-then-medium-then-large, adapters/asteroid_sprites.c), every size
+ * stays within its own tier's configured range, all 3 tiers actually get
+ * sampled, and each tier's range is distinctly bigger than the last - same
+ * "sample many spawns, check both bounds get approached" style as
+ * test_asteroid_speed_and_rotation_speed_within_range above. */
+static void test_asteroid_size_tier_is_random_and_covers_all_three(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    /* The 3 ranges must be strictly increasing and non-overlapping for the
+     * "even bigger than the ones above" spec to actually hold. */
+    assert(ASTEROID_SIZE_SMALL_MAX < ASTEROID_SIZE_MEDIUM_MIN);
+    assert(ASTEROID_SIZE_MEDIUM_MAX < ASTEROID_SIZE_LARGE_MIN);
+
+    bool saw_small = false, saw_medium = false, saw_large = false;
+    float min_small = 1e9f, max_small = -1e9f;
+    float min_medium = 1e9f, max_medium = -1e9f;
+    float min_large = 1e9f, max_large = -1e9f;
+
+    for (int i = 0; i < 600; i++) {
+        memset(&gs.asteroids, 0, sizeof(gs.asteroids));
+        spawner_spawn_asteroid(&gs);
+        Asteroid *a = &gs.asteroids[0];
+        assert(a->alive);
+
+        if (a->sprite_index < ASTEROID_SMALL_SPRITE_COUNT) {
+            saw_small = true;
+            assert(a->size >= ASTEROID_SIZE_SMALL_MIN - 0.01f);
+            assert(a->size <= ASTEROID_SIZE_SMALL_MAX + 0.01f);
+            if (a->size < min_small) min_small = a->size;
+            if (a->size > max_small) max_small = a->size;
+        } else if (a->sprite_index < ASTEROID_SMALL_SPRITE_COUNT + ASTEROID_MEDIUM_SPRITE_COUNT) {
+            saw_medium = true;
+            assert(a->size >= ASTEROID_SIZE_MEDIUM_MIN - 0.01f);
+            assert(a->size <= ASTEROID_SIZE_MEDIUM_MAX + 0.01f);
+            if (a->size < min_medium) min_medium = a->size;
+            if (a->size > max_medium) max_medium = a->size;
+        } else {
+            saw_large = true;
+            assert(a->sprite_index < ASTEROID_SPRITE_COUNT);
+            assert(a->size >= ASTEROID_SIZE_LARGE_MIN - 0.01f);
+            assert(a->size <= ASTEROID_SIZE_LARGE_MAX + 0.01f);
+            if (a->size < min_large) min_large = a->size;
+            if (a->size > max_large) max_large = a->size;
+        }
+    }
+
+    assert(saw_small && saw_medium && saw_large);
+    assert(min_small < ASTEROID_SIZE_SMALL_MIN + (ASTEROID_SIZE_SMALL_MAX - ASTEROID_SIZE_SMALL_MIN) * 0.3f);
+    assert(max_small > ASTEROID_SIZE_SMALL_MAX - (ASTEROID_SIZE_SMALL_MAX - ASTEROID_SIZE_SMALL_MIN) * 0.3f);
+    assert(min_medium < ASTEROID_SIZE_MEDIUM_MIN + (ASTEROID_SIZE_MEDIUM_MAX - ASTEROID_SIZE_MEDIUM_MIN) * 0.3f);
+    assert(max_medium > ASTEROID_SIZE_MEDIUM_MAX - (ASTEROID_SIZE_MEDIUM_MAX - ASTEROID_SIZE_MEDIUM_MIN) * 0.3f);
+    assert(min_large < ASTEROID_SIZE_LARGE_MIN + (ASTEROID_SIZE_LARGE_MAX - ASTEROID_SIZE_LARGE_MIN) * 0.3f);
+    assert(max_large > ASTEROID_SIZE_LARGE_MAX - (ASTEROID_SIZE_LARGE_MAX - ASTEROID_SIZE_LARGE_MIN) * 0.3f);
+    printf("test_asteroid_size_tier_is_random_and_covers_all_three OK\n");
+}
+
+/* Fires one player shot straight up into a fixed asteroid at a time,
+ * confirming it survives every hit up to hits_required - 1 and pops on
+ * exactly the hits_required-th. */
+static void test_asteroid_requires_random_shots_to_destroy(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    Asteroid *a = &gs.asteroids[0];
+    memset(a, 0, sizeof(*a));
+    a->alive = true;
+    a->size = ASTEROID_SIZE_SMALL_MAX;
+    a->x = gs.player.x;
+    a->y = gs.player.y - PLAYER_HEIGHT / 2.0f - PLAYER_PROJECTILE_H / 2.0f;
+    a->hits_required = 7;
+    a->hits_taken = 0;
+
+    InputCommand none = no_input();
+    for (int hit = 1; hit <= 6; hit++) {
+        gs.player_shots[0].alive = true;
+        gs.player_shots[0].x = a->x;
+        gs.player_shots[0].y = a->y;
+        gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+        game_update(&gs, &none, 0.001f, &events);
+        assert(a->alive);
+        assert(a->hits_taken == hit);
+    }
+
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = a->x;
+    gs.player_shots[0].y = a->y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+    game_update(&gs, &none, 0.001f, &events);
+    assert(!a->alive);
+
+    /* Sample many fresh spawns to confirm hits_required itself covers the
+     * full configured range (not pinned to the single value 7 used above -
+     * that's already an exact-formula test in
+     * test_asteroid_speed_and_rotation_speed_within_range). */
+    int min_hits = 1000, max_hits = -1000;
+    for (int i = 0; i < 200; i++) {
+        memset(&gs.asteroids, 0, sizeof(gs.asteroids));
+        spawner_spawn_asteroid(&gs);
+        if (gs.asteroids[0].hits_required < min_hits) min_hits = gs.asteroids[0].hits_required;
+        if (gs.asteroids[0].hits_required > max_hits) max_hits = gs.asteroids[0].hits_required;
+    }
+    assert(min_hits == ASTEROID_HITS_MIN);
+    assert(max_hits == ASTEROID_HITS_MAX);
+    printf("test_asteroid_requires_random_shots_to_destroy OK\n");
+}
+
+/* Popping an asteroid (the final hit landing) kills every ordinary enemy
+ * within ASTEROID_EXPLOSION_RADIUS_RATIO * min(screen_w, screen_h) of it
+ * (same reuse trigger_power_cannon_explosion already makes) and damages -
+ * not kills outright - every player hitbox caught in the same radius, by
+ * exactly PLAYER_LIFE_LOSS_PER_HIT (the same damage_player_hitbox path an
+ * ordinary enemy shot already goes through). An enemy placed well outside
+ * the radius survives untouched. */
+static void test_asteroid_explosion_kills_enemies_and_damages_player_in_radius(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    Asteroid *a = &gs.asteroids[0];
+    memset(a, 0, sizeof(*a));
+    a->alive = true;
+    a->size = ASTEROID_SIZE_SMALL_MAX;
+    a->x = gs.player.x;
+    a->y = gs.player.y - PLAYER_HEIGHT / 2.0f - PLAYER_PROJECTILE_H / 2.0f;
+    a->hits_required = 1;
+    a->hits_taken = 0;
+
+    /* Well within the blast radius, right next to the asteroid itself. */
+    /* Offset from the asteroid's own exact center (not sitting on top of
+     * it) so the player shot below - aimed dead-center at the asteroid to
+     * guarantee it's what gets hit first - can't also overlap and consume
+     * itself on this enemy before ever reaching the asteroid loop. */
+    gs.enemies[0].alive = true;
+    gs.enemies[0].x = a->x + 50.0f;
+    gs.enemies[0].y = a->y;
+    gs.enemies[0].size = 20.0f;
+    gs.enemies[0].fire_timer = 999.0f;
+
+    /* Far outside it, at the opposite corner of the screen. */
+    gs.enemies[1].alive = true;
+    gs.enemies[1].x = 1.0f;
+    gs.enemies[1].y = 1.0f;
+    gs.enemies[1].size = 20.0f;
+    gs.enemies[1].fire_timer = 999.0f;
+
+    gs.player_shots[0].alive = true;
+    gs.player_shots[0].x = a->x;
+    gs.player_shots[0].y = a->y;
+    gs.player_shots[0].vy = -PLAYER_PROJECTILE_SPEED;
+
+    float life_before = gs.player.life;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!a->alive);
+    assert(!gs.enemies[0].alive); /* in-radius enemy dies */
+    assert(gs.enemies[1].alive);  /* out-of-radius enemy survives */
+    assert(gs.player.alive);
+    assert(fabsf(gs.player.life - (life_before - PLAYER_LIFE_LOSS_PER_HIT)) < 0.01f);
+    printf("test_asteroid_explosion_kills_enemies_and_damages_player_in_radius OK\n");
+}
+
+/* An asteroid that drifts past the bottom of the screen without ever being
+ * popped simply despawns - no explosion, no score, no effect on the player
+ * or any enemy, same "just does nothing" convention Enemy's own off-screen
+ * despawn already follows (see update_enemies). */
+static void test_asteroid_falls_off_screen_and_despawns_without_incident(void) {
+    GameState gs;
+    EventQueue events;
+    start_game(&gs, &events);
+
+    Asteroid *a = &gs.asteroids[0];
+    memset(a, 0, sizeof(*a));
+    a->alive = true;
+    a->size = ASTEROID_SIZE_SMALL_MAX;
+    a->x = gs.player.x;
+    a->y = (float)gs.screen_h + a->size; /* already fully past the bottom edge */
+    a->vy = 0.0f;
+    a->hits_required = 5;
+
+    int score_before = gs.score;
+    float life_before = gs.player.life;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.001f, &events);
+
+    assert(!a->alive);
+    assert(gs.score == score_before);
+    assert(fabsf(gs.player.life - life_before) < 0.01f);
+    printf("test_asteroid_falls_off_screen_and_despawns_without_incident OK\n");
+}
+
 /* Pins down CIRCLE's exact orbit formula: a fixed-radius loop around a
  * center that drifts by the enemy's own vx/vy, so a regression here (e.g.
  * swapping sin/cos, or forgetting to drift the center) actually fails
@@ -5089,6 +5402,13 @@ int main(void) {
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();
     test_erratic_enemies_start_appearing_after_first_boss_defeat();
+    test_asteroid_spawn_chance_scales_with_bosses_defeated();
+    test_asteroids_gated_behind_first_boss_except_insane();
+    test_asteroid_speed_and_rotation_speed_within_range();
+    test_asteroid_size_tier_is_random_and_covers_all_three();
+    test_asteroid_requires_random_shots_to_destroy();
+    test_asteroid_explosion_kills_enemies_and_damages_player_in_radius();
+    test_asteroid_falls_off_screen_and_despawns_without_incident();
     test_circle_enemy_orbits_a_drifting_center();
     test_random_enemy_still_nets_downward_progress();
     test_spawner_eventually_spawns();

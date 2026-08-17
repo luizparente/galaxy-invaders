@@ -128,6 +128,76 @@ static void roll_enemy_movement_style(GameState *gs, Enemy *e) {
     }
 }
 
+float spawner_asteroid_spawn_chance(int bosses_defeated, Difficulty difficulty) {
+    float chance;
+    if (difficulty == DIFFICULTY_INSANE) {
+        chance = ASTEROID_INSANE_BASE_CHANCE + ASTEROID_SPAWN_CHANCE_PER_BOSS_DEFEAT * (float)bosses_defeated;
+    } else {
+        chance = bosses_defeated <= 0 ? 0.0f : ASTEROID_SPAWN_CHANCE_PER_BOSS_DEFEAT * (float)bosses_defeated;
+    }
+    if (chance < 0.0f) chance = 0.0f;
+    if (chance > 1.0f) chance = 1.0f;
+    return chance;
+}
+
+/* Picks a size tier uniformly at random (small/medium/large, each an equal
+ * 1-in-3 shot), then returns that tier's own [MIN, MAX] on-screen size
+ * range and the matching slice of kAsteroidSprites' own index space (see
+ * adapters/asteroid_sprites' own doc comment for the small-then-medium-
+ * then-large layout this slices into) - the one place both a size and a
+ * sprite design get rolled together, since which sprites exist at which
+ * size is fixed by which reference art was drawn at that scale. */
+static void roll_asteroid_tier(float *out_size_min, float *out_size_max, int *out_sprite_first,
+                                int *out_sprite_count) {
+    int tier = rand() % 3;
+    switch (tier) {
+        case 0:
+            *out_size_min = ASTEROID_SIZE_SMALL_MIN;
+            *out_size_max = ASTEROID_SIZE_SMALL_MAX;
+            *out_sprite_first = 0;
+            *out_sprite_count = ASTEROID_SMALL_SPRITE_COUNT;
+            break;
+        case 1:
+            *out_size_min = ASTEROID_SIZE_MEDIUM_MIN;
+            *out_size_max = ASTEROID_SIZE_MEDIUM_MAX;
+            *out_sprite_first = ASTEROID_SMALL_SPRITE_COUNT;
+            *out_sprite_count = ASTEROID_MEDIUM_SPRITE_COUNT;
+            break;
+        default:
+            *out_size_min = ASTEROID_SIZE_LARGE_MIN;
+            *out_size_max = ASTEROID_SIZE_LARGE_MAX;
+            *out_sprite_first = ASTEROID_SMALL_SPRITE_COUNT + ASTEROID_MEDIUM_SPRITE_COUNT;
+            *out_sprite_count = ASTEROID_LARGE_SPRITE_COUNT;
+            break;
+    }
+}
+
+void spawner_spawn_asteroid(GameState *gs) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        Asteroid *a = &gs->asteroids[i];
+        if (a->alive) continue;
+
+        float size_min, size_max;
+        int sprite_first, sprite_count;
+        roll_asteroid_tier(&size_min, &size_max, &sprite_first, &sprite_count);
+
+        float size = (size_min + frand01() * (size_max - size_min)) * gs->scale;
+        a->alive = true;
+        a->size = size;
+        a->x = size * 0.5f + frand01() * ((float)gs->screen_w - size);
+        a->y = -size;
+        a->vy = (ASTEROID_SPEED_MIN + frand01() * (ASTEROID_SPEED_MAX - ASTEROID_SPEED_MIN)) * gs->scale;
+        float rotation_speed = ASTEROID_ROTATION_SPEED_MIN +
+                                frand01() * (ASTEROID_ROTATION_SPEED_MAX - ASTEROID_ROTATION_SPEED_MIN);
+        a->rotation_speed = (rand() % 2 == 0) ? rotation_speed : -rotation_speed;
+        a->rotation_deg = frand01() * 360.0f;
+        a->sprite_index = sprite_first + rand() % sprite_count;
+        a->hits_taken = 0;
+        a->hits_required = ASTEROID_HITS_MIN + rand() % (ASTEROID_HITS_MAX - ASTEROID_HITS_MIN + 1);
+        return;
+    }
+}
+
 float spawner_boss_dispatch_interval(int boss_count) {
     float interval = BOSS_DISPATCH_INTERVAL_START - BOSS_DISPATCH_INTERVAL_STEP * (float)(boss_count - 1);
     if (interval < BOSS_DISPATCH_INTERVAL_MIN) interval = BOSS_DISPATCH_INTERVAL_MIN;
