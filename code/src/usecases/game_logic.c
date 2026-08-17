@@ -156,6 +156,24 @@ static void player_shot_half_extents(const GameState *gs, const Projectile *pr, 
         *half_h = r;
         return;
     }
+    /* Ranger's own shots: modes 1/2 are always fired straight up, so unlike
+     * Shine/Cruzader/Twins/Antartica's own oriented-bounding-box shots
+     * above, no travel-direction math is needed - a simple fixed vertical
+     * bolt hitbox, just RANGER_BEAM_LENGTH/WIDTH's own bigger "long laser
+     * beam" size instead of B-20's own PLAYER_PROJECTILE_W/H. Mode 3's own
+     * arch-shaped wave (PROJECTILE_KIND_RANGER_ARC) gets its own wide,
+     * shallow hitbox instead - wide enough to sweep most of a vertical
+     * lane's worth of enemies at once, per its own "arch-shaped" spec. */
+    if (pr->style_ship == SHIP_RANGER) {
+        if (pr->kind == PROJECTILE_KIND_RANGER_ARC) {
+            *half_w = scaled(gs, RANGER_ARC_WAVE_WIDTH) / 2.0f;
+            *half_h = scaled(gs, RANGER_ARC_WAVE_HEIGHT) / 2.0f;
+            return;
+        }
+        *half_w = scaled(gs, RANGER_BEAM_WIDTH) / 2.0f;
+        *half_h = scaled(gs, RANGER_BEAM_LENGTH) / 2.0f;
+        return;
+    }
     if (pr->kind == PROJECTILE_KIND_POWER) {
         float r = scaled(gs, POWER_CANNON_PROJECTILE_RADIUS);
         *half_w = r;
@@ -292,6 +310,7 @@ static void spawn_trail_particle(GameState *gs, float x, float y) {
         t->age = 0.0f;
         t->max_age = TRAIL_PARTICLE_LIFETIME;
         t->size = scaled(gs, TRAIL_PARTICLE_BASE_SIZE) * (0.7f + frand01() * 0.6f);
+        t->style_ship = gs->selected_ship;
         return;
     }
 }
@@ -369,9 +388,17 @@ static void spawn_projectile_trail_particle(GameState *gs, float x, float y, flo
  * Projectile.style_ship in domain/types.h) - always SHIP_B20 or SHIP_C24,
  * whether that's from the real player's own selected_ship or a child's own
  * kind. */
-static void spawn_player_shot_styled(GameState *gs, float x, float y, float vx, float vy,
-                                      ProjectileKind kind, bool horizontal, float damage,
-                                      Ship style_ship) {
+/* The one place every player shot actually gets filled in - color is an
+ * explicit parameter rather than always pulled from gs->player.laser_color,
+ * so Ranger's own per-shot random color reroll (see
+ * SHOOT_MODE_RANGER_TRIBEAM's own doc comment in domain/types.h) can bypass
+ * B-20's "never rerolled" laser_color entirely instead of temporarily
+ * stomping that shared field. spawn_player_shot_styled just below is a thin
+ * wrapper passing gs->player.laser_color through unchanged, so every
+ * existing call site keeps B-20's own convention untouched. */
+static void spawn_player_shot_colored(GameState *gs, float x, float y, float vx, float vy,
+                                       ProjectileKind kind, bool horizontal, float damage,
+                                       Ship style_ship, Color color) {
     for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
         Projectile *pr = &gs->player_shots[i];
         if (pr->alive) continue;
@@ -380,7 +407,7 @@ static void spawn_player_shot_styled(GameState *gs, float x, float y, float vx, 
         pr->y = y;
         pr->vx = vx;
         pr->vy = vy;
-        pr->color = gs->player.laser_color;
+        pr->color = color;
         pr->kind = kind;
         pr->horizontal = horizontal;
         pr->damage = damage;
@@ -395,8 +422,18 @@ static void spawn_player_shot_styled(GameState *gs, float x, float y, float vx, 
          * set unconditionally for every ship. */
         pr->phase_seed = frand01() * 6.2831853f;
         pr->style_ship = style_ship;
+        /* PROJECTILE_KIND_RANGER_ARC only - see its own doc comment in
+         * domain/types.h. Harmless to set unconditionally for every other
+         * kind, same as phase_seed above. */
+        pr->ranger_arc_hit_boss = false;
         return;
     }
+}
+
+static void spawn_player_shot_styled(GameState *gs, float x, float y, float vx, float vy,
+                                      ProjectileKind kind, bool horizontal, float damage,
+                                      Ship style_ship) {
+    spawn_player_shot_colored(gs, x, y, vx, vy, kind, horizontal, damage, style_ship, gs->player.laser_color);
 }
 
 /* The real player's own fire routines all still call this - a thin wrapper
@@ -406,6 +443,15 @@ static void spawn_player_shot_styled(GameState *gs, float x, float y, float vx, 
 static void spawn_player_shot(GameState *gs, float x, float y, float vx, float vy,
                                ProjectileKind kind, bool horizontal, float damage) {
     spawn_player_shot_styled(gs, x, y, vx, vy, kind, horizontal, damage, gs->selected_ship);
+}
+
+/* Ranger's own random-per-shot laser color - "each time Ranger shoots the
+ * projectile takes on a different color at random" per spec, a genuinely
+ * random hue every trigger (unlike B-20's own fixed-for-the-whole-run
+ * kDefaultLaserColor above), at high saturation/value so it always reads as
+ * a vivid, saturated beam rather than a washed-out pastel one. */
+static Color ranger_random_shot_color(void) {
+    return color_from_hsv(frand01() * 360.0f, 0.85f, 1.0f);
 }
 
 /* The enemy-shot counterpart to spawn_player_shot above: claims the first
@@ -807,6 +853,7 @@ static void reset_run(GameState *gs) {
     gs->player.samurai_omni_cooldown_timer = 0.0f;
     gs->player.samurai_stealth_timer = 0.0f;
     gs->player.samurai_stealth_cooldown_timer = 0.0f;
+    gs->player.ranger_next_muzzle = 0;
     gs->player.trail_emit_timer = 0.0f;
     gs->player.twins_right_life = PLAYER_LIFE_MAX;
     gs->player.twins_left_life = PLAYER_LIFE_MAX;
@@ -1482,6 +1529,74 @@ static void update_samurai_stealth(GameState *gs, float dt) {
         p->samurai_stealth_cooldown_timer = SAMURAI_STEALTH_COOLDOWN;
         p->shoot_mode = ship_shoot_mode_for_slot(gs->selected_ship, 0);
     }
+}
+
+/* Ranger's own mode 1 (default): all 3 heads (center/left/right) fire at
+ * once, straight up, every trigger - see RANGER_SIDE_MUZZLE_OFFSET_X and
+ * SHOOT_MODE_RANGER_TRIBEAM's own doc comment in domain/types.h. All 3
+ * beams this trigger share one freshly rerolled random color
+ * (ranger_random_shot_color), so the volley always reads as one cohesive
+ * burst rather than 3 independently-colored beams. */
+static void update_ranger_tribeam(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float side_x = scaled(gs, RANGER_SIDE_MUZZLE_OFFSET_X);
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float vy = -scaled(gs, RANGER_BEAM_SPEED);
+    Color color = ranger_random_shot_color();
+    spawn_player_shot_colored(gs, p->x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE,
+                               SHIP_RANGER, color);
+    spawn_player_shot_colored(gs, p->x - side_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE,
+                               SHIP_RANGER, color);
+    spawn_player_shot_colored(gs, p->x + side_x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE,
+                               SHIP_RANGER, color);
+    p->fire_cooldown = RANGER_TRIBEAM_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Ranger's own mode 2: the same 3 heads as mode 1, fired one at a time in a
+ * fixed rotating order (center, then left, then right, repeating) instead
+ * of all 3 at once - see Player.ranger_next_muzzle and
+ * SHOOT_MODE_RANGER_ALTERNATE's own doc comment in domain/types.h. Each
+ * individual shot rerolls its own random color independently, unlike mode
+ * 1's one-color-per-volley sharing - there's only ever one shot in flight
+ * from this mode at a time, so there's no volley to keep visually cohesive. */
+static void update_ranger_alternate(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float side_x = scaled(gs, RANGER_SIDE_MUZZLE_OFFSET_X);
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float vy = -scaled(gs, RANGER_BEAM_SPEED);
+    float x = p->x;
+    if (p->ranger_next_muzzle == 1) x = p->x - side_x;
+    else if (p->ranger_next_muzzle == 2) x = p->x + side_x;
+
+    spawn_player_shot_colored(gs, x, y, 0.0f, vy, PROJECTILE_KIND_NORMAL, false, BASE_PLAYER_DAMAGE, SHIP_RANGER,
+                               ranger_random_shot_color());
+    p->ranger_next_muzzle = (p->ranger_next_muzzle + 1) % 3;
+    p->fire_cooldown = RANGER_ALTERNATE_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
+}
+
+/* Ranger's own mode 3: the arch-shaped wave - fired straight up from the
+ * nose like mode 1's center beam, but as a single PROJECTILE_KIND_RANGER_ARC
+ * shot instead of a beam (see that kind's own doc comment in domain/types.h
+ * for the pierce-through behavior check_collisions gives it). Far slower
+ * cadence than modes 1/2 (RANGER_ARC_WAVE_FIRE_COOLDOWN) and a fresh random
+ * color each time, same "colorful" random-hue reroll as every other Ranger
+ * shot. */
+static void update_ranger_arc_wave(GameState *gs, const InputCommand *input, EventQueue *events) {
+    Player *p = &gs->player;
+    if (!(input->fire_held && p->fire_cooldown <= 0.0f)) return;
+
+    float y = p->y - scaled(gs, PLAYER_HEIGHT) / 2.0f;
+    float vy = -scaled(gs, RANGER_ARC_WAVE_SPEED);
+    spawn_player_shot_colored(gs, p->x, y, 0.0f, vy, PROJECTILE_KIND_RANGER_ARC, false, BASE_PLAYER_DAMAGE,
+                               SHIP_RANGER, ranger_random_shot_color());
+    p->fire_cooldown = RANGER_ARC_WAVE_FIRE_COOLDOWN;
+    event_queue_push_sfx(events, SFX_PLAYER_SHOOT);
 }
 
 /* Mode switching (1-5 number keys) is locked out for the whole duration of
@@ -2277,6 +2392,9 @@ static void update_player_firing(GameState *gs, const InputCommand *input, float
         case SHOOT_MODE_SAMURAI_SHURIKEN: update_samurai_shuriken(gs, input, dt, events); break;
         case SHOOT_MODE_SAMURAI_OMNI: update_samurai_omni_fire(gs, dt, events); break;
         case SHOOT_MODE_SAMURAI_STEALTH: update_samurai_stealth(gs, dt); break;
+        case SHOOT_MODE_RANGER_TRIBEAM: update_ranger_tribeam(gs, input, events); break;
+        case SHOOT_MODE_RANGER_ALTERNATE: update_ranger_alternate(gs, input, events); break;
+        case SHOOT_MODE_RANGER_ARC: update_ranger_arc_wave(gs, input, events); break;
         case SHOOT_MODE_SHINE_OMNI: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_CRUZADER_ORB: /* never persists as the active mode - see its own doc comment */
         case SHOOT_MODE_ANTARTICA_ICE_STORM: /* never persists as the active mode - see its own doc comment */
@@ -2963,7 +3081,14 @@ static void update_player_trail(GameState *gs, float dt) {
     if (p->alive) {
         p->trail_emit_timer -= dt;
         if (p->trail_emit_timer <= 0.0f) {
-            p->trail_emit_timer = TRAIL_SPAWN_INTERVAL;
+            /* Ranger's own trail re-arms on a much shorter interval than
+             * every other ship's shared TRAIL_SPAWN_INTERVAL - still one
+             * particle per tick, just far more often, so consecutive
+             * particles overlap into one unbroken stream instead of reading
+             * as discrete puffs (draw_trail_particle gives the color/alpha
+             * its own blue-with-white-accents treatment on top of this). */
+            p->trail_emit_timer =
+                gs->selected_ship == SHIP_RANGER ? RANGER_TRAIL_SPAWN_INTERVAL : TRAIL_SPAWN_INTERVAL;
             float back_y = p->y + scaled(gs, PLAYER_HEIGHT) / 2.0f;
             float jitter_x = (frand01() - 0.5f) * scaled(gs, PLAYER_WIDTH) * 0.3f;
             if (gs->selected_ship == SHIP_TWINS) {
@@ -3084,12 +3209,46 @@ static void update_projectile_trails(GameState *gs, float dt) {
                     pr->style_ship == SHIP_ANTARTICA && pr->kind != PROJECTILE_KIND_FROSTY_SNOWBALL;
                 bool is_frosty_snowball =
                     pr->style_ship == SHIP_ANTARTICA && pr->kind == PROJECTILE_KIND_FROSTY_SNOWBALL;
-                pr->trail_emit_timer =
-                    is_cruzader_rocket ? CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL : PROJECTILE_TRAIL_SPAWN_INTERVAL;
+                /* Ranger's own mode 3 (SHOOT_MODE_RANGER_ARC): unlike every
+                 * other shot's own trail (one puff drifting from a single
+                 * point), the wave spans a wide arch, so its trail has to
+                 * span that same arch - RANGER_ARC_WAVE_TRAIL_POINTS puffs
+                 * spawned at once, evenly spread across the wave's own
+                 * current width and each riding the same RANGER_ARC_WAVE_
+                 * BULGE curve draw_ranger_arc_wave (adapters/sdl_renderer.c)
+                 * renders, so the trail visibly covers the wave's entire
+                 * length (left edge to right edge) instead of trailing from
+                 * just its center. */
+                bool is_ranger_arc = pr->style_ship == SHIP_RANGER && pr->kind == PROJECTILE_KIND_RANGER_ARC;
+                /* Ranger's own modes 1/2 (SHOOT_MODE_RANGER_TRIBEAM/
+                 * _ALTERNATE) - "much more visible" per feedback, same
+                 * RANGER_PROJECTILE_TRAIL_* boost mode 3's own arc-wave
+                 * trail gets below, just from a single point (like every
+                 * other ship's own beam) rather than spread across a
+                 * width. */
+                bool is_ranger_beam = pr->style_ship == SHIP_RANGER && pr->kind != PROJECTILE_KIND_RANGER_ARC;
+                pr->trail_emit_timer = is_cruzader_rocket  ? CRUZADER_ROCKET_TRAIL_SPAWN_INTERVAL
+                                        : (is_ranger_arc || is_ranger_beam) ? RANGER_PROJECTILE_TRAIL_SPAWN_INTERVAL
+                                                                             : PROJECTILE_TRAIL_SPAWN_INTERVAL;
                 float speed = sqrtf(pr->vx * pr->vx + pr->vy * pr->vy);
                 float back_dx = speed > 0.0f ? -pr->vx / speed : 0.0f;
                 float back_dy = speed > 0.0f ? -pr->vy / speed : -1.0f;
-                if (is_cruzader_rocket) {
+                if (is_ranger_arc) {
+                    float half_w = scaled(gs, RANGER_ARC_WAVE_WIDTH) / 2.0f;
+                    float bulge = scaled(gs, RANGER_ARC_WAVE_BULGE);
+                    for (int k = 0; k < RANGER_ARC_WAVE_TRAIL_POINTS; k++) {
+                        float t = (float)k / (float)(RANGER_ARC_WAVE_TRAIL_POINTS - 1);
+                        float x = pr->x + (t - 0.5f) * 2.0f * half_w;
+                        float y = pr->y - sinf(deg_to_rad(180.0f * t)) * bulge;
+                        spawn_projectile_trail_particle(gs, x, y, 0.0f, 1.0f, pr->color,
+                                                         RANGER_ARC_WAVE_TRAIL_SIZE_MULTIPLIER,
+                                                         RANGER_ARC_WAVE_TRAIL_MAX_ALPHA);
+                    }
+                } else if (is_ranger_beam) {
+                    spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, pr->color,
+                                                     RANGER_PROJECTILE_TRAIL_SIZE_MULTIPLIER,
+                                                     RANGER_PROJECTILE_TRAIL_MAX_ALPHA);
+                } else if (is_cruzader_rocket) {
                     static const Color kCruzaderRocketSmokeBlue = {70, 150, 255, 255};
                     spawn_projectile_trail_particle(gs, pr->x, pr->y, back_dx, back_dy, kCruzaderRocketSmokeBlue,
                                                      CRUZADER_ROCKET_TRAIL_SIZE_MULTIPLIER,
@@ -3225,6 +3384,22 @@ static void check_collisions(GameState *gs, EventQueue *events) {
 
             if (collision_aabb_overlap(pr->x, pr->y, shot_half_w, shot_half_h,
                                         e->x, e->y, e->size / 2.0f, e->size / 2.0f)) {
+                /* Ranger's own mode 3 (SHOOT_MODE_RANGER_ARC) pierces
+                 * through instead of being consumed by the first enemy it
+                 * touches - see PROJECTILE_KIND_RANGER_ARC's own doc
+                 * comment in domain/types.h. pr stays alive and the inner
+                 * loop keeps going (no break), so a single wave can destroy
+                 * every enemy it overlaps this same frame, and every frame
+                 * after, all the way up until it clears the top of the
+                 * screen (update_projectiles' own ordinary off-screen
+                 * despawn). Each enemy it touches still only ever takes one
+                 * hit - it dies outright, same as any other shot - so there
+                 * is no repeat-hit bookkeeping needed here the way the
+                 * boss's own hit pool needs further down. */
+                if (pr->kind == PROJECTILE_KIND_RANGER_ARC) {
+                    destroy_enemy_for_score(gs, events, e);
+                    continue;
+                }
                 pr->alive = false;
                 if (pr->kind == PROJECTILE_KIND_POWER || pr->kind == PROJECTILE_KIND_CRUZADER_ROCKET) {
                     trigger_power_cannon_explosion(gs, events, pr->x, pr->y, pr->style_ship);
@@ -3445,6 +3620,23 @@ static void check_collisions(GameState *gs, EventQueue *events) {
             player_shot_half_extents(gs, pr, &shot_half_w, &shot_half_h);
             if (!collision_aabb_overlap(pr->x, pr->y, shot_half_w, shot_half_h,
                                          gs->boss.x, gs->boss.y, boss_half, boss_half)) {
+                continue;
+            }
+            /* Ranger's own mode 3 (SHOOT_MODE_RANGER_ARC): pierces through
+             * instead of being consumed here, same as against ordinary
+             * enemies above (see PROJECTILE_KIND_RANGER_ARC's own doc
+             * comment), and deals the boss exactly one hit total
+             * (ranger_arc_hit_boss) rather than repeatedly draining its hit
+             * pool every frame it's still overlapping during its slow
+             * multi-frame crossing. Never breaks the loop below - unlike
+             * every other kind, it isn't consumed by this contact, so it
+             * shouldn't claim the "only one shot damages the boss per
+             * frame" budget that break enforces for everything else. */
+            if (pr->kind == PROJECTILE_KIND_RANGER_ARC) {
+                if (!pr->ranger_arc_hit_boss) {
+                    pr->ranger_arc_hit_boss = true;
+                    damage_boss(gs, events, pr->damage);
+                }
                 continue;
             }
             pr->alive = false;

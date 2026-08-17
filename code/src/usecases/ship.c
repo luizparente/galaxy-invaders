@@ -3,22 +3,25 @@
 
 /* One Speed/Strength/Attack rating per Ship (domain/types.h), ordered to
  * match: B-20, C-24, SHIP_MOTHERSHIP, SHIP_SHINE, SHIP_CRUZADER, SHIP_TWINS,
- * SHIP_ANTARTICA, SHIP_BUCKLER, SHIP_SAMURAI. B-20 is the versatile, fast
- * baseline every skilled pilot starts on; C-24 trades some of that speed for
- * heavier plating; The Mothership trades the most speed of all for the
- * heaviest plating in the fleet; Shine trades the most plating of all for a
+ * SHIP_ANTARTICA, SHIP_BUCKLER, SHIP_SAMURAI, SHIP_RANGER. B-20 is the
+ * versatile, fast baseline every skilled pilot starts on; C-24 trades some
+ * of that speed for heavier plating; The Mothership trades the most speed
+ * of all for the heaviest plating in the fleet; Shine trades plating for a
  * speed edge over B-20 itself; Cruzader trades some of B-20's own speed for
- * the heaviest plating short of The Mothership itself; The Twins and Samurai
- * are tied for the fastest ships in the fleet, even ahead of Shine - The
- * Twins at the cost of below-average plating and the lowest attack rating in
- * the fleet (a fair trade for having two bodies to protect instead of one),
- * Samurai at a more middling plating/attack tradeoff instead; Buckler
- * rewards elite shooters with omnidirectional cannons, at solidly
- * above-average plating and a middling attack rating - per each one's own
- * description on the ship-select screen. */
-static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10, 8, 6, 10};
-static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5, 7, 8, 6};
-static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7, 6, 6};
+ * the heaviest plating short of The Mothership itself; The Twins and
+ * Samurai are tied for the fastest ships in the fleet, even ahead of Shine -
+ * The Twins at the cost of below-average plating and the lowest attack
+ * rating in the fleet (a fair trade for having two bodies to protect
+ * instead of one), Samurai at a more middling plating/attack tradeoff
+ * instead; Buckler rewards elite shooters with omnidirectional cannons, at
+ * solidly above-average plating and a middling attack rating; Ranger, the
+ * galaxy's peacekeeper, ties Shine for the thinnest plating in the fleet
+ * (Strength 4) for a sharpshooter's Attack rating (9, second only to The
+ * Mothership's own 10) - Speed stays tied with B-20's own baseline (7) -
+ * per each one's own description on the ship-select screen. */
+static const int kShipSpeedRating[SHIP_COUNT] = {7, 5, 2, 8, 5, 10, 8, 6, 10, 7};
+static const int kShipStrengthRating[SHIP_COUNT] = {5, 7, 10, 4, 8, 5, 7, 8, 6, 4};
+static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7, 6, 6, 9};
 
 /* Fixed per-ship render/hitbox size multiplier - unlike Speed/Strength,
  * this isn't derived from a rating formula, it's spec'd directly (The
@@ -33,7 +36,7 @@ static const int kShipAttackRating[SHIP_COUNT] = {8, 7, 10, 6, 4, 3, 7, 6, 6};
  * it. */
 static const float kShipSizeMultiplier[SHIP_COUNT] = {1.0f, 1.0f, 2.0f, 1.0f, CRUZADER_SIZE_MULTIPLIER,
                                                         TWINS_SIZE_MULTIPLIER, 1.0f, BUCKLER_SIZE_MULTIPLIER,
-                                                        SAMURAI_SIZE_MULTIPLIER};
+                                                        SAMURAI_SIZE_MULTIPLIER, RANGER_SIZE_MULTIPLIER};
 
 int ship_speed_rating(Ship ship) {
     return kShipSpeedRating[ship];
@@ -156,6 +159,15 @@ static const ShootMode kSamuraiShootModeSlots[] = {
     SHOOT_MODE_SAMURAI_SHURIKEN, SHOOT_MODE_SAMURAI_OMNI, SHOOT_MODE_SAMURAI_STEALTH,
 };
 
+/* Ranger's own moveset - see the SHOOT_MODE_RANGER_* entries' own doc
+ * comments in domain/types.h. All 3 are plain persistent Player.shoot_mode
+ * values, same "genuinely selectable, stays selected" shape B-20's own
+ * 5-slot table above uses - none of Shine/Cruzader/Antartica/Samurai's own
+ * "odd one out" or auto-reverting slots apply here. */
+static const ShootMode kRangerShootModeSlots[] = {
+    SHOOT_MODE_RANGER_TRIBEAM, SHOOT_MODE_RANGER_ALTERNATE, SHOOT_MODE_RANGER_ARC,
+};
+
 typedef struct ShipShootModeSlots {
     const ShootMode *modes;
     int count;
@@ -171,6 +183,7 @@ static const ShipShootModeSlots kShipShootModeSlots[SHIP_COUNT] = {
     [SHIP_ANTARTICA] = {kAntarticaShootModeSlots, 3},
     [SHIP_BUCKLER] = {kBucklerShootModeSlots, 1},
     [SHIP_SAMURAI] = {kSamuraiShootModeSlots, 3},
+    [SHIP_RANGER] = {kRangerShootModeSlots, 3},
 };
 
 int ship_shoot_mode_slot_count(Ship ship) {

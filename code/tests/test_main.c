@@ -191,6 +191,29 @@ static void start_game_as_samurai(GameState *gs, EventQueue *events) {
     assert(gs->selected_ship == SHIP_SAMURAI);
 }
 
+/* Same as start_game_as_samurai, but navigates one slot further right to
+ * SHIP_RANGER, for Ranger's own weapon/trail tests below. */
+static void start_game_as_ranger(GameState *gs, EventQueue *events) {
+    game_init(gs, DESIGN_W, DESIGN_H);
+    InputCommand confirm = no_input();
+    confirm.confirm_pressed = true;
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_DIFFICULTY_SELECT */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_SHIP_SELECT */
+    InputCommand right = no_input();
+    right.nav_right_pressed = true;
+    game_update(gs, &right, 0.016f, events); /* B-20 -> C-24 */
+    game_update(gs, &right, 0.016f, events); /* C-24 -> SHIP_MOTHERSHIP */
+    game_update(gs, &right, 0.016f, events); /* SHIP_MOTHERSHIP -> SHIP_SHINE */
+    game_update(gs, &right, 0.016f, events); /* SHIP_SHINE -> SHIP_CRUZADER */
+    game_update(gs, &right, 0.016f, events); /* SHIP_CRUZADER -> SHIP_TWINS */
+    game_update(gs, &right, 0.016f, events); /* SHIP_TWINS -> SHIP_ANTARTICA */
+    game_update(gs, &right, 0.016f, events); /* SHIP_ANTARTICA -> SHIP_BUCKLER */
+    game_update(gs, &right, 0.016f, events); /* SHIP_BUCKLER -> SHIP_SAMURAI */
+    game_update(gs, &right, 0.016f, events); /* SHIP_SAMURAI -> SHIP_RANGER */
+    game_update(gs, &confirm, 0.016f, events); /* -> STATE_GAME */
+    assert(gs->selected_ship == SHIP_RANGER);
+}
+
 static void test_collision(void) {
     assert(collision_aabb_overlap(0, 0, 5, 5, 8, 0, 5, 5));
     assert(!collision_aabb_overlap(0, 0, 5, 5, 20, 0, 5, 5));
@@ -329,7 +352,7 @@ static void test_ship_select_navigation_clamps_at_ends(void) {
     InputCommand right = no_input();
     right.nav_right_pressed = true;
     for (int i = 0; i < 10; i++) game_update(&gs, &right, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_SAMURAI); /* clamped at the last implemented ship */
+    assert(gs.selected_ship == SHIP_RANGER); /* clamped at the last implemented ship */
     printf("test_ship_select_navigation_clamps_at_ends OK\n");
 }
 
@@ -3833,7 +3856,7 @@ static void test_samurai_ratings_and_moveset(void) {
 }
 
 /* Mode 1 (default): "bursts of 3 shuriken stars" - staggered one at a time,
- * SAMURAI_SHURIKEN_SHOT_INTERVAL (150ms) apart, the same
+ * SAMURAI_SHURIKEN_SHOT_INTERVAL (100ms) apart, the same
  * ENEMY_SHOOT_TRIBURST-style pattern as an enemy's own triburst, each at 2x
  * a normal shot's damage, then a SAMURAI_SHURIKEN_BURST_COOLDOWN (550ms)
  * pause before the next burst can start. */
@@ -3888,7 +3911,7 @@ static void test_samurai_shuriken_burst_damage_and_rate(void) {
     assert(gs.player.samurai_burst_shots_remaining == 0);
     assert(fabsf(gs.player.fire_cooldown - SAMURAI_SHURIKEN_BURST_COOLDOWN) < 0.001f);
     assert(fabsf(SAMURAI_SHURIKEN_BURST_COOLDOWN - 0.55f) < 0.001f);
-    assert(fabsf(SAMURAI_SHURIKEN_SHOT_INTERVAL - 0.15f) < 0.001f);
+    assert(fabsf(SAMURAI_SHURIKEN_SHOT_INTERVAL - 0.1f) < 0.001f);
 
     /* Holding fire during the cooldown doesn't start a new burst. */
     memset(&gs.player_shots, 0, sizeof(gs.player_shots));
@@ -4094,6 +4117,594 @@ static void test_samurai_stealth_auto_reverts_and_starts_cooldown(void) {
     printf("test_samurai_stealth_auto_reverts_and_starts_cooldown OK\n");
 }
 
+static void test_ranger_ratings_and_moveset(void) {
+    assert(ship_speed_rating(SHIP_RANGER) == 7);
+    assert(ship_strength_rating(SHIP_RANGER) == 4);
+    assert(ship_attack_rating(SHIP_RANGER) == 9);
+    assert(fabsf(ship_size_multiplier(SHIP_RANGER) - 1.0f) < 0.001f); /* same size as B-20 */
+    assert(fabsf(ship_speed_multiplier(SHIP_RANGER) - ship_speed_multiplier(SHIP_B20)) < 0.001f);
+
+    /* Ties Shine for the thinnest plating in the fleet, traded for a
+     * sharpshooter's Attack rating, second only to The Mothership's own
+     * 10. */
+    assert(ship_strength_rating(SHIP_RANGER) == ship_strength_rating(SHIP_SHINE));
+    for (int s = 0; s < SHIP_COUNT; s++) {
+        if (s == SHIP_RANGER) continue;
+        assert(ship_strength_rating(SHIP_RANGER) <= ship_strength_rating(s));
+        if (s != SHIP_MOTHERSHIP) assert(ship_attack_rating(SHIP_RANGER) > ship_attack_rating(s));
+    }
+    assert(ship_attack_rating(SHIP_RANGER) < ship_attack_rating(SHIP_MOTHERSHIP));
+
+    assert(ship_shoot_mode_slot_count(SHIP_RANGER) == 3);
+    assert(ship_shoot_mode_for_slot(SHIP_RANGER, 0) == SHOOT_MODE_RANGER_TRIBEAM);
+    assert(ship_shoot_mode_for_slot(SHIP_RANGER, 1) == SHOOT_MODE_RANGER_ALTERNATE);
+    assert(ship_shoot_mode_for_slot(SHIP_RANGER, 2) == SHOOT_MODE_RANGER_ARC);
+    printf("test_ranger_ratings_and_moveset OK\n");
+}
+
+/* Mode 1 (default): all 3 heads fire at once, straight up, "2 shots per
+ * second" per spec, each beam sharing one freshly rerolled random color for
+ * the whole volley. */
+static void test_ranger_tribeam_fires_three_at_once_with_shared_random_color(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_RANGER_TRIBEAM);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.016f, &events);
+
+    int found = 0;
+    float xs[3];
+    Color color = {0};
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        assert(gs.player_shots[i].style_ship == SHIP_RANGER);
+        assert(gs.player_shots[i].kind == PROJECTILE_KIND_NORMAL);
+        assert(fabsf(gs.player_shots[i].damage - BASE_PLAYER_DAMAGE) < 0.001f);
+        assert(gs.player_shots[i].vy < 0.0f);
+        assert(fabsf(gs.player_shots[i].vx) < 0.001f); /* straight up */
+        if (found == 0) color = gs.player_shots[i].color;
+        else assert(colors_equal(gs.player_shots[i].color, color)); /* one shared color per volley */
+        xs[found++] = gs.player_shots[i].x;
+    }
+    assert(found == 3);
+    assert(fabsf(gs.player.fire_cooldown - RANGER_TRIBEAM_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(RANGER_TRIBEAM_FIRE_COOLDOWN - 0.5f) < 0.001f); /* 2 shots/sec */
+
+    /* One shot from the nose, one from each side head. */
+    float side = RANGER_SIDE_MUZZLE_OFFSET_X;
+    bool saw_center = false, saw_left = false, saw_right = false;
+    for (int i = 0; i < 3; i++) {
+        if (fabsf(xs[i] - gs.player.x) < 0.01f) saw_center = true;
+        else if (fabsf(xs[i] - (gs.player.x - side)) < 0.01f) saw_left = true;
+        else if (fabsf(xs[i] - (gs.player.x + side)) < 0.01f) saw_right = true;
+    }
+    assert(saw_center && saw_left && saw_right);
+
+    printf("test_ranger_tribeam_fires_three_at_once_with_shared_random_color OK\n");
+}
+
+/* Mode 2: the same 3 heads, fired one at a time in a fixed rotating order
+ * (center, left, right, repeat) - "6 alternated projectiles per second". */
+static void test_ranger_alternate_rotates_muzzles_at_six_per_second(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_RANGER_ALTERNATE);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    float side = RANGER_SIDE_MUZZLE_OFFSET_X;
+
+    /* Shot 1: center. */
+    game_update(&gs, &fire, 0.0f, &events);
+    int found = 0;
+    float x = 0.0f;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        x = gs.player_shots[i].x;
+    }
+    assert(found == 1);
+    assert(fabsf(x - gs.player.x) < 0.01f);
+    assert(fabsf(gs.player.fire_cooldown - RANGER_ALTERNATE_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(RANGER_ALTERNATE_FIRE_COOLDOWN - 1.0f / 6.0f) < 0.001f); /* 6 shots/sec */
+
+    /* Shot 2: left. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &fire, 0.0f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        x = gs.player_shots[i].x;
+    }
+    assert(found == 1);
+    assert(fabsf(x - (gs.player.x - side)) < 0.01f);
+
+    /* Shot 3: right. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &fire, 0.0f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        x = gs.player_shots[i].x;
+    }
+    assert(found == 1);
+    assert(fabsf(x - (gs.player.x + side)) < 0.01f);
+
+    /* Shot 4: back to center - the order repeats. */
+    memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+    gs.player.fire_cooldown = 0.0f;
+    game_update(&gs, &fire, 0.0f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (!gs.player_shots[i].alive) continue;
+        found++;
+        x = gs.player_shots[i].x;
+    }
+    assert(found == 1);
+    assert(fabsf(x - gs.player.x) < 0.01f);
+
+    printf("test_ranger_alternate_rotates_muzzles_at_six_per_second OK\n");
+}
+
+/* Mode 3: the arch-shaped wave - fires once every 2 seconds, and unlike
+ * every other player shot, pierces through instead of being consumed by
+ * the first enemy it touches: it stays alive, destroys every enemy it
+ * overlaps, and keeps climbing until it clears the top of the screen. */
+static void test_ranger_arc_wave_pierces_multiple_enemies_and_cooldown(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    assert(gs.player.shoot_mode == SHOOT_MODE_RANGER_ARC);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.0f, &events);
+
+    int idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+    assert(gs.player_shots[idx].kind == PROJECTILE_KIND_RANGER_ARC);
+    assert(gs.player_shots[idx].style_ship == SHIP_RANGER);
+    assert(!gs.player_shots[idx].ranger_arc_hit_boss);
+    assert(fabsf(gs.player.fire_cooldown - RANGER_ARC_WAVE_FIRE_COOLDOWN) < 0.001f);
+    assert(fabsf(RANGER_ARC_WAVE_FIRE_COOLDOWN - 2.0f) < 0.001f);
+
+    /* Place two enemies directly in the wave's path and let it fly forward
+     * onto the first one. */
+    Enemy *e1 = &gs.enemies[0];
+    e1->alive = true;
+    e1->x = gs.player_shots[idx].x;
+    e1->y = gs.player_shots[idx].y - 5.0f;
+    e1->size = PLAYER_WIDTH;
+
+    Enemy *e2 = &gs.enemies[1];
+    e2->alive = true;
+    e2->x = gs.player_shots[idx].x;
+    e2->y = e1->y - 40.0f;
+    e2->size = PLAYER_WIDTH;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.05f, &events);
+    assert(!e1->alive); /* destroyed */
+    assert(gs.player_shots[idx].alive); /* the wave survives - pierce, not consumed */
+
+    /* Advance the wave onto the second enemy. */
+    gs.player_shots[idx].y = e2->y;
+    game_update(&gs, &none, 0.0f, &events);
+    assert(!e2->alive);
+    assert(gs.player_shots[idx].alive);
+
+    /* Finally, let it clear the top of the screen - ordinary off-screen
+     * despawn applies to it same as any other shot. */
+    gs.player_shots[idx].y = -1000.0f;
+    game_update(&gs, &none, 0.0f, &events);
+    assert(!gs.player_shots[idx].alive);
+
+    printf("test_ranger_arc_wave_pierces_multiple_enemies_and_cooldown OK\n");
+}
+
+/* The boss has a real hit pool (unlike ordinary enemies, which die in one
+ * hit) - the arc wave must only ever land exactly one hit on it, even
+ * across many frames of continued overlap during its slow crossing. */
+static void test_ranger_arc_wave_hits_boss_exactly_once(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.0f, &events);
+
+    int idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+
+    gs.boss.alive = true;
+    gs.boss.size = 200.0f;
+    gs.boss.hits_required = 100;
+    gs.boss.hits_taken = 0.0f;
+    gs.boss.x = gs.player_shots[idx].x;
+    gs.boss.y = gs.player_shots[idx].y;
+
+    InputCommand none = no_input();
+    for (int i = 0; i < 5; i++) {
+        game_update(&gs, &none, 0.016f, &events);
+        if (!gs.player_shots[idx].alive) break;
+        gs.boss.y = gs.player_shots[idx].y; /* keep the boss overlapping the wave */
+    }
+
+    assert(fabsf(gs.boss.hits_taken - BASE_PLAYER_DAMAGE) < 0.001f); /* exactly one hit, not five */
+
+    printf("test_ranger_arc_wave_hits_boss_exactly_once OK\n");
+}
+
+/* Ranger's own random-per-shot laser color: repeated triggers of mode 1
+ * (each rerolling before the next volley fires) should not all land on the
+ * exact same color - a weak randomness smoke test, not a distribution
+ * proof. */
+static void test_ranger_laser_color_is_randomized_across_shots(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+
+    Color first = {0};
+    bool saw_difference = false;
+    for (int trigger = 0; trigger < 20; trigger++) {
+        memset(&gs.player_shots, 0, sizeof(gs.player_shots));
+        gs.player.fire_cooldown = 0.0f;
+        game_update(&gs, &fire, 0.0f, &events);
+        Color c = {0};
+        for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+            if (gs.player_shots[i].alive) { c = gs.player_shots[i].color; break; }
+        }
+        if (trigger == 0) first = c;
+        else if (!colors_equal(c, first)) saw_difference = true;
+    }
+    assert(saw_difference);
+
+    printf("test_ranger_laser_color_is_randomized_across_shots OK\n");
+}
+
+/* Ranger's own stronger trail - more particles emitted per tick than every
+ * other ship, and each one is tagged with style_ship so the renderer can
+ * give it the blue-with-white-accents treatment (draw_trail_particle in
+ * adapters/sdl_renderer.c - not exercised here, this suite is SDL-free).
+ * Compared directly against B-20 at the exact same elapsed time. */
+/* Ranger's own trail is continuous rather than emitted in visible puffs -
+ * still exactly one particle per emission tick, same as every other ship
+ * (see spawn_trail_particle's own single call site in update_player_trail),
+ * just on a much shorter RANGER_TRAIL_SPAWN_INTERVAL so consecutive
+ * particles overlap into one unbroken stream instead of clustering into
+ * bursts. Confirmed two ways: a single tick spawns exactly 1 particle (not
+ * several at once), and re-arming the timer over a fixed span of real time
+ * yields proportionally more particles than B-20's own shared
+ * TRAIL_SPAWN_INTERVAL produces over that same span. */
+static void test_ranger_trail_is_continuous_not_bursts(void) {
+    GameState gs_b20, gs_ranger;
+    EventQueue events;
+    start_game(&gs_b20, &events);
+    start_game_as_ranger(&gs_ranger, &events);
+
+    assert(RANGER_TRAIL_SPAWN_INTERVAL < TRAIL_SPAWN_INTERVAL); /* denser, not bursty */
+
+    /* One tick still spawns exactly one particle - never a cluster. */
+    InputCommand none = no_input();
+    game_update(&gs_ranger, &none, 0.001f, &events);
+    int found = 0;
+    for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+        if (gs_ranger.trail_particles[i].alive) found++;
+    }
+    assert(found == 1);
+    for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+        if (!gs_ranger.trail_particles[i].alive) continue;
+        assert(gs_ranger.trail_particles[i].style_ship == SHIP_RANGER);
+    }
+
+    /* Over the same fixed span of real time, Ranger's own shorter interval
+     * spawns proportionally more particles than B-20's shared one - ticking
+     * each at its own natural cadence rather than one shared dt, so this
+     * exercises the same re-arm-and-spawn path a real run would take. */
+    memset(&gs_b20.trail_particles, 0, sizeof(gs_b20.trail_particles));
+    memset(&gs_ranger.trail_particles, 0, sizeof(gs_ranger.trail_particles));
+    gs_b20.player.trail_emit_timer = 0.0f;
+    gs_ranger.player.trail_emit_timer = 0.0f;
+
+    float span = TRAIL_SPAWN_INTERVAL * 8.0f;
+    int b20_ticks = (int)(span / TRAIL_SPAWN_INTERVAL);
+    int ranger_ticks = (int)(span / RANGER_TRAIL_SPAWN_INTERVAL);
+    for (int i = 0; i < b20_ticks; i++) game_update(&gs_b20, &none, TRAIL_SPAWN_INTERVAL, &events);
+    for (int i = 0; i < ranger_ticks; i++) game_update(&gs_ranger, &none, RANGER_TRAIL_SPAWN_INTERVAL, &events);
+
+    int b20_count = 0, ranger_count = 0;
+    for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+        if (gs_b20.trail_particles[i].alive) b20_count++;
+        if (gs_ranger.trail_particles[i].alive) ranger_count++;
+    }
+    assert(b20_count == b20_ticks);
+    assert(ranger_count == ranger_ticks);
+    assert(ranger_count > b20_count * 3); /* ~4x denser, comfortably more than "a bit" */
+
+    printf("test_ranger_trail_is_continuous_not_bursts OK\n");
+}
+
+/* The regression test_ranger_trail_is_continuous_not_bursts above can't
+ * catch on its own: MAX_TRAIL_PARTICLES has to be big enough to hold
+ * Ranger's own full steady-state population (spawn rate * TRAIL_PARTICLE_
+ * LIFETIME) without ever running out of free slots. Undersizing that pool
+ * doesn't just cap the count - because every particle expires almost
+ * exactly TRAIL_PARTICLE_LIFETIME after it spawned, a saturated pool goes
+ * completely silent for the rest of that second (spawn_trail_particle finds
+ * no free slot at all) and then refills in one dense burst once the first
+ * wave of particles ages out - a periodic pulse, exactly what "continuous,
+ * non-stop" rules out. Simulated past a full TRAIL_PARTICLE_LIFETIME (not
+ * the shorter span the test above uses) so this only passes if the pool
+ * genuinely never exhausts. */
+static void test_ranger_trail_pool_never_exhausts_past_one_lifetime(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+
+    /* The pool must be sized for Ranger's own worst-case steady state with
+     * real headroom - the exact invariant the old MAX_TRAIL_PARTICLES (64)
+     * violated. */
+    float ranger_steady_state = TRAIL_PARTICLE_LIFETIME / RANGER_TRAIL_SPAWN_INTERVAL;
+    assert((float)MAX_TRAIL_PARTICLES > ranger_steady_state);
+
+    memset(&gs.trail_particles, 0, sizeof(gs.trail_particles));
+    gs.player.trail_emit_timer = 0.0f;
+
+    InputCommand none = no_input();
+    int ticks = (int)(1.1f * ranger_steady_state); /* comfortably past one full lifetime */
+    for (int i = 0; i < ticks; i++) game_update(&gs, &none, RANGER_TRAIL_SPAWN_INTERVAL, &events);
+
+    int alive = 0;
+    for (int i = 0; i < MAX_TRAIL_PARTICLES; i++) {
+        if (gs.trail_particles[i].alive) alive++;
+    }
+    /* Once past one full lifetime, population holds near the theoretical
+     * steady state (one dies almost exactly as the next spawns) - a
+     * starved pool would instead have collapsed toward 0 partway through
+     * this run and only just be mid-refill, nowhere close to steady state. */
+    assert((float)alive > ranger_steady_state * 0.9f);
+
+    printf("test_ranger_trail_pool_never_exhausts_past_one_lifetime OK\n");
+}
+
+/* The wave's own trail spans its entire width (left edge to right edge),
+ * not just a single point at its center - RANGER_ARC_WAVE_TRAIL_POINTS
+ * puffs spawned at once, spread across the wave's own current width. */
+static void test_ranger_arc_wave_trail_spans_full_width(void) {
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.0f, &events);
+
+    int idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+
+    memset(&gs.projectile_trails, 0, sizeof(gs.projectile_trails));
+    gs.player_shots[idx].trail_emit_timer = 0.0f;
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.0f, &events);
+
+    int found = 0;
+    float min_x = 1e9f, max_x = -1e9f;
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        if (!gs.projectile_trails[i].alive) continue;
+        found++;
+        if (gs.projectile_trails[i].x < min_x) min_x = gs.projectile_trails[i].x;
+        if (gs.projectile_trails[i].x > max_x) max_x = gs.projectile_trails[i].x;
+    }
+    assert(found == RANGER_ARC_WAVE_TRAIL_POINTS);
+
+    float half_w = RANGER_ARC_WAVE_WIDTH / 2.0f; /* scale is 1.0 at DESIGN_W x DESIGN_H */
+    float wave_x = gs.player_shots[idx].x;
+    assert(fabsf(min_x - (wave_x - half_w)) < 0.01f); /* left edge */
+    assert(fabsf(max_x - (wave_x + half_w)) < 0.01f); /* right edge */
+
+    printf("test_ranger_arc_wave_trail_spans_full_width OK\n");
+}
+
+/* The visual thickness cut ("80% thinner") is renderer-only - it must never
+ * shrink the wave's own hitbox, so the same enemies it used to catch still
+ * get caught. */
+static void test_ranger_arc_wave_thinner_render_does_not_shrink_hitbox(void) {
+    assert(fabsf(RANGER_ARC_WAVE_RENDER_THICKNESS_RATIO - 0.2f) < 0.001f); /* 80% thinner, i.e. 20% left */
+
+    GameState gs;
+    EventQueue events;
+    start_game_as_ranger(&gs, &events);
+
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    game_update(&gs, &fire, 0.0f, &events);
+
+    int idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+
+    /* An enemy sitting well inside the old visual band but outside a
+     * hypothetically-shrunk hitbox still has to die - the hitbox is
+     * untouched by the render-only thickness ratio. */
+    Enemy *e = &gs.enemies[0];
+    e->alive = true;
+    e->x = gs.player_shots[idx].x;
+    e->y = gs.player_shots[idx].y;
+    e->size = PLAYER_WIDTH;
+
+    InputCommand none = no_input();
+    game_update(&gs, &none, 0.0f, &events);
+    assert(!e->alive);
+
+    printf("test_ranger_arc_wave_thinner_render_does_not_shrink_hitbox OK\n");
+}
+
+/* "A bit less arched" per feedback - the arch's own midpoint still climbs
+ * above its two ends (it's still clearly an arch, not flattened out
+ * entirely), just not as far as before. */
+static void test_ranger_arc_wave_is_less_arched(void) {
+    assert(RANGER_ARC_WAVE_BULGE > 0.0f);
+    assert(RANGER_ARC_WAVE_BULGE < PLAYER_HEIGHT * 0.9f); /* less than the old bulge */
+    printf("test_ranger_arc_wave_is_less_arched OK\n");
+}
+
+/* Every one of Ranger's own shots' smoke trail - modes 1/2's beams and each
+ * of mode 3's own arc-wave points alike - is "much more visible" than the
+ * shared default every other ship's shots still use unscaled: bigger
+ * (RANGER_PROJECTILE_TRAIL_SIZE_MULTIPLIER) and brighter
+ * (RANGER_PROJECTILE_TRAIL_MAX_ALPHA), scoped to Ranger alone - B-20's own
+ * shots keep the ordinary PROJECTILE_TRAIL_MAX_ALPHA untouched. */
+static void test_ranger_trail_boost_applies_to_all_three_modes(void) {
+    assert(RANGER_PROJECTILE_TRAIL_MAX_ALPHA > PROJECTILE_TRAIL_MAX_ALPHA);
+    assert(RANGER_PROJECTILE_TRAIL_SIZE_MULTIPLIER > 1.0f);
+
+    GameState gs;
+    EventQueue events;
+    InputCommand fire = no_input();
+    fire.fire_held = true;
+    InputCommand none = no_input();
+
+    /* Mode 1 (tribeam, the default). */
+    start_game_as_ranger(&gs, &events);
+    game_update(&gs, &fire, 0.0f, &events);
+    int idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+    memset(&gs.projectile_trails, 0, sizeof(gs.projectile_trails));
+    gs.player_shots[idx].trail_emit_timer = 0.0f;
+    game_update(&gs, &none, 0.0f, &events);
+    int found = 0;
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        if (!gs.projectile_trails[i].alive) continue;
+        found++;
+        assert(gs.projectile_trails[i].alpha_cap == RANGER_PROJECTILE_TRAIL_MAX_ALPHA);
+        float min_size = PROJECTILE_TRAIL_BASE_SIZE * 0.7f * RANGER_PROJECTILE_TRAIL_SIZE_MULTIPLIER;
+        assert(gs.projectile_trails[i].size >= min_size - 0.01f);
+    }
+    assert(found > 0);
+
+    /* Mode 2 (alternate). */
+    start_game_as_ranger(&gs, &events);
+    InputCommand mode2 = no_input();
+    mode2.shoot_mode_2_pressed = true;
+    game_update(&gs, &mode2, 0.016f, &events);
+    game_update(&gs, &fire, 0.0f, &events);
+    idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+    memset(&gs.projectile_trails, 0, sizeof(gs.projectile_trails));
+    gs.player_shots[idx].trail_emit_timer = 0.0f;
+    game_update(&gs, &none, 0.0f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        if (!gs.projectile_trails[i].alive) continue;
+        found++;
+        assert(gs.projectile_trails[i].alpha_cap == RANGER_PROJECTILE_TRAIL_MAX_ALPHA);
+    }
+    assert(found > 0);
+
+    /* Mode 3 (arc wave) - every one of its RANGER_ARC_WAVE_TRAIL_POINTS
+     * puffs gets the same boost, not just the default PROJECTILE_TRAIL_*
+     * the earlier full-width test only checked positions for. */
+    start_game_as_ranger(&gs, &events);
+    InputCommand mode3 = no_input();
+    mode3.shoot_mode_3_pressed = true;
+    game_update(&gs, &mode3, 0.016f, &events);
+    game_update(&gs, &fire, 0.0f, &events);
+    idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+    memset(&gs.projectile_trails, 0, sizeof(gs.projectile_trails));
+    gs.player_shots[idx].trail_emit_timer = 0.0f;
+    game_update(&gs, &none, 0.0f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        if (!gs.projectile_trails[i].alive) continue;
+        found++;
+        /* Mode 3's own multi-point trail deliberately uses its own more
+         * modest RANGER_ARC_WAVE_TRAIL_* boost, not the full-strength
+         * RANGER_PROJECTILE_TRAIL_* modes 1/2 get - applying that full
+         * boost to RANGER_ARC_WAVE_TRAIL_POINTS simultaneous puffs would
+         * compound into one solid, opaque mass instead of a visible
+         * trail. */
+        assert(gs.projectile_trails[i].alpha_cap == RANGER_ARC_WAVE_TRAIL_MAX_ALPHA);
+    }
+    assert(found == RANGER_ARC_WAVE_TRAIL_POINTS);
+    assert(RANGER_ARC_WAVE_TRAIL_MAX_ALPHA > PROJECTILE_TRAIL_MAX_ALPHA); /* still boosted... */
+    assert(RANGER_ARC_WAVE_TRAIL_MAX_ALPHA < RANGER_PROJECTILE_TRAIL_MAX_ALPHA); /* ...just far more modestly */
+
+    /* B-20's own shots keep the ordinary, unboosted trail - the boost is
+     * scoped to Ranger alone. */
+    GameState gs_b20;
+    start_game(&gs_b20, &events);
+    game_update(&gs_b20, &fire, 0.0f, &events);
+    idx = -1;
+    for (int i = 0; i < MAX_PLAYER_PROJECTILES; i++) {
+        if (gs_b20.player_shots[i].alive) { idx = i; break; }
+    }
+    assert(idx >= 0);
+    memset(&gs_b20.projectile_trails, 0, sizeof(gs_b20.projectile_trails));
+    gs_b20.player_shots[idx].trail_emit_timer = 0.0f;
+    game_update(&gs_b20, &none, 0.0f, &events);
+    found = 0;
+    for (int i = 0; i < MAX_PROJECTILE_TRAIL_PARTICLES; i++) {
+        if (!gs_b20.projectile_trails[i].alive) continue;
+        found++;
+        assert(gs_b20.projectile_trails[i].alpha_cap == PROJECTILE_TRAIL_MAX_ALPHA);
+    }
+    assert(found == 1);
+
+    printf("test_ranger_trail_boost_applies_to_all_three_modes OK\n");
+}
+
 /* All 4 arrows navigate the ship-select grid, not just left/right: up/down
  * step by a full SHIP_SELECT_GRID_COLS-wide row, clamped at the last real
  * ship (SHIP_COUNT - 1) rather than wrapping into one of the locked
@@ -4155,14 +4766,23 @@ static void test_ship_select_up_down_navigate_grid_rows(void) {
     game_update(&gs, &down, 0.016f, &events);
     assert(gs.selected_ship == SHIP_TWINS);
 
-    /* Twins' own row (row 1) has no slot further down either. */
+    /* Down from Twins (row 1 col 1) now lands on Ranger (row 2 col 1) - a
+     * real ship now that Ranger joined the fleet as the 10th ship, no
+     * longer a locked placeholder slot the way it was before. */
     game_update(&gs, &down, 0.016f, &events);
-    assert(gs.selected_ship == SHIP_TWINS);
+    assert(gs.selected_ship == SHIP_RANGER);
 
-    /* Left/right within row 1 moves directly between Cruzader and Twins. */
+    /* Ranger's own row (row 2) has no slot further down. */
+    game_update(&gs, &down, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_RANGER);
+
+    /* Left within row 2 moves directly from Ranger back to Samurai, then up
+     * from Samurai (row 2 col 0) lands on Cruzader (row 1 col 0). */
     InputCommand left = no_input();
     left.nav_left_pressed = true;
     game_update(&gs, &left, 0.016f, &events);
+    assert(gs.selected_ship == SHIP_SAMURAI);
+    game_update(&gs, &up, 0.016f, &events);
     assert(gs.selected_ship == SHIP_CRUZADER);
 
     printf("test_ship_select_up_down_navigate_grid_rows OK\n");
@@ -4453,6 +5073,18 @@ int main(void) {
     test_samurai_omni_sweep_directions_timing_and_cooldown();
     test_samurai_stealth_immunity_speed_and_cooldown();
     test_samurai_stealth_auto_reverts_and_starts_cooldown();
+    test_ranger_ratings_and_moveset();
+    test_ranger_tribeam_fires_three_at_once_with_shared_random_color();
+    test_ranger_alternate_rotates_muzzles_at_six_per_second();
+    test_ranger_arc_wave_pierces_multiple_enemies_and_cooldown();
+    test_ranger_arc_wave_hits_boss_exactly_once();
+    test_ranger_laser_color_is_randomized_across_shots();
+    test_ranger_trail_is_continuous_not_bursts();
+    test_ranger_trail_pool_never_exhausts_past_one_lifetime();
+    test_ranger_arc_wave_trail_spans_full_width();
+    test_ranger_arc_wave_thinner_render_does_not_shrink_hitbox();
+    test_ranger_arc_wave_is_less_arched();
+    test_ranger_trail_boost_applies_to_all_three_modes();
     test_ship_select_up_down_navigate_grid_rows();
     test_erratic_enemy_chance_scales_with_bosses_defeated();
     test_boss_defeat_increments_bosses_defeated();

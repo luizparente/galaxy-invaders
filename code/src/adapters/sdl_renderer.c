@@ -706,6 +706,137 @@ static void draw_samurai_shuriken(SdlRendererCtx *ctx, const Projectile *pr, flo
     gp_fill_circle(ctx->renderer, pr->x, pr->y, outer * 0.22f, glint);
 }
 
+/* Ranger's own modes 1/2 (SHOOT_MODE_RANGER_TRIBEAM/_ALTERNATE) - "long
+ * laser beams", same layered glow/core/hot/glint capsule construction as
+ * draw_twins_bolt/draw_cruzader_bolt above, just driven entirely by pr->color
+ * (the random per-shot hue rolled at spawn - see ranger_random_shot_color in
+ * usecases/game_logic.c) instead of a fixed ship palette, since Ranger's own
+ * shots are randomly colored rather than a signature color. Always fired
+ * straight up (see update_ranger_tribeam/update_ranger_alternate), so
+ * (dx, dy) is fixed rather than derived from pr->vx/vy the way Shine/
+ * Cruzader/Twins' own oriented shots need to. */
+static void draw_ranger_beam(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    float half_len = RANGER_BEAM_LENGTH * 0.5f * scale;
+    float half_wid = RANGER_BEAM_WIDTH * 0.5f * scale;
+    float dx = 0.0f, dy = -1.0f;
+    float px = -dy, py = dx;
+    float cx = pr->x, cy = pr->y;
+
+    Color glow = pr->color;
+    glow.a = 70;
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.3f, half_wid * 2.4f, glow);
+    glow.a = 130;
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 1.15f, half_wid * 1.6f, glow);
+
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len, half_wid, pr->color);
+
+    Color hot = lerp_color(pr->color, kWhite, 0.6f);
+    capsule_bolt(ctx->renderer, cx, cy, dx, dy, px, py, half_len * 0.8f, half_wid * 0.4f, hot);
+
+    Color glint = kWhite;
+    glint.a = 220;
+    gp_fill_circle(ctx->renderer, cx + dx * half_len * 0.5f, cy + dy * half_len * 0.5f, half_wid * 0.35f, glint);
+}
+
+/* Ranger's own mode 3 (SHOOT_MODE_RANGER_ARC) - "an arch-shaped wave of
+ * colorful light": one continuous curved ribbon climbing a shallow upward
+ * bulge (like a wide, flat rainbow's own silhouette), not a row of separate
+ * stitched-together beads - built from many short capsule_bolt segments
+ * chained along the same sine-bulge curve, each one overlapping the next
+ * closely enough (kSegments is high relative to the curve's own size) to
+ * read as a single unbroken arch rather than a dotted line. The whole arch
+ * shares pr->color - "a random color each time it's fired" per spec, the
+ * same per-trigger reroll every other Ranger shot already gets (see
+ * ranger_random_shot_color in usecases/game_logic.c) - with a bright white
+ * highlight core running down its own center ("white accents" per spec),
+ * the same glow/body/hot-core layering draw_ranger_beam above uses, just
+ * swept along a curve instead of a single straight capsule - rendered at
+ * RANGER_ARC_WAVE_RENDER_THICKNESS_RATIO of its own former stroke width
+ * ("80% thinner" per feedback), a purely visual thinning that never touches
+ * RANGER_ARC_WAVE_HEIGHT itself, so the pierce-through hitbox this shot
+ * actually collides against (see player_shot_half_extents in
+ * usecases/game_logic.c) stays exactly as forgiving as before. The wave's
+ * own trail (update_projectile_trails, same file as check_collisions) spans
+ * this same width - see RANGER_ARC_WAVE_TRAIL_POINTS's own doc comment in
+ * domain/constants.h. Beneath the ribbon, a soft vertical gradient "curtain"
+ * hangs from the arch's own curve, spanning that same full width - drawn
+ * first (so the ribbon renders on top of it), faked the same "stack
+ * several translucent bands, each fainter than the last" way every other
+ * gradient-shaped effect in this file works, since none of graphics_
+ * primitives' own draw calls take a true per-pixel gradient. Purely
+ * cosmetic like the rest of this function - RANGER_ARC_WAVE_GRADIENT_DEPTH/
+ * MAX_ALPHA (domain/constants.h) are its only two tunables. */
+static void draw_ranger_arc_wave(SdlRendererCtx *ctx, const Projectile *pr, float scale) {
+    const int kSegments = 32;
+    float half_w = RANGER_ARC_WAVE_WIDTH * 0.5f * scale;
+    float bulge = RANGER_ARC_WAVE_BULGE * scale;
+    float half_wid = RANGER_ARC_WAVE_HEIGHT * 0.35f * scale * RANGER_ARC_WAVE_RENDER_THICKNESS_RATIO;
+
+    /* The gradient curtain - kGradientColumns points across the same width
+     * the ribbon itself spans, each with kGradientLayers stacked bands
+     * fading from RANGER_ARC_WAVE_GRADIENT_MAX_ALPHA immediately under the
+     * curve down to fully transparent by the bottom. Deliberately near-zero
+     * overlap in both directions (1.02x, just enough to avoid 1px seams
+     * between adjacent rects) - unlike the ribbon's own deliberately
+     * layered glow/body/hot passes (which are meant to stack), overlapping
+     * translucent bands here compounds their alpha multiplicatively and
+     * quickly reads as one solid opaque blob instead of a soft fade. */
+    const int kGradientColumns = 20;
+    const int kGradientLayers = 12;
+    float gradient_depth = RANGER_ARC_WAVE_GRADIENT_DEPTH * scale;
+    float col_w = (half_w * 2.0f / (float)kGradientColumns) * 1.02f;
+    float band_h = (gradient_depth / (float)kGradientLayers) * 1.02f;
+    for (int gi = 0; gi <= kGradientColumns; gi++) {
+        float t = (float)gi / (float)kGradientColumns;
+        float gx = pr->x + (t - 0.5f) * 2.0f * half_w;
+        float gy0 = pr->y - sinf(t * (float)M_PI) * bulge;
+        for (int layer = 0; layer < kGradientLayers; layer++) {
+            float depth_t = ((float)layer + 0.5f) / (float)kGradientLayers; /* band's own midpoint depth */
+            float gy = gy0 + depth_t * gradient_depth;
+            /* Squared falloff (not linear) so it visibly thins out well
+             * before the bottom instead of staying near-solid most of the
+             * way down - a soft trailing mist, not a filled shape. */
+            float fade = (1.0f - depth_t) * (1.0f - depth_t);
+            Color gc = pr->color;
+            gc.a = (unsigned char)((float)RANGER_ARC_WAVE_GRADIENT_MAX_ALPHA * fade);
+            gp_fill_rect(ctx->renderer, gx - col_w * 0.5f, gy - band_h * 0.5f, col_w, band_h, gc);
+        }
+    }
+
+    Color glow = pr->color;
+    glow.a = 60;
+    Color hot = lerp_color(pr->color, kWhite, 0.75f);
+
+    float cx = 0.0f, cy = 0.0f;
+    bool have_prev = false;
+    for (int k = 0; k <= kSegments; k++) {
+        float t = (float)k / (float)kSegments; /* 0..1 across the wave's width */
+        float x = pr->x + (t - 0.5f) * 2.0f * half_w;
+        float y = pr->y - sinf(t * (float)M_PI) * bulge;
+
+        if (have_prev) {
+            float dx = x - cx, dy = y - cy;
+            float len = sqrtf(dx * dx + dy * dy);
+            if (len > 0.0f) {
+                dx /= len;
+                dy /= len;
+            } else {
+                dy = -1.0f;
+            }
+            float ndx = -dy, ndy = dx; /* perpendicular of (dx, dy) */
+            float mx = (cx + x) * 0.5f, my = (cy + y) * 0.5f;
+            float half_len = len * 0.5f + half_wid * 0.5f; /* slight overlap so segments never gap */
+
+            capsule_bolt(ctx->renderer, mx, my, dx, dy, ndx, ndy, half_len, half_wid * 2.2f, glow);
+            capsule_bolt(ctx->renderer, mx, my, dx, dy, ndx, ndy, half_len, half_wid, pr->color);
+            capsule_bolt(ctx->renderer, mx, my, dx, dy, ndx, ndy, half_len, half_wid * 0.4f, hot);
+        }
+        cx = x;
+        cy = y;
+        have_prev = true;
+    }
+}
+
 /* One layer of a Shine shard's icicle silhouette: a pointed front tip and
  * a blunter, shorter tapered tail, oriented along (dx, dy) with (px, py)
  * its perpendicular - the same direction-vector construction capsule_bolt
@@ -1024,6 +1155,14 @@ static void draw_projectile(SdlRendererCtx *ctx, const GameState *gs, const Proj
             draw_samurai_shuriken(ctx, pr, scale, gs->time_elapsed);
             return;
         }
+        if (pr->style_ship == SHIP_RANGER) {
+            if (pr->kind == PROJECTILE_KIND_RANGER_ARC) {
+                draw_ranger_arc_wave(ctx, pr, scale);
+            } else {
+                draw_ranger_beam(ctx, pr, scale);
+            }
+            return;
+        }
         switch (pr->kind) {
             case PROJECTILE_KIND_RAPID:
                 draw_rapid_shot(ctx, pr, scale);
@@ -1225,6 +1364,33 @@ static void draw_trail_particle(SdlRendererCtx *ctx, const TrailParticle *t) {
     if (!t->alive) return;
 
     float life = t->age / t->max_age; /* 0 = just spawned, 1 = about to expire */
+
+    /* Ranger's own trail: "blue with white accents, emulating the tail of a
+     * rocket" per spec, instead of every other ship's shared fire-cooling-
+     * to-smoke gradient below - a bright white-hot core (the rocket
+     * exhaust's brightest point) cooling into a saturated blue, the
+     * opposite direction Cruzader's own rocket smoke uses a fixed color for
+     * (see CRUZADER_ROCKET_TRAIL_* - that one never shifts hue at all; this
+     * one cools the same way the shared kFireCore below does, just toward
+     * blue instead of gray), and RANGER_TRAIL_ALPHA_MULTIPLIER stacked on
+     * top of the shared TRAIL_PARTICLE_MAX_ALPHA for a visibly stronger,
+     * more visible tail. */
+    if (t->style_ship == SHIP_RANGER) {
+        static const Color kRangerHot = {235, 245, 255, 255};
+        static const Color kRangerBlue = {40, 130, 255, 255};
+        float cool = life < 0.4f ? life / 0.4f : 1.0f;
+        Color color = lerp_color(kRangerHot, kRangerBlue, cool);
+
+        float radius = t->size * (1.0f + (TRAIL_PARTICLE_SIZE_GROWTH - 1.0f) * life);
+        float fade_in = life < 0.08f ? life / 0.08f : 1.0f;
+        float fade_out = 1.0f - life;
+        float alpha = (float)TRAIL_PARTICLE_MAX_ALPHA * RANGER_TRAIL_ALPHA_MULTIPLIER * fade_in * fade_out;
+        color.a = (unsigned char)(alpha > 255.0f ? 255.0f : alpha);
+
+        SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+        gp_fill_circle(ctx->renderer, t->x, t->y, radius, color);
+        return;
+    }
 
     static const Color kFireCore = {255, 140, 40, 255};
     static const Color kSmoke = {90, 90, 95, 255};
@@ -1440,6 +1606,7 @@ static const char *kShootModeNames[SHOOT_MODE_COUNT] = {
     "NORMAL", "RAPID", "POWER", "DOUBLE", "SIDE", "OMNI", "WANDER", "FORMATION",
     "SHARDS", "OMNI", "SPIRAL", "TWIN", "ORB", "ROCKETS", "ALTERNATE", "MIRROR",
     "ICE SHARDS", "ICE STORM", "FREEZE BEAM", "CANNON", "SHURIKEN", "SWEEP", "STEALTH",
+    "TRIBEAM", "ALTERNATE", "ARC WAVE",
 };
 
 /* Bottom-left indicator (the one HUD corner draw_life_bar/draw_boss_bar/the
@@ -1797,7 +1964,7 @@ static int wrap_text_lines(const char *text, float size, float max_w, char out[]
 }
 
 static const char *const kShipNames[SHIP_COUNT] = {"B-20", "C-24", "THE MOTHERSHIP", "SHINE", "CRUZADER",
-                                                     "THE TWINS", "ANTARTICA", "BUCKLER", "SAMURAI"};
+                                                     "THE TWINS", "ANTARTICA", "BUCKLER", "SAMURAI", "RANGER"};
 
 /* Ad copy for the ship-select screen's description panel - written from
  * the same capsule descriptions each ship was specced with ("versatile
@@ -1835,6 +2002,8 @@ static const char *const kShipDescriptions[SHIP_COUNT] = {
     "WITH ITS OMNIDIRECTIONAL CANNONS.",
     "SAMURAI IS A GREAT ANCIENT WARRIOR, MASTER IN THE ART OF WAR. IT IS "
     "METICULOUSLY BUILT BY THE MOST PRECISE BLADES IN THE UNIVERSE.",
+    "RANGER IS THE PEACEKEEPER OF THE GALAXY. EVIL INVADERS, BIG OR SMALL, "
+    "ARE NO MATCH FOR THE GUARDIAN OF THE STARS.",
 };
 
 static const char *const kShipAttackAttributeLabels[3] = {"SPEED", "STRENGTH", "ATTACK"};

@@ -35,7 +35,24 @@
 #define MAX_ENEMY_PROJECTILES 160
 #define MAX_ENEMIES 48
 #define MAX_EXPLOSIONS 32
-#define MAX_TRAIL_PARTICLES 64
+/* Sized for every ship's own steady-state trail population at once -
+ * spawn_rate * TRAIL_PARTICLE_LIFETIME. B-20's own shared TRAIL_SPAWN_
+ * INTERVAL (50/sec) alone would only ever need ~50; the real driver is
+ * Ranger's own much shorter RANGER_TRAIL_SPAWN_INTERVAL (200/sec), whose
+ * steady state is ~200 - undersizing this pool for that (the old 64,
+ * comfortable only for every other ship) silently starves
+ * spawn_trail_particle once the pool fills, and since particles all expire
+ * roughly TRAIL_PARTICLE_LIFETIME after they were spawned, that starvation
+ * isn't just "fewer particles" - it reads as periodic 1-second-cadence
+ * dead/refill pulses instead of Ranger's own intended non-stop stream (same
+ * class of bug the MAX_PROJECTILE_TRAIL_PARTICLES pool's own doc comment
+ * below already warns about: "too small a pool... means spawn_*_particle
+ * silently drops puffs"). Comfortable headroom above that ~200 steady
+ * state, same "pad well past the exact worst case" convention as every
+ * other pool here - and since only one ship is ever actually flying at
+ * once, this larger cap costs every other ship nothing: none of them get
+ * anywhere close to filling it. */
+#define MAX_TRAIL_PARTICLES 256
 #define MAX_STARS 80
 /* Star speed (see init_stars in usecases/game_logic.c) is
  * STAR_MIN_SPEED + rand * STAR_SPEED_RANGE. Named (rather than left as
@@ -726,9 +743,9 @@
  * rather than landing in the same frame, the same ENEMY_SHOOT_TRIBURST
  * pattern (ENEMY_TRIBURST_SHOT_INTERVAL) reused for the player's own mode 1
  * (see Player.samurai_burst_shots_remaining/samurai_burst_shot_timer and
- * update_samurai_shuriken in usecases/game_logic.c): 150ms between each of
+ * update_samurai_shuriken in usecases/game_logic.c): 100ms between each of
  * the 3 shots within a burst, then a 550ms pause before the next burst can
- * start - an 850ms full cycle, not the rounder "once per second" a first
+ * start - a 750ms full cycle, not the rounder "once per second" a first
  * pass at this ship used, straight ahead from the nose like B-20's own
  * mode 1. */
 #define SAMURAI_SHURIKEN_BURST_COUNT 3
@@ -756,6 +773,140 @@
 #define SAMURAI_STEALTH_COOLDOWN 20.0f
 #define SAMURAI_STEALTH_SPEED_MULTIPLIER 2.0f
 #define SAMURAI_STEALTH_OPACITY 0.5f /* "50% transparency" per spec */
+
+/* --- Ranger's own weapon (see usecases/ship.c for its 3-slot moveset, and
+ * the SHOOT_MODE_RANGER_... / PROJECTILE_KIND_RANGER_ARC doc comments in
+ * domain/types.h) - kept fully independent of every other ship's own
+ * constants, same "kept-independent copies, not shared" precedent as every
+ * other ship's own block above. */
+#define RANGER_SIZE_MULTIPLIER 1.0f /* same render/hitbox size as B-20 */
+
+/* Modes 1/2 share this one beam shape/speed - "long laser beams", longer
+ * than B-20's own PLAYER_PROJECTILE_W/H bolt (see draw_ranger_beam in
+ * adapters/sdl_renderer.c). Speed reuses B-20's own baseline unscaled. */
+#define RANGER_BEAM_SPEED PLAYER_PROJECTILE_SPEED
+#define RANGER_BEAM_LENGTH 34.0f
+#define RANGER_BEAM_WIDTH 3.5f
+/* How far each of Ranger's 2 side heads sits from center (see the
+ * reference sprite's own twin side-boosters) - noticeably wider than
+ * B-20's own PLAYER_WING_OFFSET_X, matching how far out those boosters
+ * actually sit. */
+#define RANGER_SIDE_MUZZLE_OFFSET_X (PLAYER_WIDTH * 0.8f)
+
+/* Mode 1 (default): all 3 heads (center/left/right) fire at once, "2 shots
+ * per second" per spec - meaning the whole 3-beam volley retriggers twice a
+ * second, not that each head fires twice a second individually (same "the
+ * whole burst is the unit of rate" convention SHIP_C24_OMNI_FIRE_COOLDOWN
+ * already establishes for C-24's own 8-way burst). Every beam this trigger
+ * shares one freshly rerolled random color - see
+ * SHOOT_MODE_RANGER_TRIBEAM's own doc comment in domain/types.h. */
+#define RANGER_TRIBEAM_FIRE_COOLDOWN (1.0f / 2.0f)
+
+/* Mode 2: the same 3 heads, fired one at a time in a fixed rotating order
+ * (center, left, right, repeat) - "6 alternated projectiles per second" per
+ * spec, so each individual head still only reaches RANGER_TRIBEAM_FIRE_
+ * COOLDOWN's own 2/sec rate, just interleaved with its two siblings to
+ * total 6/sec combined - the same "each source's own rate stays the same,
+ * only the interleaving differs" relationship TWINS_ALTERNATE_FIRE_COOLDOWN
+ * has to B-20's own DOUBLE_BARREL mode. */
+#define RANGER_ALTERNATE_FIRE_COOLDOWN (1.0f / 6.0f)
+
+/* Mode 3: the arch-shaped wave - "once every 2 seconds" per spec, by far
+ * Ranger's slowest-cadence mode, the tradeoff for a shot that pierces
+ * through and damages everything along its own entire vertical lane
+ * instead of being consumed by the first thing it touches (see
+ * PROJECTILE_KIND_RANGER_ARC's own doc comment in domain/types.h and
+ * check_collisions in usecases/game_logic.c). Deliberately slower than a
+ * normal bolt (same "heavier shot travels slower" precedent
+ * CRUZADER_ROCKET_SPEED/POWER_CANNON_PROJECTILE_SPEED_MULTIPLIER already
+ * set) so it reads as a deliberate, weighty wave climbing the screen rather
+ * than an instant hit. RANGER_ARC_WAVE_WIDTH/HEIGHT is the wave's own wide,
+ * shallow hitbox - wide enough to sweep most of a single vertical lane's
+ * worth of enemies at once, per "an arch-shaped wave of colorful light".
+ * RANGER_ARC_WAVE_BULGE is how far the arch's own midpoint climbs above its
+ * two ends (see draw_ranger_arc_wave in adapters/sdl_renderer.c) - shared
+ * here (not a renderer-only literal) so update_projectile_trails
+ * (usecases/game_logic.c) can trace the exact same curve for the wave's own
+ * trail below, and the two can never drift apart. "A bit less arched" per
+ * feedback - a moderate cut from a former 0.9f, still a clearly-arched
+ * shape, just flatter. */
+#define RANGER_ARC_WAVE_FIRE_COOLDOWN 2.0f
+#define RANGER_ARC_WAVE_SPEED (PLAYER_PROJECTILE_SPEED * 0.5f)
+#define RANGER_ARC_WAVE_WIDTH (PLAYER_WIDTH * 3.0f)
+#define RANGER_ARC_WAVE_HEIGHT (PLAYER_HEIGHT * 0.7f)
+#define RANGER_ARC_WAVE_BULGE (PLAYER_HEIGHT * 0.55f)
+/* How much of RANGER_ARC_WAVE_HEIGHT the *rendered* ribbon actually uses for
+ * its own thickness - "80% thinner" per feedback, applied only to
+ * draw_ranger_arc_wave's own visual stroke width, deliberately never to
+ * RANGER_ARC_WAVE_HEIGHT itself, which stays exactly as wide as before for
+ * the wave's own hit-test (player_shot_half_extents in
+ * usecases/game_logic.c) - a thinner-looking wave that still catches
+ * everything the old, chunkier one did. */
+#define RANGER_ARC_WAVE_RENDER_THICKNESS_RATIO 0.2f
+/* The soft gradient "curtain" draw_ranger_arc_wave hangs beneath the arch,
+ * spanning its own full width - purely a rendering flourish (drawn first,
+ * under the ribbon itself), never touched by collision. GRADIENT_DEPTH is
+ * how far down it reaches from the arch's own curve at each point;
+ * GRADIENT_MAX_ALPHA is its own brightest point (immediately under the
+ * curve), fading to fully transparent by the bottom. */
+#define RANGER_ARC_WAVE_GRADIENT_DEPTH (PLAYER_HEIGHT * 1.4f)
+#define RANGER_ARC_WAVE_GRADIENT_MAX_ALPHA 45
+/* The wave's own trail (see update_projectile_trails) - unlike every other
+ * shot's own trail (one puff drifting from a single point), this spawns
+ * RANGER_ARC_WAVE_TRAIL_POINTS puffs at once, evenly spread across the
+ * wave's own current width and each following the same RANGER_ARC_WAVE_
+ * BULGE curve those points sit on, so the trail visibly spans the wave's
+ * entire length (left edge to right edge) rather than trailing from just
+ * its center - see RANGER_PROJECTILE_TRAIL_SIZE_MULTIPLIER/MAX_ALPHA/
+ * SPAWN_INTERVAL below for how much more visible each of those puffs is
+ * than an ordinary shot's own trail. */
+#define RANGER_ARC_WAVE_TRAIL_POINTS 14
+
+/* Ranger's own engine trail (see TrailParticle.style_ship and
+ * draw_trail_particle/update_player_trail) - "stronger" than every other
+ * ship's shared fire-cooling-to-smoke trail, and continuous rather than
+ * emitted in visible puffs: a much shorter spawn interval than every other
+ * ship's own shared TRAIL_SPAWN_INTERVAL (one particle at a time, same as
+ * everyone else - just far more often, so consecutive particles overlap
+ * into one unbroken stream instead of reading as discrete bursts) and each
+ * one more visible (RANGER_TRAIL_ALPHA_MULTIPLIER, on top of the shared
+ * TRAIL_PARTICLE_MAX_ALPHA every other ship's own trail still uses
+ * unscaled). Colors are plain Color literals in draw_trail_particle itself,
+ * next to their two cadence/visibility knobs here, same convention
+ * CRUZADER_ROCKET_TRAIL_* uses for its own recolored trail. */
+#define RANGER_TRAIL_SPAWN_INTERVAL (TRAIL_SPAWN_INTERVAL / 4.0f)
+#define RANGER_TRAIL_ALPHA_MULTIPLIER 2.5f
+
+/* Ranger's own modes 1/2 (SHOOT_MODE_RANGER_TRIBEAM/_ALTERNATE) - "much
+ * more visible" per feedback than the shared PROJECTILE_TRAIL_SIZE_
+ * MULTIPLIER(1.0)/MAX_ALPHA(20) every other ship's shots still use
+ * unscaled: bigger, brighter, and re-spawning faster, same "kept
+ * independent, scoped to this one ship" carve-out precedent CRUZADER_
+ * ROCKET_TRAIL_* already sets for its own recolored trail - just
+ * considerably stronger than that one, since Cruzader's rockets recolor
+ * their trail but Ranger's has to visibly outshine every other ship's own
+ * shot trail entirely, matching the same "stronger effects across the
+ * board" theme as RANGER_TRAIL_ALPHA_MULTIPLIER above. Each of these two
+ * modes only ever spawns ONE puff per emission tick (same as every other
+ * ship's own single-point trail), so this full-strength boost never
+ * compounds into anything solid. */
+#define RANGER_PROJECTILE_TRAIL_SPAWN_INTERVAL (PROJECTILE_TRAIL_SPAWN_INTERVAL * 0.35f)
+#define RANGER_PROJECTILE_TRAIL_SIZE_MULTIPLIER 2.4f
+#define RANGER_PROJECTILE_TRAIL_MAX_ALPHA 150
+
+/* Mode 3's own arc-wave trail - unlike modes 1/2 above, this spawns
+ * RANGER_ARC_WAVE_TRAIL_POINTS puffs at once every tick, not one, so it
+ * needs a much MORE MODEST per-puff boost than RANGER_PROJECTILE_TRAIL_*:
+ * applying that same full-strength boost to 14 simultaneous puffs stacked
+ * across a curve compounds into one solid, opaque mass instead of a
+ * visible trail (confirmed by direct pixel sampling of the rendered
+ * output - the multi-puff spread itself, not the per-puff intensity, is
+ * what already makes this trail "much more visible" without needing
+ * anywhere near as much boost per puff). Still visibly stronger than the
+ * shared PROJECTILE_TRAIL_SIZE_MULTIPLIER(1.0)/MAX_ALPHA(20) baseline,
+ * just far short of RANGER_PROJECTILE_TRAIL_*'s own single-point strength. */
+#define RANGER_ARC_WAVE_TRAIL_SIZE_MULTIPLIER 1.3f
+#define RANGER_ARC_WAVE_TRAIL_MAX_ALPHA 45
 
 #define BOSS_SCORE_STEP 500
 /* How many points before BOSS_SCORE_STEP the "boss incoming" warning

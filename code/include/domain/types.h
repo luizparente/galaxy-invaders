@@ -123,6 +123,15 @@ typedef enum Ship {
      * SHOOT_MODE_SAMURAI_OMNI/SHOOT_MODE_SAMURAI_STEALTH's own doc comments
      * below. */
     SHIP_SAMURAI,
+    /* Ranger's own 3-mode kit (see usecases/ship.c) is, like B-20's and The
+     * Twins' own movesets, three plain persistent modes with no "trigger +
+     * immediate revert" or active-window auto-revert machinery of their own
+     * at all - see SHOOT_MODE_RANGER_TRIBEAM/_ALTERNATE/_ARC's own doc
+     * comments below. Ranger also leaves its own engine trail - stronger,
+     * and blue-with-white-accents instead of every other ship's shared
+     * fire-cooling-to-smoke look (see TrailParticle.style_ship and
+     * draw_trail_particle in adapters/sdl_renderer.c). */
+    SHIP_RANGER,
     SHIP_COUNT,
 } Ship;
 
@@ -259,6 +268,47 @@ typedef enum ShootMode {
      * the window ends (see update_samurai_stealth), same auto-revert timing
      * as mode 2. */
     SHOOT_MODE_SAMURAI_STEALTH,
+    /* Ranger's own 3-mode kit (see usecases/ship.c) - none of these are
+     * reachable by any other ship. Unlike Samurai's own modes 2/3 just
+     * above (or Cruzader's/Antartica's own "odd one out" slots further up),
+     * every one of these is a plain persistent Player.shoot_mode value with
+     * no active-window/auto-revert state of its own at all - the same
+     * "genuinely selectable, stays selected" shape B-20's and The Twins' own
+     * moveset tables already use. */
+    /* Mode 1 (default): 3 long laser beams fired at once, straight up, one
+     * from each of Ranger's own 3 heads (see the reference sprite - one
+     * centered on the nose, one on each of the twin side-boosters) - see
+     * RANGER_SIDE_MUZZLE_OFFSET_X and update_ranger_tribeam in
+     * usecases/game_logic.c. Every beam this trigger shares one freshly
+     * rerolled random color (see Player.color-carrying spawn path in
+     * spawn_player_shot_colored) - "each time Ranger shoots the projectile
+     * takes on a different color at random" per spec, rerolled once per
+     * trigger pull rather than once per individual beam, so a single volley
+     * always reads as one cohesive burst of color rather than 3 clashing
+     * ones. Explodes on contact same as any ordinary PROJECTILE_KIND_NORMAL
+     * shot (destroy_enemy_for_score already spawns that per spec's "merely
+     * visual... no radius for group damage" - no different from B-20's own
+     * mode 1 in that respect). */
+    SHOOT_MODE_RANGER_TRIBEAM,
+    /* Mode 2: the exact same 3 muzzles and beam as mode 1 above, just fired
+     * one at a time in a fixed rotating order (center, then left, then
+     * right, repeating) instead of all 3 at once - "6 alternated projectiles
+     * per second" per spec, so each individual muzzle still only fires 2/sec,
+     * same per-muzzle rate as mode 1's simultaneous volley. Each of these
+     * individual shots rerolls its own random color independently (unlike
+     * mode 1's one-color-per-volley sharing, there's only ever one shot in
+     * flight from this mode at a time) - see update_ranger_alternate and
+     * Player.ranger_next_muzzle, which tracks whose turn is next. */
+    SHOOT_MODE_RANGER_ALTERNATE,
+    /* Mode 3: an arch-shaped wave of colorful light that climbs straight up
+     * off the top of the screen, damaging every enemy (and the boss, once)
+     * it touches along the way rather than being consumed by the first
+     * thing it hits - see PROJECTILE_KIND_RANGER_ARC's own doc comment and
+     * update_ranger_arc_wave/check_collisions in usecases/game_logic.c.
+     * "Once every 2 seconds" per spec - by far Ranger's slowest-cadence
+     * mode, the tradeoff for a shot that can clear an entire vertical lane
+     * instead of a single target. */
+    SHOOT_MODE_RANGER_ARC,
     SHOOT_MODE_COUNT,
 } ShootMode;
 
@@ -449,6 +499,15 @@ typedef struct Player {
      * by every other ship. */
     float samurai_stealth_timer;
     float samurai_stealth_cooldown_timer;
+
+    /* Ranger's own mode 2 (SHOOT_MODE_RANGER_ALTERNATE) rotation state -
+     * unused by every other ship. Whose turn is next among the 3 fixed
+     * muzzles (0 = center, 1 = left, 2 = right - see
+     * update_ranger_alternate in usecases/game_logic.c), always advancing
+     * center -> left -> right -> center regardless of how long ago the
+     * mode was last active, so switching away and back never skips or
+     * repeats a muzzle out of that fixed order. */
+    int ranger_next_muzzle;
 } Player;
 
 /* A CPU-flown escort dispatched by The Mothership (see
@@ -630,6 +689,22 @@ typedef enum ProjectileKind {
      * silhouette - same "simple fixed-radius sphere, no travel-direction
      * math needed" convention every other round player shot already uses. */
     PROJECTILE_KIND_SAMURAI_SHURIKEN,
+    /* Ranger's own mode 3 only (SHOOT_MODE_RANGER_ARC) - modes 1/2 both fire
+     * plain PROJECTILE_KIND_NORMAL beams (see draw_ranger_beam in
+     * adapters/sdl_renderer.c, keyed off Projectile.style_ship == SHIP_RANGER
+     * instead of a dedicated kind, the same convention Shine/Cruzader/Twins/
+     * Antartica's own mode-1-style shots already use). This is the one and
+     * only ProjectileKind that check_collisions does NOT kill on its first
+     * enemy contact (see the player_shots-vs-enemies loop): it stays alive
+     * and keeps climbing, damaging every enemy it overlaps that frame and
+     * every frame after, until it clears the top of the screen the same
+     * ordinary way update_projectiles despawns any other shot. Enemies
+     * still each only take one hit (they die outright, same as any other
+     * shot), but the boss has a real hit pool that would otherwise get
+     * drained every single frame this shot spends overlapping it during its
+     * slow multi-frame crossing - see Projectile.ranger_arc_hit_boss just
+     * below, which caps that at exactly one hit per wave. */
+    PROJECTILE_KIND_RANGER_ARC,
 } ProjectileKind;
 
 /* Drives an enemy shot's rendering (adapters/sdl_renderer.c) and hitbox
@@ -719,6 +794,15 @@ typedef struct Projectile {
      * GameState.selected_ship directly anymore - it has to ask the shot
      * itself. Unused (left 0/SHIP_B20, harmless) by enemy shots. */
     Ship style_ship;
+
+    /* PROJECTILE_KIND_RANGER_ARC only - true once this wave has already
+     * dealt its one hit to the boss (see check_collisions), so it doesn't
+     * repeatedly drain the boss's hit pool every frame it's still
+     * overlapping during its slow multi-frame crossing. Set false at spawn
+     * (see spawn_player_shot_colored); never reset afterward, since a given
+     * wave only ever needs to hit the boss once in its whole lifetime.
+     * Unused by every other ProjectileKind. */
+    bool ranger_arc_hit_boss;
 } Projectile;
 
 typedef struct Explosion {
@@ -741,6 +825,18 @@ typedef struct TrailParticle {
     float age;
     float max_age;
     float size; /* base radius at spawn, already scaled by GameState.scale */
+
+    /* Which ship spawned this puff (see spawn_trail_particle in
+     * usecases/game_logic.c, which just copies gs->selected_ship - the
+     * whole trail_particles pool only ever belongs to whichever one ship is
+     * actually flying, so there's no ambiguity to resolve, unlike
+     * Projectile.style_ship's own ChildShip carve-out). Read only by
+     * draw_trail_particle (adapters/sdl_renderer.c) to give Ranger alone a
+     * stronger, blue-with-white-accents trail instead of every other ship's
+     * shared fire-cooling-to-smoke gradient - same "bake per-source styling
+     * in at spawn" convention EnemyTrailParticle.alpha_cap and
+     * ProjectileTrailParticle.color already use. */
+    Ship style_ship;
 } TrailParticle;
 
 /* The same fire/smoke exhaust as TrailParticle above, applied to enemies
