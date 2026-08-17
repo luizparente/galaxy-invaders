@@ -70,7 +70,8 @@ void app_run(App *app) {
          * through boss.alive since the two flags never overlap (see
          * boss_warning's own comment in domain/types.h). */
         bool boss_track_active = gs.boss.alive || gs.boss_warning;
-        app->audio->update(app->audio->self, (float)dt, gs.state == STATE_PAUSE, difficulty01, boss_track_active);
+        app->audio->update(app->audio->self, (float)dt, gs.state == STATE_PAUSE, difficulty01, boss_track_active,
+                            gs.state == STATE_GAME_OVER);
         for (int i = 0; i < events.count; i++) {
             if (events.items[i].type == EVENT_PLAY_SFX) {
                 app->audio->play_sfx(app->audio->self, events.items[i].sfx);
