@@ -185,12 +185,12 @@
 #define PROJECTILE_TRAIL_LIFETIME 0.35f
 #define PROJECTILE_TRAIL_BASE_SIZE 2.2f
 #define PROJECTILE_TRAIL_SIZE_GROWTH 2.2f
-/* ~8% of 255 - half of the previous 40, for a subtler wake. Every shot's
- * trail reads at this same visibility, player and enemy alike - deliberately
- * a single flat constant, not something any one ship's weapon mode can
- * override, with exactly one deliberate exception: Cruzader's own mode 3
- * rockets (see CRUZADER_ROCKET_TRAIL_MAX_ALPHA). */
-#define PROJECTILE_TRAIL_MAX_ALPHA 20
+/* ~10% of 255 - slightly bumped up from a previous 20 for a bit more
+ * visibility. Every shot's trail reads at this same visibility, player and
+ * enemy alike - deliberately a single flat constant, not something any one
+ * ship's weapon mode can override, with exactly one deliberate exception:
+ * Cruzader's own mode 3 rockets (see CRUZADER_ROCKET_TRAIL_MAX_ALPHA). */
+#define PROJECTILE_TRAIL_MAX_ALPHA 26
 
 #define PLAYER_PROJECTILE_W 3.0f
 #define PLAYER_PROJECTILE_H 14.0f
